@@ -1,0 +1,228 @@
+# src/updater/complex_updater.py
+"""
+Complex event handler — delegates to LLM for multi-node updates,
+event node creation, and RELATIONSHIP shared_events update.
+"""
+
+import json
+import os
+import anthropic
+from datetime import datetime
+from neo4j import AsyncGraphDatabase
+from dotenv import load_dotenv
+from pathlib import Path
+
+load_dotenv(Path(__file__).parent.parent.parent / ".env")
+
+client       = anthropic.Anthropic()
+async_driver = AsyncGraphDatabase.driver(
+    os.getenv("NEO4J_URI"),
+    auth=(os.getenv("NEO4J_USERNAME"), os.getenv("NEO4J_PASSWORD"))
+)
+
+COMPLEX_MODEL = os.getenv("MODEL_COMPLEX_UPDATER", "claude-haiku-4-5-20251001")
+
+
+# ════════════════════════════════════════════════════════════
+# LLM — generate update plan
+# ════════════════════════════════════════════════════════════
+
+def _generate_update_plan(
+    actor_response: str,
+    npc_id: str,
+    pc_id: str,
+    initial_changes: dict,
+) -> dict:
+    prompt = f"""You are a game state manager for a roleplay system.
+Analyze this roleplay scene and produce a structured update plan.
+
+## Context
+NPC: {npc_id}, PC: {pc_id}
+Initial changes detected: {json.dumps(initial_changes, ensure_ascii=False)}
+
+## Tasks
+1. Update DynamicState fields as needed (physical/mental/mood/stress/location)
+2. Return relationship affinity delta as integer (e.g. +5 or -10), null if unchanged
+3. Create an Event node only if the scene meets the criteria below
+
+## Event Importance Scale (0–10)
+
+9–10 — Permanent, no decay. Life-altering only.
+  Examples: marriage proposal / surgery-level injury / first confession / overcoming relationship burnout / serious accident
+
+6–8 — Slow decay. Significant but not permanent.
+  Examples: first meeting / major fight then genuine reconciliation / first physical intimacy / near-breakup
+
+3–5 — Medium decay. Noteworthy but minor.
+  Examples: mild injury + first clinic visit for it / first meeting with a new character / minor argument with lasting tension
+
+0–2 — DO NOT create an event.
+  Examples: meal / convenience store / short chat / routine day / follow-up visit when injury already recorded
+
+## Calibration
+CREATE (9): 은서 hospitalized after car accident
+CREATE (8): Genuine reconciliation after long emotional burnout
+CREATE (5): 은서 visits orthopedic clinic for first time due to back injury
+CREATE (4): Minor argument leads to a cold war between them
+CREATE (3): First time meeting 강지희
+NO EVENT: They had dinner together
+NO EVENT: 은서 got annoyed but recovered quickly
+NO EVENT: Follow-up clinic visit when injury is already in the record
+
+## Event ID Format
+{{location}}_{{description}}_{{YYYYMMDD_HHMM}}
+
+Return ONLY a JSON object:
+{{
+  "dynamic_state": {{}},
+  "relationship_delta": null,
+  "new_event": null
+}}
+
+If creating an event, replace new_event with:
+{{
+  "id": "string",
+  "summary": "1–2 sentence Korean summary",
+  "importance": 0,
+  "impact": "brief description"
+}}
+
+Roleplay scene:
+{actor_response[:2000]}"""
+
+    response = client.messages.create(
+        model=COMPLEX_MODEL,
+        max_tokens=1024,
+        temperature=0.0,
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    raw = response.content[0].text.strip()
+    try:
+        # { ... } 범위만 추출 — 앞뒤 마크다운/설명 텍스트 제거
+        start = raw.find('{')
+        end   = raw.rfind('}')
+        if start == -1 or end == -1:
+            raise json.JSONDecodeError("no JSON object found", raw, 0)
+        json_str = raw[start:end + 1]
+        # trailing comma 제거 (Haiku 습관)
+        import re as _re
+        json_str = _re.sub(r',\s*([}\]])', r'\1', json_str)
+        plan: dict = json.loads(json_str)
+    except json.JSONDecodeError as e:
+        print(f"[ComplexUpdater] parse failed ({e}): {raw[:300]}")
+        plan = {"dynamic_state": {}, "relationship_delta": None, "new_event": None}
+        plan = {"dynamic_state": {}, "relationship_delta": None, "new_event": None}
+
+    return plan
+
+
+# ════════════════════════════════════════════════════════════
+# DB helpers
+# ════════════════════════════════════════════════════════════
+
+async def _apply_dynamic_state(char_id: str, updates: dict) -> None:
+    if not updates:
+        return
+    set_clause = ", ".join(f"d.{k} = ${k}" for k in updates)
+    async with async_driver.session() as session:
+        await session.run(f"""
+            MATCH (c:Character {{id: $char_id}})-[:HAS_STATE]->(d:DynamicState)
+            SET {set_clause}
+        """, char_id=char_id, **updates)
+
+
+async def _apply_relationship_delta(char_a: str, char_b: str, delta: int) -> None:
+    async with async_driver.session() as session:
+        await session.run("""
+            MATCH (a:Character {id: $a})-[r:RELATIONSHIP]->(b:Character {id: $b})
+            SET r.affinity = CASE
+                WHEN r.affinity + $delta > 100 THEN 100
+                WHEN r.affinity + $delta < -100 THEN -100
+                ELSE r.affinity + $delta
+            END
+        """, a=char_a, b=char_b, delta=delta)
+
+
+async def _create_event(event_data: dict, npc_id: str, pc_id: str) -> None:
+    if not event_data or not event_data.get("id"):
+        return
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+    async with async_driver.session() as session:
+        await session.run("""
+            CREATE (:Event {
+                id:            $id,
+                summary:       $summary,
+                timestamp:     $timestamp,
+                importance:    $importance,
+                impact:        $impact,
+                decay_rate:    0.1,
+                summary_level: 0
+            })
+        """,
+            id=event_data["id"],
+            summary=event_data.get("summary", ""),
+            timestamp=timestamp,
+            importance=event_data.get("importance", 5),
+            impact=event_data.get("impact", ""),
+        )
+        for char_id in [npc_id, pc_id]:
+            await session.run("""
+                MATCH (c:Character {id: $char_id})
+                MATCH (e:Event {id: $event_id})
+                CREATE (c)-[:INVOLVED_IN]->(e)
+            """, char_id=char_id, event_id=event_data["id"])
+
+        await session.run("""
+            MATCH (a:Character {id: $a})-[r:RELATIONSHIP]->(b:Character {id: $b})
+            SET r.shared_events = coalesce(r.shared_events, []) + [$event_id],
+                r.last_interaction = $timestamp
+        """, a=npc_id, b=pc_id, event_id=event_data["id"], timestamp=timestamp)
+
+    print(f"[ComplexUpdater] event created: {event_data['id']}")
+
+
+# ════════════════════════════════════════════════════════════
+# Entry point
+# ════════════════════════════════════════════════════════════
+
+async def delegate_complex_update(
+    actor_response: str,
+    npc_id: str,
+    pc_id: str,
+    initial_changes: dict,
+    event_only: bool = False,   # OOC 경로: 이벤트 생성만, relationship/state 스킵
+) -> None:
+    print("[ComplexUpdater] processing...")
+
+    plan = _generate_update_plan(actor_response, npc_id, pc_id, initial_changes)
+    print(f"[ComplexUpdater] plan: {json.dumps(plan, ensure_ascii=False)}")
+
+    if not event_only:
+        await _apply_dynamic_state(npc_id, plan.get("dynamic_state", {}))
+
+        delta = plan.get("relationship_delta")
+        if delta is not None:
+            await _apply_relationship_delta(npc_id, pc_id, int(delta))
+            await _apply_relationship_delta(pc_id, npc_id, int(delta))
+
+    # 이벤트 ID의 YYYYMMDD_HHMM 리터럴 → 실제 타임스탬프로 치환
+    raw_event = plan.get("new_event")
+    if raw_event and isinstance(raw_event, dict):
+        event_id = raw_event.get("id") or raw_event.get("event_id")
+        if event_id:
+            ts = datetime.now().strftime("%Y%m%d_%H%M")
+            event_id = event_id.replace("YYYYMMDD_HHMM", ts)
+            normalized = {
+                "id":         event_id,
+                "summary":    raw_event.get("summary") or raw_event.get("description", ""),
+                "importance": raw_event.get("importance") or (
+                    9 if raw_event.get("significance") == "high"
+                    else 6 if raw_event.get("significance") == "medium"
+                    else 3
+                ),
+                "impact": str(raw_event.get("impact") or raw_event.get("relationship_impact", "")),
+            }
+            await _create_event(normalized, npc_id, pc_id)
+
+    print("[ComplexUpdater] done")

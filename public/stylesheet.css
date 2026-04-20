@@ -1,0 +1,13 @@
+@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css');
+
+/* ── 전체 폰트 Pretendard ───────────────────────── */
+* {
+  font-family: 'Pretendard', -apple-system, BlinkMacSystemFont,
+               'Segoe UI', sans-serif !important;
+}
+
+/* ── 이탤릭(*...*) → 회색 ───────────────────────── */
+em {
+  color: #9ca3af;
+  font-style: italic;
+}

@@ -1,16 +1,17 @@
 # src/agents/manager_agent.py
 
+import os
+import re
 from openai import OpenAI
 from neo4j import GraphDatabase
 from dotenv import load_dotenv
 from pathlib import Path
 from datetime import datetime
 from src.prompt.PromptBuilder import PromptBuilder
-import os, json
+import json
 
 load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
-# ── 클라이언트 초기화 ────────────────────────────────────
 llm = OpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=os.getenv("OPENROUTER_API_KEY")
@@ -21,7 +22,8 @@ driver = GraphDatabase.driver(
     auth=(os.getenv("NEO4J_USERNAME"), os.getenv("NEO4J_PASSWORD"))
 )
 
-CLASSIFIER_MODEL = "google/gemma-3-12b-it:free" # "meta-llama/llama-3.3-70b-instruct:free"
+CLASSIFIER_MODEL    = os.getenv("MODEL_CLASSIFIER",          "google/gemma-3-12b-it:free")
+CLASSIFIER_FALLBACK = os.getenv("MODEL_CLASSIFIER_FALLBACK", "meta-llama/llama-3.3-70b-instruct:free")
 builder = PromptBuilder()
 
 
@@ -43,34 +45,31 @@ Recent story:
 User input:
 {user_input}"""
 
-    response = llm.chat.completions.create(
-        model=CLASSIFIER_MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.0
-    )
+    for model in [CLASSIFIER_MODEL, CLASSIFIER_FALLBACK]:
+        try:
+            response = llm.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0
+            )
+            raw   = response.choices[0].message.content.strip()
+            clean = raw.replace("```json", "").replace("```", "").strip()
+            scene_types = json.loads(clean)
+            if not isinstance(scene_types, list):
+                raise ValueError("not a list")
+            print(f"[씬 분류 / {model}] {scene_types}")
+            return scene_types
+        except Exception as e:
+            print(f"[씬 분류 실패 / {model}] {e}")
 
-    raw = response.choices[0].message.content.strip()
-
-    # JSON 파싱 실패 시 폴백
-    try:
-        # 혹시 ```json ... ``` 감싸진 경우 제거
-        clean = raw.replace("```json", "").replace("```", "").strip()
-        scene_types = json.loads(clean)
-        if not isinstance(scene_types, list):
-            raise ValueError
-    except (json.JSONDecodeError, ValueError):
-        print(f"[분류 파싱 실패] raw: {raw} → 폴백: ['daily']")
-        scene_types = ["daily"]
-
-    print(f"[씬 분류] {scene_types}")
-    return scene_types
+    print("[씬 분류] 모든 모델 실패 → 폴백: ['daily']")
+    return ["daily"]
 
 
 # ════════════════════════════════════════════════════════════
 # 2~3단계: Graph 데이터 추출
 # ════════════════════════════════════════════════════════════
 
-# 씬 타입 → 필요한 서브 노드 매핑
 SCENE_NODE_MAP = {
     "daily":     ["HAS_PROFILE", "HAS_PERSONALITY", "HAS_STATE"],
     "emotional": ["HAS_PERSONALITY", "HAS_STATE"],
@@ -80,17 +79,15 @@ SCENE_NODE_MAP = {
     "aegyo":     ["HAS_PERSONALITY", "HAS_STATE"],
 }
 
-# 릴레이션십 타입 → char_data 키 매핑
 REL_TO_KEY = {
-    "HAS_PROFILE":    "static_profile",
+    "HAS_PROFILE":     "static_profile",
     "HAS_PERSONALITY": "personality",
-    "HAS_STATE":      "dynamic_state",
-    "HAS_INTIMATE":   "intimate_profile",
-    "HAS_WORKPLACE":  "workplace_profile",
+    "HAS_STATE":       "dynamic_state",
+    "HAS_INTIMATE":    "intimate_profile",
+    "HAS_WORKPLACE":   "workplace_profile",
 }
 
 def fetch_character_data(char_id: str, scene_types: list[str]) -> dict:
-    # 씬 타입들에 필요한 릴레이션십 타입 합산 (중복 제거)
     needed_rels = set()
     for st in scene_types:
         needed_rels.update(SCENE_NODE_MAP.get(st, []))
@@ -106,7 +103,6 @@ def fetch_character_data(char_id: str, scene_types: list[str]) -> dict:
             if record:
                 key = REL_TO_KEY.get(rel_type, rel_type.lower())
                 result[key] = record["props"]
-
     return result
 
 
@@ -141,14 +137,83 @@ def fetch_location(char_id: str) -> str:
 
 
 # ════════════════════════════════════════════════════════════
-# 4단계: 비동기 DB 업데이트 (Actor 응답 후 호출)
+# 보조 NPC 감지 & 조회
+# ════════════════════════════════════════════════════════════
+
+NPC_NAME_MAP: dict[str, str] = {
+    # 가족
+    "재혁":       "jin_jaehyuk",
+    "아빠":       "jin_jaehyuk",
+    "은서 아빠":   "jin_jaehyuk",
+    "수진":       "oh_soojin",
+    "엄마":       "oh_soojin",
+    "은서 엄마":   "oh_soojin",
+    "은채":       "jin_eunchae",
+    "은채야":     "jin_eunchae",
+    # 친구
+    "지희":       "kang_jihee",
+    "지희 언니":   "kang_jihee",
+    "아린":       "seo_arin",
+    "아린이":     "seo_arin",
+    "서하":       "chae_seoha",
+    "서하야":     "chae_seoha",
+    # 헬스장 동료
+    "지수":       "yoon_jisoo",
+    "지수 언니":   "yoon_jisoo",
+    "하늘":       "park_haneul",
+    "하늘이":     "park_haneul",
+    "강호":       "choi_kangho",
+    "강호 오빠":   "choi_kangho",
+    "민우":       "lee_minwoo",
+    "민우야":     "lee_minwoo",
+}
+
+
+def detect_present_npcs(user_input: str, recent_story: str) -> list[str]:
+    text = f"{user_input} {recent_story}"
+    found: set[str] = set()
+    for keyword, char_id in NPC_NAME_MAP.items():
+        if keyword in text:
+            found.add(char_id)
+    if found:
+        print(f"[NPC 감지] {sorted(found)}")
+    return sorted(found)
+
+
+def fetch_npc_profiles(npc_ids: list[str], main_npc_id: str, pc_id: str) -> list[dict]:
+    results = []
+    with driver.session() as session:
+        for npc_id in npc_ids:
+            name_rec = session.run(
+                "MATCH (c:Character {id: $id}) RETURN c.name AS name", id=npc_id
+            ).single()
+            if not name_rec:
+                continue
+
+            profile_rec = session.run("""
+                MATCH (c:Character {id: $id})-[:HAS_PROFILE]->(p)
+                RETURN properties(p) AS props
+            """, id=npc_id).single()
+
+            rel_rec = session.run("""
+                MATCH (a:Character {id: $a})-[r:RELATIONSHIP]->(b:Character {id: $b})
+                RETURN properties(r) AS props
+            """, a=main_npc_id, b=npc_id).single()
+
+            results.append({
+                "char_id":    npc_id,
+                "name":       name_rec["name"],
+                "profile":    profile_rec["props"] if profile_rec else {},
+                "rel_to_npc": rel_rec["props"]    if rel_rec    else {},
+            })
+    return results
+
+
+# ════════════════════════════════════════════════════════════
+# 4단계: 비동기 DB 업데이트
 # ════════════════════════════════════════════════════════════
 
 def update_dynamic_state(char_id: str, updates: dict) -> None:
-    """
-    DynamicState 노드 속성 업데이트.
-    updates 예시: {"mood": "happy", "workplace_stress_level": 3}
-    """
     if not updates:
         return
     set_clause = ", ".join(f"d.{k} = ${k}" for k in updates)
@@ -162,16 +227,12 @@ def update_dynamic_state(char_id: str, updates: dict) -> None:
 
 def append_event(event_id: str, summary: str, location_id: str,
                  impact: str, char_ids: list[str]) -> None:
-    """새 이벤트 노드 생성 + 캐릭터 연결 + RELATIONSHIP shared_events 업데이트"""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
     with driver.session() as session:
         session.run("""
             CREATE (:Event {
-                id: $event_id,
-                summary: $summary,
-                timestamp: $timestamp,
-                location_id: $location_id,
-                impact: $impact
+                id: $event_id, summary: $summary, timestamp: $timestamp,
+                location_id: $location_id, impact: $impact
             })
         """, event_id=event_id, summary=summary,
              timestamp=timestamp, location_id=location_id, impact=impact)
@@ -182,7 +243,6 @@ def append_event(event_id: str, summary: str, location_id: str,
                 CREATE (c)-[:INVOLVED_IN]->(e)
             """, char_id=char_id, event_id=event_id)
 
-        # 두 캐릭터 간 RELATIONSHIP shared_events 업데이트
         if len(char_ids) == 2:
             session.run("""
                 MATCH (a:Character {id: $a})-[r:RELATIONSHIP]->(b:Character {id: $b})
@@ -204,25 +264,18 @@ def run_manager(
     npc_id: str,
     recent_story: str = "",
     dt: datetime = None,
-) -> tuple[str, str, list[str]]:
-    """
-    Returns:
-        fixed_prompt  : 캐시 대상 고정 파트
-        dynamic_prompt: 매 턴 교체 동적 파트
-        scene_types   : 분류된 씬 타입 (DB 업데이트 등에 활용)
-    """
-
-    # 1. 씬 분류
+) -> tuple[str, str, str, list[str]]:
     scene_types = classify_scene(user_input, recent_story)
 
-    # 2. 데이터 추출
     char_data    = fetch_character_data(npc_id, scene_types)
     relationship = fetch_relationship_data(pc_id, npc_id)
     events       = fetch_recent_events(npc_id, limit=3)
     location     = fetch_location(npc_id)
 
-    # 3. 프롬프트 조립
-    fixed_prompt, dynamic_prompt = builder.build(
+    present_npc_ids = detect_present_npcs(user_input, recent_story)
+    npcs = fetch_npc_profiles(present_npc_ids, npc_id, pc_id) if present_npc_ids else []
+
+    fixed_prompt, genre_prompt, dynamic_prompt = builder.build(
         scene_types=scene_types,
         char_data=char_data,
         relationship=relationship,
@@ -234,23 +287,19 @@ def run_manager(
         user_input=user_input,
         location=location,
         dt=dt or datetime.now(),
+        npcs=npcs,
     )
 
-    return fixed_prompt, dynamic_prompt, scene_types
+    return fixed_prompt, genre_prompt, dynamic_prompt, scene_types
 
 
-# ── 테스트 ────────────────────────────────────────────────
 if __name__ == "__main__":
-    fixed, dynamic, scene_types = run_manager(
-        user_input="*은서와 함께 욕실에 들어간다. 은서는 헤헤 웃으며 옷을 벗는다.*",
-        pc_id="sian",
-        npc_id="eun_seo",
-        recent_story="점심 무렵까지 은서와 시안이 침대에서 뒹굴다가 씻기 위해 일어났다.",
+    fixed, genre, dynamic, scene_types = run_manager(
+        user_input="지희 언니랑 아린이가 놀러 왔다. 셋이 소파에 앉아 수다를 떤다.",
+        pc_id="sian", npc_id="eun_seo",
+        recent_story="토요일 오후, 은서네 집.",
     )
-
-    print("=== FIXED ===")
-    print(fixed[:200], "...\n")
-    print("=== DYNAMIC ===")
-    print(dynamic)
-    print("\n=== 씬 타입 ===")
-    print(scene_types)
+    print("=== FIXED ==="); print(fixed[:200], "...\n")
+    print("=== GENRE ==="); print(genre[:200] if genre else "(없음)", "\n")
+    print("=== DYNAMIC ==="); print(dynamic)
+    print("\n=== 씬 타입 ==="); print(scene_types)
