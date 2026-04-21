@@ -9,7 +9,7 @@ load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
 client      = anthropic.Anthropic()
 ACTOR_MODEL = os.getenv("MODEL_ACTOR", "claude-haiku-4-5-20251001")
-MAX_TOKENS     = 4096
+MAX_TOKENS     = int(os.getenv("MAX_TOKEN", 4096))
 TEMPERATURE    = 1.0   # extended thinking 없이 top-p 조절은 temperature=1 권장
 
 
@@ -79,6 +79,7 @@ if __name__ == "__main__":
         pc_id="sian",
         npc_id="eun_seo",
         recent_story="은서가 퇴근 후 막 집에 들어왔다. 오늘 헬스장에서 진상 손님이 있었다.",
+        world_id="babe_univ"
     )
 
     print(f"[씬 타입] {scene_types}\n[모델] {ACTOR_MODEL}\n")

@@ -70,12 +70,12 @@ state_changes — DynamicState fields to update
   Past-tense injury descriptions in OOC = the character IS injured NOW.
 
   Examples:
-  "*잘 자네." → no state change
-  "*은서 기분: 화남" → {"mood": "angry"}
-  "*은서는 허리를 삐끗했다." → {"physical_condition": "injured", "injury_detail": "허리 염좌"}
-  "*은서가 발목을 다쳤다." → {"physical_condition": "injured", "injury_detail": "발목 부상"}
-  "*은서는 어젯밤 무거운 걸 옮기다가 허리를 삐끗했다." → {"physical_condition": "injured", "injury_detail": "허리 염좌"}
-  "*은서가 열이 난다." → {"physical_condition": "ill"}
+  "*잘 자네.*" → no state change
+  "*은서는 좀 화난 듯하다.*" → {"mood": "angry"}
+  "*은서는 허리를 삐끗했다.*" → {"physical_condition": "injured", "injury_detail": "허리 염좌"}
+  "*은서가 발목을 다쳤다.*" → {"physical_condition": "injured", "injury_detail": "발목 부상"}
+  "*은서는 어젯밤 무거운 걸 옮기다가 허리를 삐끗했다.*" → {"physical_condition": "injured", "injury_detail": "허리 염좌"}
+  "*은서가 열이 난다.*" → {"physical_condition": "ill"}
 
 summary — one-line Korean description of what changed. "변경 없음" if nothing changed.
 """
@@ -86,69 +86,43 @@ def is_ooc(text: str) -> bool:
     return '*' in stripped
 
 
-def parse_ooc(text: str, current_dt: datetime, npc_id: str) -> dict:
-    locations_str = "\n".join(f'  "{k}": "{v}"' for k, v in LOCATIONS.items())
-    system = _SYSTEM_PROMPT.replace("LOCATIONS_PLACEHOLDER", locations_str)
-
+def parse_ooc(text: str, npc_id: str) -> dict:
     response = client.messages.create(
         model=OOC_MODEL,
         max_tokens=256,
         temperature=0.0,
-        system=system,
+        system=_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": text}],
     )
 
     raw = response.content[0].text.strip()
     try:
-        import re as _re
         start = raw.find('{')
-        end   = raw.rfind('}')
+        end = raw.rfind('}')
         if start == -1 or end == -1:
             raise json.JSONDecodeError("no JSON object found", raw, 0)
-        json_str = _re.sub(r',\s*([}\]])', r'\1', raw[start:end + 1])
+
+        # trailing comma 제거 (Haiku 습관 방어)
+        json_str = re.sub(r',\s*([}\]])', r'\1', raw[start:end + 1])
         plan: dict = json.loads(json_str)
     except json.JSONDecodeError:
         print(f"[OOC] parse failed: {raw[:100]}")
-        plan = {"time_delta_minutes": 0, "time_set": None,
-                "location_id": None, "state_changes": {}, "summary": "parse failed"}
+        plan = {"state_changes": {}, "summary": "parse failed"}
 
-    # Apply time delta
-    new_dt = current_dt
-    delta_min = plan.get("time_delta_minutes", 0)
-    if delta_min:
-        new_dt = new_dt + timedelta(minutes=int(delta_min))
-
-    time_set = plan.get("time_set")
-    if time_set:
-        try:
-            h, m = map(int, time_set.split(":"))
-            new_dt = new_dt.replace(hour=h, minute=m, second=0)
-        except ValueError:
-            pass
-
-    # Advance cycle_day by elapsed days
-    day_delta = (new_dt.date() - current_dt.date()).days
-    if day_delta > 0:
-        _advance_cycle_day(npc_id, day_delta)
-
-    # Location change
-    new_location = plan.get("location_id")
-    if new_location:
-        _move_location(npc_id, new_location)
-
-    # State changes
+    # State changes DB 반영
     state_changes = plan.get("state_changes", {})
     if state_changes:
         _update_state(npc_id, state_changes)
 
-    summary = plan.get("summary", "변경 없음")
-    print(f"[OOC / {OOC_MODEL}] {summary}")
+    summary = plan.get("summary", "상태 변경 없음")
+
+    # 상태 변화가 있었을 때만 콘솔에 로깅
+    if state_changes:
+        print(f"[OOC / {OOC_MODEL}] {summary}")
 
     return {
-        "new_dt":        new_dt,
-        "new_location":  new_location,
         "state_changes": state_changes,
-        "summary":       summary,
+        "summary": summary,
     }
 
 

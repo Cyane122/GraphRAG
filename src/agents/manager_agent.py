@@ -9,6 +9,8 @@ from pathlib import Path
 from datetime import datetime
 from src.prompt.PromptBuilder import PromptBuilder
 import json
+from importlib import import_module
+from src.graph.world.default import World
 
 load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
@@ -24,7 +26,6 @@ driver = GraphDatabase.driver(
 
 CLASSIFIER_MODEL    = os.getenv("MODEL_CLASSIFIER",          "google/gemma-3-12b-it:free")
 CLASSIFIER_FALLBACK = os.getenv("MODEL_CLASSIFIER_FALLBACK", "meta-llama/llama-3.3-70b-instruct:free")
-builder = PromptBuilder()
 
 
 # ════════════════════════════════════════════════════════════
@@ -67,7 +68,18 @@ User input:
 
 
 # ════════════════════════════════════════════════════════════
-# 2~3단계: Graph 데이터 추출
+# 2단계: World Instance 사용
+# ════════════════════════════════════════════════════════════
+def load_world_instance(world_id: str) -> World:
+    try:
+        module = import_module(f"src.graph.world.{world_id}")
+        return module.world_instance
+    except (ModuleNotFoundError, AttributeError) as e:
+        from src.graph.world.default import World
+        return World()
+
+# ════════════════════════════════════════════════════════════
+# 3단계: Graph 데이터 추출
 # ════════════════════════════════════════════════════════════
 
 SCENE_NODE_MAP = {
@@ -94,6 +106,19 @@ def fetch_character_data(char_id: str, scene_types: list[str]) -> dict:
 
     result = {}
     with driver.session() as session:
+        # ── 1. 허브 노드(:Character) 자체의 속성(name 등) 가져오기 ──
+        hub_record = session.run("""
+            MATCH (c:Character {id: $char_id})
+            RETURN properties(c) AS props
+        """, char_id=char_id).single()
+
+        if hub_record:
+            # result의 최상위 레벨에 name, id 등의 기본 정보를 먼저 넣습니다.
+            result.update(hub_record["props"])
+        else:
+            result["name"] = char_id
+
+        # ── 2. 서브 노드 데이터 가져오기 (기존 로직) ──
         for rel_type in needed_rels:
             records = session.run(f"""
                 MATCH (c:Character {{id: $char_id}})-[:{rel_type}]->(n)
@@ -135,44 +160,27 @@ def fetch_location(char_id: str) -> str:
         """, char_id=char_id).single()
         return record["name"] if record else "알 수 없는 장소"
 
+def fetch_global_state() -> dict:
+    """DB의 GlobalState 노드에서 현재 시간, 장소, 날씨를 가져옵니다."""
+    with driver.session() as session:
+        record = session.run("""
+            MATCH (gs:GlobalState {id: 'singleton'})
+            RETURN gs.currentTime AS currentTime, 
+                   gs.weather AS weather, 
+                   gs.currentLocationId AS currentLocationId
+        """).single()
+        if record:
+            return dict(record)
+        return {
+            "currentTime": datetime.now().isoformat(),
+            "weather": "Clear",
+            "currentLocationId": "알 수 없는 장소"
+        }
 
-# ════════════════════════════════════════════════════════════
-# 보조 NPC 감지 & 조회
-# ════════════════════════════════════════════════════════════
-
-NPC_NAME_MAP: dict[str, str] = {
-    # 가족
-    "재혁":       "jin_jaehyuk",
-    "아빠":       "jin_jaehyuk",
-    "은서 아빠":   "jin_jaehyuk",
-    "수진":       "oh_soojin",
-    "엄마":       "oh_soojin",
-    "은서 엄마":   "oh_soojin",
-    "은채":       "jin_eunchae",
-    "은채야":     "jin_eunchae",
-    # 친구
-    "지희":       "kang_jihee",
-    "지희 언니":   "kang_jihee",
-    "아린":       "seo_arin",
-    "아린이":     "seo_arin",
-    "서하":       "chae_seoha",
-    "서하야":     "chae_seoha",
-    # 헬스장 동료
-    "지수":       "yoon_jisoo",
-    "지수 언니":   "yoon_jisoo",
-    "하늘":       "park_haneul",
-    "하늘이":     "park_haneul",
-    "강호":       "choi_kangho",
-    "강호 오빠":   "choi_kangho",
-    "민우":       "lee_minwoo",
-    "민우야":     "lee_minwoo",
-}
-
-
-def detect_present_npcs(user_input: str, recent_story: str) -> list[str]:
+def detect_present_npcs(user_input: str, recent_story: str, npc_name_map: dict[str, str]) -> list[str]:
     text = f"{user_input} {recent_story}"
     found: set[str] = set()
-    for keyword, char_id in NPC_NAME_MAP.items():
+    for keyword, char_id in npc_name_map.items():
         if keyword in text:
             found.add(char_id)
     if found:
@@ -263,17 +271,31 @@ def run_manager(
     pc_id: str,
     npc_id: str,
     recent_story: str = "",
-    dt: datetime = None,
+    world_id: str = None,
+    previous_ai_response: str = None,
 ) -> tuple[str, str, str, list[str]]:
+
+    if previous_ai_response:
+        # TODO: 사용자의 input이 들어왔으므로 input 기반 상태 갱신 구현 필요
+        pass
+
+    world = load_world_instance(world_id)
+    world_config = world.get_full_config()
+    global_state = fetch_global_state()
+
     scene_types = classify_scene(user_input, recent_story)
 
     char_data    = fetch_character_data(npc_id, scene_types)
+    user_data    = fetch_character_data(pc_id, scene_types)
     relationship = fetch_relationship_data(pc_id, npc_id)
     events       = fetch_recent_events(npc_id, limit=3)
-    location     = fetch_location(npc_id)
+    current_dt   = datetime.fromisoformat(global_state["currentTime"])
+    location = global_state.get("currentLocationId", fetch_location(npc_id))
 
-    present_npc_ids = detect_present_npcs(user_input, recent_story)
+    present_npc_ids = detect_present_npcs(user_input, recent_story, world.get_npc_name_map())
     npcs = fetch_npc_profiles(present_npc_ids, npc_id, pc_id) if present_npc_ids else []
+
+    builder = PromptBuilder(world_config, char_data.get("name"), user_data.get("name"))
 
     fixed_prompt, genre_prompt, dynamic_prompt = builder.build(
         scene_types=scene_types,
@@ -286,7 +308,7 @@ def run_manager(
         recent_story=recent_story,
         user_input=user_input,
         location=location,
-        dt=dt or datetime.now(),
+        dt=current_dt,
         npcs=npcs,
     )
 
@@ -295,9 +317,10 @@ def run_manager(
 
 if __name__ == "__main__":
     fixed, genre, dynamic, scene_types = run_manager(
-        user_input="지희 언니랑 아린이가 놀러 왔다. 셋이 소파에 앉아 수다를 떤다.",
+        user_input="*지희와 아린이 놀러 왔다. 은서와 셋이 소파에 앉아 수다를 떤다.*",
         pc_id="sian", npc_id="eun_seo",
         recent_story="토요일 오후, 은서네 집.",
+        world_id="babe_univ"
     )
     print("=== FIXED ==="); print(fixed[:200], "...\n")
     print("=== GENRE ==="); print(genre[:200] if genre else "(없음)", "\n")

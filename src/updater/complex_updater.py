@@ -182,6 +182,68 @@ async def _create_event(event_data: dict, npc_id: str, pc_id: str) -> None:
     print(f"[ComplexUpdater] event created: {event_data['id']}")
 
 
+async def _evolve_relationship_status(
+    char_a: str,
+    char_b: str,
+    event_summary: str,
+    event_importance: int,
+) -> None:
+    """
+    importance ≥ 7인 이벤트 발생 시 RELATIONSHIP의 current_status를 Haiku로 재작성.
+    양방향 모두 업데이트.
+    """
+    # 현재 관계 상태 조회
+    async with async_driver.session() as session:
+        rec = await session.run("""
+            MATCH (a:Character {id: $a})-[r:RELATIONSHIP]->(b:Character {id: $b})
+            RETURN r.current_status AS status, r.type AS type,
+                   r.affinity AS affinity, r.trust AS trust
+        """, a=char_a, b=char_b)
+        row = await rec.single()
+        if not row:
+            return
+        current = dict(row)
+
+    prompt = f"""You are a relationship narrator for a roleplay system.
+A significant event (importance {event_importance}/10) just occurred between two characters.
+Rewrite the relationship's current_status to reflect this change.
+
+## Current relationship
+type: {current.get('type')}
+affinity: {current.get('affinity')} / trust: {current.get('trust')}
+current_status: {current.get('status')}
+
+## Event that just occurred
+{event_summary}
+
+## Rules
+- Write in English, 1–3 sentences max.
+- Describe the *current* state of the relationship after this event.
+- Be specific about what shifted. Do not copy the old status verbatim.
+- If this is a breakup/betrayal → reflect distance/fracture.
+- If this is a reconciliation/milestone → reflect deepened bond.
+
+Return ONLY the new current_status string. No quotes, no JSON, no explanation."""
+
+    response = client.messages.create(
+        model=COMPLEX_MODEL,
+        max_tokens=200,
+        temperature=0.3,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    new_status = response.content[0].text.strip().strip('"')
+
+    # 양방향 업데이트
+    async with async_driver.session() as session:
+        for a, b in [(char_a, char_b), (char_b, char_a)]:
+            await session.run("""
+                MATCH (a:Character {id: $a})-[r:RELATIONSHIP]->(b:Character {id: $b})
+                SET r.current_status = $status
+            """, a=a, b=b, status=new_status)
+
+    print(f"[ComplexUpdater] relationship evolved: {char_a}↔{char_b} → {new_status[:60]}...")
+
+
 # ════════════════════════════════════════════════════════════
 # Entry point
 # ════════════════════════════════════════════════════════════
@@ -191,7 +253,7 @@ async def delegate_complex_update(
     npc_id: str,
     pc_id: str,
     initial_changes: dict,
-    event_only: bool = False,   # OOC 경로: 이벤트 생성만, relationship/state 스킵
+    event_only: bool = False,
 ) -> None:
     print("[ComplexUpdater] processing...")
 
@@ -208,12 +270,13 @@ async def delegate_complex_update(
 
     # 이벤트 ID의 YYYYMMDD_HHMM 리터럴 → 실제 타임스탬프로 치환
     raw_event = plan.get("new_event")
+    created_event = None
     if raw_event and isinstance(raw_event, dict):
         event_id = raw_event.get("id") or raw_event.get("event_id")
         if event_id:
             ts = datetime.now().strftime("%Y%m%d_%H%M")
             event_id = event_id.replace("YYYYMMDD_HHMM", ts)
-            normalized = {
+            created_event = {
                 "id":         event_id,
                 "summary":    raw_event.get("summary") or raw_event.get("description", ""),
                 "importance": raw_event.get("importance") or (
@@ -223,6 +286,14 @@ async def delegate_complex_update(
                 ),
                 "impact": str(raw_event.get("impact") or raw_event.get("relationship_impact", "")),
             }
-            await _create_event(normalized, npc_id, pc_id)
+            await _create_event(created_event, npc_id, pc_id)
+
+            # importance ≥ 7 → 관계 서사 진화
+            if created_event["importance"] >= 7:
+                await _evolve_relationship_status(
+                    npc_id, pc_id,
+                    created_event["summary"],
+                    created_event["importance"],
+                )
 
     print("[ComplexUpdater] done")

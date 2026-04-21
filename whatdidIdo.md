@@ -25,3 +25,14 @@
   - 추가 등장인물 7인
   - HP 제거. 동적 현재 상태 구현 완료
 - agents, ooc, updater: 프롬프트 영어로 번역. 프롬프트 추가 튜닝.
+
+## 2026-04-21
+- [HOTFIX] 출력 잘림 현상 완화
+- 메인 프롬프트 `promptBuilder.py` 동적 모듈화 완료.
+  - `schemaBuilder.py`는 더 이상 바베대학교 세계관 스키마를 만들지 않음
+  - `graph.world.*`에서 세계관 설정 프롬프트, 세계관 스키마를 제작함
+  - `promptBuilder.py`에서 모든 'Eun-seo', 'Sian' 텍스트를 {char}, {user}로 변환함
+- `graph.world.default`: `build_schema()` 함수는 이제 GlobalState 노드를 생성함
+  - `build_schema()` 함수를 상속받아 현재 시작 위치와 날씨를 지정할 수 있음
+- `updater.time_manager`: 이제 AI가 시간을 계산하여 GlobalState 노드에 저장함
+- `ooc_parser`: 더 이상 현재 시간과 장소를 계산하지 않음

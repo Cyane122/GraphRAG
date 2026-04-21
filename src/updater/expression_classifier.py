@@ -51,6 +51,25 @@ describing pain), extract that as current physical state even if it happened ear
 "허리를 누르며 / 병원에서 허리 통증 언급" → LITERAL → physical_condition: injured, injury_detail: "허리 염좌"
 Hospital/clinic scene + pressing body part + describing pain → LITERAL
 
+## Scale Calibration (CRITICAL)
+Use these examples to calibrate the 0-10 integer scale. Do NOT overestimate.
+
+### stress_level (General life stress)
+- 10: Family member gravely injured / Partner's infidelity / Funeral
+-  8: Major fight risking breakup / Fired from job
+-  5: Failed an important exam / Serious argument with a friend
+-  3: Annoying group project / Lost wallet / Minor disagreement
+-  1: Minor daily hassle (e.g., paper cut, spilled coffee)
+-  0: A perfect, peaceful day
+
+### workplace_stress_level (Stress from job/school)
+- 10: Fired / Major public humiliation at work / Facing academic expulsion
+-  8: Severe harassment from a client/boss / Failed a major project
+-  6: Constant lingering stares or uncomfortable touches from clients
+-  4: Annoying team member causing repeated rework / A single, particularly rude client who crossed a line but was manageable
+-  2: A single rude customer / Difficult but manageable task
+-  0: Smooth and uneventful shift
+
 Return ONLY a JSON object with changed fields. Empty object {{}} if nothing meaningful changed.
 No explanation, no markdown.
 
