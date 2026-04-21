@@ -7,7 +7,7 @@ from neo4j import GraphDatabase
 from dotenv import load_dotenv
 from pathlib import Path
 from datetime import datetime
-from src.prompt.PromptBuilder import PromptBuilder
+from src.prompt.promptBuilder import PromptBuilder
 import json
 from importlib import import_module
 from src.graph.world.default import World
@@ -302,7 +302,7 @@ def run_manager(
         char_data=char_data,
         relationship=relationship,
         events=[
-            {"e.timestamp": e["timestamp"], "e.summary": e["summary"]}
+            {"timestamp": e["timestamp"], "summary": e["summary"]}
             for e in events
         ],
         recent_story=recent_story,

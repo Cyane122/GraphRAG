@@ -36,3 +36,5 @@
   - `build_schema()` 함수를 상속받아 현재 시작 위치와 날씨를 지정할 수 있음
 - `updater.time_manager`: 이제 AI가 시간을 계산하여 GlobalState 노드에 저장함
 - `ooc_parser`: 더 이상 현재 시간과 장소를 계산하지 않음
+- `promptBuilder.py`, `babe_univ.py`: 이제 세계관과 범용 프롬프트를 완전히 구분함.
+- 이제 `manager_agent.py`가 `run_manager`에서 `world_id`를 변수로 사용함.

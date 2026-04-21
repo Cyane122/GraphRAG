@@ -20,7 +20,7 @@ async_driver = AsyncGraphDatabase.driver(
     auth=(os.getenv("NEO4J_USERNAME"), os.getenv("NEO4J_PASSWORD"))
 )
 
-COMPLEX_MODEL = os.getenv("MODEL_COMPLEX_UPDATER", "claude-haiku-4-5-20251001")
+COMPLEX_MODEL = os.getenv("MODEL_COMPLEX_UPDATER", "claude-sonnet-4-6")
 
 
 # ════════════════════════════════════════════════════════════
@@ -33,12 +33,18 @@ def _generate_update_plan(
     pc_id: str,
     initial_changes: dict,
 ) -> dict:
-    prompt = f"""You are a game state manager for a roleplay system.
-Analyze this roleplay scene and produce a structured update plan.
+    prompt = f"""You are a precise game state manager for a roleplay system.
+Analyze this roleplay scene and produce a structured update plan ONLY for the MAIN NPC ({npc_id}) and the relationship between ({npc_id}) and ({pc_id}).
 
 ## Context
 NPC: {npc_id}, PC: {pc_id}
 Initial changes detected: {json.dumps(initial_changes, ensure_ascii=False)}
+
+## [CRITICAL ANTI-CONFUSION RULE]
+- You MUST distinguish between the Main NPC ({npc_id}) and other secondary characters (like friends, coworkers, passing strangers).
+- DO NOT extract injuries, emotions, or life events of secondary characters and assign them to the Main NPC.
+- For example, if a friend broke their ankle, DO NOT update {npc_id}'s physical_condition.
+- Only update {npc_id}'s state based on what ACTUALLY happened to {npc_id}.
 
 ## Tasks
 1. Update DynamicState fields as needed (physical/mental/mood/stress/location)
@@ -111,7 +117,6 @@ Roleplay scene:
         plan: dict = json.loads(json_str)
     except json.JSONDecodeError as e:
         print(f"[ComplexUpdater] parse failed ({e}): {raw[:300]}")
-        plan = {"dynamic_state": {}, "relationship_delta": None, "new_event": None}
         plan = {"dynamic_state": {}, "relationship_delta": None, "new_event": None}
 
     return plan

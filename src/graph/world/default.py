@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Optional
 
 from neo4j import GraphDatabase
 
@@ -30,18 +31,24 @@ class World:
             # ... 다른 씬 타입들
         }
 
+    def get_blacklist(self) -> str:
+        return ""
+
     def get_full_config(self) -> dict:
         """모든 설정을 하나의 Dictionary로 묶어서 반환"""
         return {
             "world_section": self.get_world_section(),
             "specific_prose_rules": self.get_specific_prose_rules(),
             "few_shot_examples": self.get_few_shot_examples(),
+            "additional_blacklist": self.get_blacklist()
         }
 
     def get_npc_name_map(self) -> dict[str, str]:
         return {
             "이름": "Name"
         }
+
+
 
     def build_schema(self, driver: GraphDatabase.driver):
         """

@@ -31,6 +31,8 @@ from src.ooc.ooc_parser import is_ooc, parse_ooc
 from src.updater.state_updater import process_actor_response
 from src.updater.complex_updater import delegate_complex_update
 
+load_dotenv()
+
 # ── 감성 문구 풀 세팅 ─────────────────────────────────────
 UPDATING_MSGS = [
     "세계의 상태를 갱신하고 있습니다...",
@@ -74,6 +76,7 @@ driver = GraphDatabase.driver(
 )
 
 time_manager = time_manager.TimeManager(driver=driver)
+
 
 # ── OOC physical 변화 → 이벤트 생성 헬퍼 ──────────────
 async def _trigger_ooc_event(ooc_text: str, npc_id: str, pc_id: str, changes: dict) -> None:
@@ -126,17 +129,23 @@ async def on_message(message: cl.Message):
     # 유저가 새로운 채팅을 쳤다는 것은, 직전 AI 응답을 수락했다는 뜻.
     pending = cl.user_session.get("pending_commit")
     if pending:
-        async with cl.Step(name="기록 보관소", show_input=False) as commit_step:
-            commit_step.output = random.choice(UPDATING_MSGS)
+        # Step 대신 외부 메시지로 상태 표시
+        status_msg = cl.Message(content="", author="기록 보관소")
+        await status_msg.send()
 
-            # DB 갱신, TimeManager, SNS 시스템 등을 여기서 한꺼번에 처리합니다.
-            prev_response = pending["ai_response"]
+        status_msg.content = random.choice(UPDATING_MSGS)
+        await status_msg.update()
 
-            # 1. State/Event 갱신
-            await process_actor_response(prev_response, NPC_ID, PC_ID)
+        # DB 갱신, TimeManager, SNS 시스템 등을 여기서 한꺼번에 처리합니다.
+        prev_response = pending["ai_response"]
+        await process_actor_response(prev_response, NPC_ID, PC_ID)
 
-            commit_step.output = random.choice(UPDATED_MSGS)
+        status_msg.content = random.choice(UPDATED_MSGS)
+        await status_msg.update()
 
+        # 사용자가 메시지를 읽을 수 있도록 잠시 대기 후 다음 단계 진행
+        await asyncio.sleep(1.5)
+        await status_msg.remove()
         cl.user_session.set("pending_commit", None)
 
     # ── 2. 컨텍스트 및 OOC 처리 ─────────────────────────────
@@ -157,20 +166,24 @@ async def on_message(message: cl.Message):
                 _trigger_ooc_event(user_input, NPC_ID, PC_ID, ooc_changes)
             )
 
-    async with cl.Step(name="세계의 흐름", show_input=False) as time_step:
-        time_step.output = "시간과 공간을 계산하고 있습니다..."
+    # 외부 메시지로 상태 표시
+    time_status_msg = cl.Message(content="", author="세계의 흐름")
+    await time_status_msg.send()
+    time_status_msg.content = "시간과 공간을 계산하고 있습니다..."
+    await time_status_msg.update()
 
-        time_plan = await asyncio.to_thread(
-            time_manager.calculate_and_update_time,
-            user_input,
-            context_snippet,
-            PC_ID,
-            NPC_ID
-        )
+    time_plan = await asyncio.to_thread(
+        time_manager.calculate_and_update_time,
+        user_input,
+        context_snippet,
+        PC_ID,
+        NPC_ID
+    )
 
-        minutes = time_plan.get('elapsed_minutes')
-        action = time_plan.get('action_type')
-        time_step.output = f"🕒 [{action}] {minutes if minutes else 'N'}분 경과. ({time_plan.get('reason', '')})"
+    minutes = time_plan.get('elapsed_minutes')
+    action = time_plan.get('action_type')
+    time_status_msg.content = f"🕒 [{action}] {minutes if minutes else 'N'}분 경과. ({time_plan.get('reason', '')})"
+    await time_status_msg.update()
 
     recent_story = "\n".join(recent_responses[-RECENT_STORY_TURNS:])
 
@@ -179,7 +192,7 @@ async def on_message(message: cl.Message):
         fixed_prompt, genre_prompt, dynamic_prompt, scene_types = \
             await asyncio.to_thread(
                 run_manager,
-                user_input, PC_ID, NPC_ID, recent_story
+                user_input=user_input, pc_id=PC_ID, npc_id=NPC_ID, recent_story=recent_story, world_id=os.getenv("WORLD_ID")
             )
         step.output = f"씬 타입: `{scene_types}`"
 
@@ -192,12 +205,21 @@ async def on_message(message: cl.Message):
     if genre_prompt:
         _system.append({"type": "text", "text": genre_prompt})
 
-    full_response = ""
+    raw_response = ""
 
-    # 생성 중 감성 메시지 스텝 (스트리밍이 되기 전 딜레이 동안 보여줌)
+    gen_status_msg = cl.Message(
+        content=random.choice(GENERATING_MSGS).format(char=NPC_NAME_KOR),
+        author="System"
+    )
+    await gen_status_msg.send()
+
+    await response_msg.send()
+
+    # <thinking> 태그 처리
     async with cl.Step(name="사고 과정", show_input=False) as gen_step:
         gen_step.output = random.choice(GENERATING_MSGS).format(char=NPC_NAME_KOR)
 
+        # 1. 모델의 전체 응답을 먼저 받습니다 (UI 스트리밍 없이).
         async with _async_client.messages.stream(
                 model=_model,
                 max_tokens=4096,
@@ -209,21 +231,32 @@ async def on_message(message: cl.Message):
                 ],
         ) as stream:
             async for text_chunk in stream.text_stream:
-                full_response += text_chunk
-                await response_msg.stream_token(text_chunk)
+                raw_response += text_chunk
 
-        gen_step.output = f"대답이 완성되었습니다."
+        # 2. <thinking> 블록을 추출하고, 대화 내용에서 제거합니다.
+        thinking_content_match = re.search(r"<thinking>(.*?)</thinking>", raw_response, re.DOTALL)
 
-    await response_msg.update()
+        if thinking_content_match:
+            thinking_content = thinking_content_match.group(1).strip()
+            # 사고 과정을 Step 내부에 표시
+            gen_step.output = f"```thought\n{thinking_content}\n```"
+        else:
+            gen_step.output = "사고 과정이 생략되었습니다."
 
-    # <thinking> 블록 제거
-    full_response = re.sub(
-        r'<thinking>.*?</thinking>\s*',
-        '',
-        full_response,
-        flags=re.DOTALL,
-    ).strip()
-    response_msg.content = full_response
+        # <thinking> 태그를 제거한 순수 응답 텍스트
+        full_response = re.sub(
+            r'<thinking>.*?</thinking>\s*',
+            '',
+            raw_response,
+            flags=re.DOTALL
+        ).strip()
+
+        # 3. 정리된 텍스트를 사용자에게 "타이핑하듯이" 스트리밍합니다.
+        for token in full_response:
+            await response_msg.stream_token(token)
+            # 실제 스트리밍처럼 보이게 약간의 딜레이를 줍니다.
+            await asyncio.sleep(0.005)
+
     await response_msg.update()
 
     # ── 5. 대화 기록 업데이트 및 지연 확정 대기 ────────────────
@@ -262,5 +295,3 @@ async def on_chat_end():
 
         # UI가 이미 끊어졌으므로 백그라운드 태스크로 즉시 실행합니다.
         asyncio.create_task(process_actor_response(prev_response, NPC_ID, PC_ID))
-
-        # TODO: TimeManager 등도 필요하다면 여기서 백그라운드 처리.
