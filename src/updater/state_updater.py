@@ -18,57 +18,15 @@ Actor 응답을 받은 뒤 비동기로 실행되는 단순 상태 업데이터.
 """
 
 import asyncio
-from neo4j import AsyncGraphDatabase
-from dotenv import load_dotenv
-from pathlib import Path
-import os
 
+from src.utils.db_utils import update_dynamic_state, update_relationship_affinity
 from src.updater.expression_classifier import classify_and_extract
-
-load_dotenv(Path(__file__).parent.parent.parent / ".env")
-
-async_driver = AsyncGraphDatabase.driver(
-    os.getenv("NEO4J_URI"),
-    auth=(os.getenv("NEO4J_USERNAME"), os.getenv("NEO4J_PASSWORD"))
-)
 
 # 복합 업데이트가 필요한 필드 조합
 COMPLEX_TRIGGERS = {
     "hospitalized",   # physical_condition = hospitalized
     "affinity",       # 관계 노드 변경 필요
 }
-
-
-# ════════════════════════════════════════════════════════════
-# 단순 DB 업데이트
-# ════════════════════════════════════════════════════════════
-
-async def _update_dynamic_state(char_id: str, updates: dict) -> None:
-    """DynamicState 노드 속성 비동기 업데이트."""
-    if not updates:
-        return
-    set_clause = ", ".join(f"d.{k} = ${k}" for k in updates)
-    async with async_driver.session() as session:
-        await session.run(f"""
-            MATCH (c:Character {{id: $char_id}})-[:HAS_STATE]->(d:DynamicState)
-            SET {set_clause}
-        """, char_id=char_id, **updates)
-    print(f"[StateUpdater] {char_id} → {updates}")
-
-
-async def _update_relationship(char_a: str, char_b: str, affinity_delta: int) -> None:
-    """affinity 변화 → RELATIONSHIP 엣지 업데이트."""
-    async with async_driver.session() as session:
-        await session.run("""
-            MATCH (a:Character {id: $a})-[r:RELATIONSHIP]->(b:Character {id: $b})
-            SET r.affinity = CASE
-                WHEN r.affinity + $delta > 100 THEN 100
-                WHEN r.affinity + $delta < -100 THEN -100
-                ELSE r.affinity + $delta
-            END
-        """, a=char_a, b=char_b, delta=affinity_delta)
-    print(f"[StateUpdater] relationship {char_a}→{char_b} affinity Δ{affinity_delta:+d}")
-
 
 # ════════════════════════════════════════════════════════════
 # 메인 진입점 (비동기)
@@ -109,13 +67,13 @@ async def process_actor_response(
     }
 
     if simple_changes:
-        await _update_dynamic_state(npc_id, simple_changes)
+        await update_dynamic_state(npc_id, simple_changes)
 
     # 4. affinity는 별도 처리 (단순이라도)
     if "affinity" in changes and not needs_complex:
         delta = changes["affinity"]
         if isinstance(delta, (int, float)):
-            await _update_relationship(npc_id, pc_id, int(delta))
+            await update_relationship_affinity(npc_id, pc_id, int(delta))
 
     # 5. 복합 이벤트 위임 (import는 순환 방지를 위해 지연)
     if needs_complex:

@@ -4,15 +4,11 @@ Classifies expressions in Actor output as Literal or Figurative,
 then extracts DynamicState field updates accordingly.
 """
 
-import json
 import os
-import anthropic
-from dotenv import load_dotenv
-from pathlib import Path
 
-load_dotenv(Path(__file__).parent.parent.parent / ".env")
+# 공통 유틸리티 Import
+from src.utils.llm_utils import llm_client, extract_json_from_llm
 
-client = anthropic.Anthropic()
 CLASSIFIER_MODEL = os.getenv("MODEL_STATE_UPDATER", "claude-haiku-4-5-20251001")
 
 SAFE_FIELDS = {
@@ -76,27 +72,14 @@ No explanation, no markdown.
 Roleplay text:
 {actor_response[:1500]}"""
 
-    response = client.messages.create(
+    response = llm_client.messages.create(
         model=CLASSIFIER_MODEL,
         max_tokens=256,
         temperature=0.0,
         messages=[{"role": "user", "content": prompt}],
     )
 
-    raw = response.content[0].text.strip()
-    try:
-        import re as _re
-        start = raw.find('{')
-        end   = raw.rfind('}')
-        if start == -1 or end == -1:
-            raise json.JSONDecodeError("no JSON object found", raw, 0)
-        json_str = _re.sub(r',\s*([}\]])', r'\1', raw[start:end + 1])
-        changes: dict = json.loads(json_str)
-        if not isinstance(changes, dict):
-            changes = {}
-    except json.JSONDecodeError:
-        print(f"[Classifier] parse failed: {raw[:100]}")
-        changes = {}
+    changes = extract_json_from_llm(response.content[0].text)
 
     safe_changes = {}
     for field, value in changes.items():

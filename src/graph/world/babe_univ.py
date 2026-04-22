@@ -10,6 +10,7 @@ class BabeUnivWorld(World):
 # BABE UNIVERSITY & LOCAL ENVIRONMENT
 
 ## Academic Atmosphere
+
 Babe University: prestigious institution. Mechanical Engineering (Sian): intense workload, all-nighters common.
 
 ## Babe Fitness (바베 피트니스)

@@ -1,17 +1,17 @@
-# src/ooc/ooc_parser.py
 """
 OOC (Out of Character) parser.
 Detects *...* markers and extracts world-state changes via LLM.
 """
 
 import re
-import json
 import os
 import anthropic
-from datetime import datetime, timedelta
 from neo4j import GraphDatabase
 from dotenv import load_dotenv
 from pathlib import Path
+
+from src.utils.db_utils import update_dynamic_state, move_location
+from src.utils.llm_utils import extract_json_from_llm, llm_client
 
 load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
@@ -86,8 +86,11 @@ def is_ooc(text: str) -> bool:
     return '*' in stripped
 
 
-def parse_ooc(text: str, npc_id: str) -> dict:
-    response = client.messages.create(
+async def parse_ooc(text: str, npc_id: str) -> dict:
+    """OOC 텍스트를 분석하고 DB에 즉각 반영합니다 (비동기)"""
+
+    # 1. LLM API 호출
+    response = llm_client.messages.create(
         model=OOC_MODEL,
         max_tokens=256,
         temperature=0.0,
@@ -95,72 +98,28 @@ def parse_ooc(text: str, npc_id: str) -> dict:
         messages=[{"role": "user", "content": text}],
     )
 
-    raw = response.content[0].text.strip()
-    try:
-        start = raw.find('{')
-        end = raw.rfind('}')
-        if start == -1 or end == -1:
-            raise json.JSONDecodeError("no JSON object found", raw, 0)
-
-        # trailing comma 제거 (Haiku 습관 방어)
-        json_str = re.sub(r',\s*([}\]])', r'\1', raw[start:end + 1])
-        plan: dict = json.loads(json_str)
-    except json.JSONDecodeError:
-        print(f"[OOC] parse failed: {raw[:100]}")
+    # 2. 공통 유틸리티로 안전하게 JSON 파싱
+    plan = extract_json_from_llm(response.content[0].text)
+    if not plan:
         plan = {"state_changes": {}, "summary": "parse failed"}
 
-    # State changes DB 반영
+    # 3. 상태 변화(DynamicState) DB 반영
     state_changes = plan.get("state_changes", {})
     if state_changes:
-        _update_state(npc_id, state_changes)
+        await update_dynamic_state(npc_id, state_changes)
+
+    # 4. 장소 이동(Location) DB 반영 (기존에 프롬프트엔 있었으나 누락되었던 로직 추가)
+    new_location = plan.get("location_id")
+    if new_location:
+        await move_location(npc_id, new_location)
 
     summary = plan.get("summary", "상태 변경 없음")
 
-    # 상태 변화가 있었을 때만 콘솔에 로깅
-    if state_changes:
+    # 상태나 장소 변화가 있었을 때만 콘솔에 로깅
+    if state_changes or new_location:
         print(f"[OOC / {OOC_MODEL}] {summary}")
 
     return {
         "state_changes": state_changes,
         "summary": summary,
     }
-
-
-# ── DB helpers ────────────────────────────────────────────
-
-def _advance_cycle_day(char_id: str, days: int) -> None:
-    with driver.session() as session:
-        session.run("""
-            MATCH (c:Character {id: $char_id})-[:HAS_STATE]->(d:DynamicState)
-            SET d.cycle_day = ((d.cycle_day + $days - 1) % 28) + 1
-        """, char_id=char_id, days=days)
-
-
-def _move_location(char_id: str, new_loc_id: str) -> None:
-    with driver.session() as session:
-        session.run("""
-            MATCH (c:Character {id: $char_id})-[old:LOCATED_AT]->(prev:Location)
-            DELETE old
-            SET prev.current_chars = [x IN prev.current_chars WHERE x <> $char_id]
-        """, char_id=char_id)
-        session.run("""
-            MATCH (c:Character {id: $char_id})
-            MATCH (next:Location {id: $new_loc_id})
-            CREATE (c)-[:LOCATED_AT]->(next)
-            SET next.current_chars = coalesce(next.current_chars, []) + [$char_id]
-        """, char_id=char_id, new_loc_id=new_loc_id)
-        session.run("""
-            MATCH (c:Character {id: $char_id})-[:HAS_STATE]->(d:DynamicState)
-            SET d.location_id = $new_loc_id
-        """, char_id=char_id, new_loc_id=new_loc_id)
-
-
-def _update_state(char_id: str, updates: dict) -> None:
-    if not updates:
-        return
-    set_clause = ", ".join(f"d.{k} = ${k}" for k in updates)
-    with driver.session() as session:
-        session.run(f"""
-            MATCH (c:Character {{id: $char_id}})-[:HAS_STATE]->(d:DynamicState)
-            SET {set_clause}
-        """, char_id=char_id, **updates)

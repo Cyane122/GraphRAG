@@ -1,13 +1,13 @@
 # src/agents/actor_agent.py
 
 import os
-import anthropic
 from dotenv import load_dotenv
 from pathlib import Path
 
+from src.utils.llm_utils import llm_client
+
 load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
-client      = anthropic.Anthropic()
 ACTOR_MODEL = os.getenv("MODEL_ACTOR", "claude-haiku-4-5-20251001")
 MAX_TOKENS     = int(os.getenv("MAX_TOKEN", 4096))
 TEMPERATURE    = 1.0   # extended thinking 없이 top-p 조절은 temperature=1 권장
@@ -15,6 +15,7 @@ TEMPERATURE    = 1.0   # extended thinking 없이 top-p 조절은 temperature=1 
 
 def run_actor(
     fixed_prompt: str,
+    genre_prompt: str,
     dynamic_prompt: str,
     conversation_history: list[dict] | None = None,
 ) -> str:
@@ -25,6 +26,7 @@ def run_actor(
 
     Args:
         fixed_prompt:          고정 섹션 (operator_policy / rules / world / ...)
+        genre_prompt:          각 상황마다 적용되는 묘사 규정
         dynamic_prompt:        매 턴 동적 섹션 (헤더 + character + context + user_input)
         conversation_history:  이전 대화 [{role, content}, ...] — Chainlit에서 관리
     Returns:
@@ -32,10 +34,12 @@ def run_actor(
     """
 
     # ── 시스템 프롬프트 (캐시 마킹) ───────────────────────
+    system_text = f"{fixed_prompt}\n\n{genre_prompt}"
+
     system = [
         {
             "type": "text",
-            "text": fixed_prompt,
+            "text": system_text,
             "cache_control": {"type": "ephemeral"},   # ← Prompt Cache 핵심
         }
     ]
@@ -49,7 +53,7 @@ def run_actor(
     messages.append({"role": "user", "content": dynamic_prompt})
 
     # ── API 호출 ──────────────────────────────────────────
-    response = client.messages.create(
+    response = llm_client.messages.create(
         model=ACTOR_MODEL,
         max_tokens=MAX_TOKENS,
         temperature=TEMPERATURE,

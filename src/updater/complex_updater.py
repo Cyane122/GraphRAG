@@ -4,21 +4,13 @@ Complex event handler — delegates to LLM for multi-node updates,
 event node creation, and RELATIONSHIP shared_events update.
 """
 
-import json
 import os
-import anthropic
+import json
 from datetime import datetime
-from neo4j import AsyncGraphDatabase
-from dotenv import load_dotenv
-from pathlib import Path
 
-load_dotenv(Path(__file__).parent.parent.parent / ".env")
-
-client       = anthropic.Anthropic()
-async_driver = AsyncGraphDatabase.driver(
-    os.getenv("NEO4J_URI"),
-    auth=(os.getenv("NEO4J_USERNAME"), os.getenv("NEO4J_PASSWORD"))
-)
+# 공통 유틸리티 Import
+from src.utils.llm_utils import llm_client, extract_json_from_llm
+from src.utils.db_utils import async_driver, update_dynamic_state, update_relationship_affinity
 
 COMPLEX_MODEL = os.getenv("MODEL_COMPLEX_UPDATER", "claude-sonnet-4-6")
 
@@ -96,57 +88,17 @@ If creating an event, replace new_event with:
 Roleplay scene:
 {actor_response[:2000]}"""
 
-    response = client.messages.create(
+    response = llm_client.messages.create(
         model=COMPLEX_MODEL,
         max_tokens=1024,
         temperature=0.0,
         messages=[{"role": "user", "content": prompt}],
     )
 
-    raw = response.content[0].text.strip()
-    try:
-        # { ... } 범위만 추출 — 앞뒤 마크다운/설명 텍스트 제거
-        start = raw.find('{')
-        end   = raw.rfind('}')
-        if start == -1 or end == -1:
-            raise json.JSONDecodeError("no JSON object found", raw, 0)
-        json_str = raw[start:end + 1]
-        # trailing comma 제거 (Haiku 습관)
-        import re as _re
-        json_str = _re.sub(r',\s*([}\]])', r'\1', json_str)
-        plan: dict = json.loads(json_str)
-    except json.JSONDecodeError as e:
-        print(f"[ComplexUpdater] parse failed ({e}): {raw[:300]}")
+    plan = extract_json_from_llm(response.content[0].text)
+    if not plan:
         plan = {"dynamic_state": {}, "relationship_delta": None, "new_event": None}
-
     return plan
-
-
-# ════════════════════════════════════════════════════════════
-# DB helpers
-# ════════════════════════════════════════════════════════════
-
-async def _apply_dynamic_state(char_id: str, updates: dict) -> None:
-    if not updates:
-        return
-    set_clause = ", ".join(f"d.{k} = ${k}" for k in updates)
-    async with async_driver.session() as session:
-        await session.run(f"""
-            MATCH (c:Character {{id: $char_id}})-[:HAS_STATE]->(d:DynamicState)
-            SET {set_clause}
-        """, char_id=char_id, **updates)
-
-
-async def _apply_relationship_delta(char_a: str, char_b: str, delta: int) -> None:
-    async with async_driver.session() as session:
-        await session.run("""
-            MATCH (a:Character {id: $a})-[r:RELATIONSHIP]->(b:Character {id: $b})
-            SET r.affinity = CASE
-                WHEN r.affinity + $delta > 100 THEN 100
-                WHEN r.affinity + $delta < -100 THEN -100
-                ELSE r.affinity + $delta
-            END
-        """, a=char_a, b=char_b, delta=delta)
 
 
 async def _create_event(event_data: dict, npc_id: str, pc_id: str) -> None:
@@ -230,7 +182,7 @@ current_status: {current.get('status')}
 
 Return ONLY the new current_status string. No quotes, no JSON, no explanation."""
 
-    response = client.messages.create(
+    response = llm_client.messages.create(
         model=COMPLEX_MODEL,
         max_tokens=200,
         temperature=0.3,
@@ -266,16 +218,15 @@ async def delegate_complex_update(
     print(f"[ComplexUpdater] plan: {json.dumps(plan, ensure_ascii=False)}")
 
     if not event_only:
-        await _apply_dynamic_state(npc_id, plan.get("dynamic_state", {}))
+        await update_dynamic_state(npc_id, plan.get("dynamic_state", {}))
 
         delta = plan.get("relationship_delta")
         if delta is not None:
-            await _apply_relationship_delta(npc_id, pc_id, int(delta))
-            await _apply_relationship_delta(pc_id, npc_id, int(delta))
+            await update_relationship_affinity(npc_id, pc_id, int(delta))
+            await update_relationship_affinity(pc_id, npc_id, int(delta))
 
     # 이벤트 ID의 YYYYMMDD_HHMM 리터럴 → 실제 타임스탬프로 치환
     raw_event = plan.get("new_event")
-    created_event = None
     if raw_event and isinstance(raw_event, dict):
         event_id = raw_event.get("id") or raw_event.get("event_id")
         if event_id:

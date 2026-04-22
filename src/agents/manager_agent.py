@@ -1,27 +1,21 @@
 # src/agents/manager_agent.py
 
 import os
-import re
 from openai import OpenAI
-from neo4j import GraphDatabase
-from dotenv import load_dotenv
-from pathlib import Path
+import asyncio
 from datetime import datetime
 from src.prompt.promptBuilder import PromptBuilder
-import json
 from importlib import import_module
 from src.graph.world.default import World
-
-load_dotenv(Path(__file__).parent.parent.parent / ".env")
+from src.updater.state_updater import process_actor_response
+from src.updater.time_manager import calculate_and_update_time
+from src.utils.db_utils import async_driver
+from src.utils.llm_utils import extract_json_from_llm
+from typing import cast, Any
 
 llm = OpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=os.getenv("OPENROUTER_API_KEY")
-)
-
-driver = GraphDatabase.driver(
-    os.getenv("NEO4J_URI"),
-    auth=(os.getenv("NEO4J_USERNAME"), os.getenv("NEO4J_PASSWORD"))
 )
 
 CLASSIFIER_MODEL    = os.getenv("MODEL_CLASSIFIER",          "google/gemma-3-12b-it:free")
@@ -32,7 +26,7 @@ CLASSIFIER_FALLBACK = os.getenv("MODEL_CLASSIFIER_FALLBACK", "meta-llama/llama-3
 # 1단계: 씬 분류
 # ════════════════════════════════════════════════════════════
 
-def classify_scene(user_input: str, recent_story: str) -> list[str]:
+async def classify_scene(user_input: str, recent_story: str) -> list[str]:
     prompt = f"""You are a scene classifier for a roleplay system.
 Analyze the user input and recent story, return a JSON array of scene types.
 
@@ -53,10 +47,9 @@ User input:
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.0
             )
-            raw   = response.choices[0].message.content.strip()
-            clean = raw.replace("```json", "").replace("```", "").strip()
-            scene_types = json.loads(clean)
-            if not isinstance(scene_types, list):
+            raw   = response.choices[0].message.content
+            scene_types = extract_json_from_llm(raw)  # 리스트가 아니면 빈 딕셔너리가 반환됨
+            if not isinstance(scene_types, list):  # 리스트가 아니면 예외 발생
                 raise ValueError("not a list")
             print(f"[씬 분류 / {model}] {scene_types}")
             return scene_types
@@ -99,15 +92,15 @@ REL_TO_KEY = {
     "HAS_WORKPLACE":   "workplace_profile",
 }
 
-def fetch_character_data(char_id: str, scene_types: list[str]) -> dict:
+async def fetch_character_data(char_id: str, scene_types: list[str]) -> dict:
     needed_rels = set()
     for st in scene_types:
         needed_rels.update(SCENE_NODE_MAP.get(st, []))
 
     result = {}
-    with driver.session() as session:
+    async with async_driver.session() as session:
         # ── 1. 허브 노드(:Character) 자체의 속성(name 등) 가져오기 ──
-        hub_record = session.run("""
+        hub_record = await session.run("""
             MATCH (c:Character {id: $char_id})
             RETURN properties(c) AS props
         """, char_id=char_id).single()
@@ -120,7 +113,7 @@ def fetch_character_data(char_id: str, scene_types: list[str]) -> dict:
 
         # ── 2. 서브 노드 데이터 가져오기 (기존 로직) ──
         for rel_type in needed_rels:
-            records = session.run(f"""
+            records = await session.run(f"""
                 MATCH (c:Character {{id: $char_id}})-[:{rel_type}]->(n)
                 RETURN properties(n) AS props
             """, char_id=char_id)
@@ -131,18 +124,18 @@ def fetch_character_data(char_id: str, scene_types: list[str]) -> dict:
     return result
 
 
-def fetch_relationship_data(char_a: str, char_b: str) -> dict:
-    with driver.session() as session:
-        record = session.run("""
+async def fetch_relationship_data(char_a: str, char_b: str) -> dict:
+    async with async_driver.session() as session:
+        record = await session.run("""
             MATCH (a:Character {id: $a})-[r:RELATIONSHIP]->(b:Character {id: $b})
             RETURN properties(r) AS props
         """, a=char_a, b=char_b).single()
         return record["props"] if record else {}
 
 
-def fetch_recent_events(char_id: str, limit: int = 3) -> list[dict]:
-    with driver.session() as session:
-        records = session.run("""
+async def fetch_recent_events(char_id: str, limit: int = 3) -> list[dict]:
+    async with async_driver.session() as session:
+        records = await session.run("""
             MATCH (c:Character {id: $char_id})-[:INVOLVED_IN]->(e:Event)
             RETURN e.id AS id, e.summary AS summary,
                    e.timestamp AS timestamp, e.impact AS impact
@@ -152,18 +145,18 @@ def fetch_recent_events(char_id: str, limit: int = 3) -> list[dict]:
         return [dict(r) for r in records]
 
 
-def fetch_location(char_id: str) -> str:
-    with driver.session() as session:
-        record = session.run("""
+async def fetch_location(char_id: str) -> str:
+    with async_driver.session() as session:
+        record = await session.run("""
             MATCH (c:Character {id: $char_id})-[:LOCATED_AT]->(l:Location)
             RETURN l.name AS name
         """, char_id=char_id).single()
         return record["name"] if record else "알 수 없는 장소"
 
-def fetch_global_state() -> dict:
+async def fetch_global_state() -> dict:
     """DB의 GlobalState 노드에서 현재 시간, 장소, 날씨를 가져옵니다."""
-    with driver.session() as session:
-        record = session.run("""
+    async with async_driver.session() as session:
+        record = await session.run("""
             MATCH (gs:GlobalState {id: 'singleton'})
             RETURN gs.currentTime AS currentTime, 
                    gs.weather AS weather, 
@@ -188,22 +181,22 @@ def detect_present_npcs(user_input: str, recent_story: str, npc_name_map: dict[s
     return sorted(found)
 
 
-def fetch_npc_profiles(npc_ids: list[str], main_npc_id: str, pc_id: str) -> list[dict]:
+async def fetch_npc_profiles(npc_ids: list[str], main_npc_id: str, pc_id: str) -> list[dict]:
     results = []
-    with driver.session() as session:
+    with async_driver.session() as session:
         for npc_id in npc_ids:
-            name_rec = session.run(
+            name_rec = await session.run(
                 "MATCH (c:Character {id: $id}) RETURN c.name AS name", id=npc_id
             ).single()
             if not name_rec:
                 continue
 
-            profile_rec = session.run("""
+            profile_rec = await session.run("""
                 MATCH (c:Character {id: $id})-[:HAS_PROFILE]->(p)
                 RETURN properties(p) AS props
             """, id=npc_id).single()
 
-            rel_rec = session.run("""
+            rel_rec = await session.run("""
                 MATCH (a:Character {id: $a})-[r:RELATIONSHIP]->(b:Character {id: $b})
                 RETURN properties(r) AS props
             """, a=main_npc_id, b=npc_id).single()
@@ -216,57 +209,11 @@ def fetch_npc_profiles(npc_ids: list[str], main_npc_id: str, pc_id: str) -> list
             })
     return results
 
-
-# ════════════════════════════════════════════════════════════
-# 4단계: 비동기 DB 업데이트
-# ════════════════════════════════════════════════════════════
-
-def update_dynamic_state(char_id: str, updates: dict) -> None:
-    if not updates:
-        return
-    set_clause = ", ".join(f"d.{k} = ${k}" for k in updates)
-    with driver.session() as session:
-        session.run(f"""
-            MATCH (c:Character {{id: $char_id}})-[:HAS_STATE]->(d:DynamicState)
-            SET {set_clause}
-        """, char_id=char_id, **updates)
-    print(f"[DB 업데이트] {char_id} → {updates}")
-
-
-def append_event(event_id: str, summary: str, location_id: str,
-                 impact: str, char_ids: list[str]) -> None:
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-    with driver.session() as session:
-        session.run("""
-            CREATE (:Event {
-                id: $event_id, summary: $summary, timestamp: $timestamp,
-                location_id: $location_id, impact: $impact
-            })
-        """, event_id=event_id, summary=summary,
-             timestamp=timestamp, location_id=location_id, impact=impact)
-
-        for char_id in char_ids:
-            session.run("""
-                MATCH (c:Character {id: $char_id}), (e:Event {id: $event_id})
-                CREATE (c)-[:INVOLVED_IN]->(e)
-            """, char_id=char_id, event_id=event_id)
-
-        if len(char_ids) == 2:
-            session.run("""
-                MATCH (a:Character {id: $a})-[r:RELATIONSHIP]->(b:Character {id: $b})
-                SET r.shared_events = r.shared_events + [$event_id],
-                    r.last_interaction = $timestamp
-            """, a=char_ids[0], b=char_ids[1],
-                 event_id=event_id, timestamp=timestamp)
-
-    print(f"[이벤트 추가] {event_id}")
-
-
 # ════════════════════════════════════════════════════════════
 # 메인 파이프라인
 # ════════════════════════════════════════════════════════════
 
-def run_manager(
+async def run_manager(
     user_input: str,
     pc_id: str,
     npc_id: str,
@@ -276,24 +223,34 @@ def run_manager(
 ) -> tuple[str, str, str, list[str]]:
 
     if previous_ai_response:
-        # TODO: 사용자의 input이 들어왔으므로 input 기반 상태 갱신 구현 필요
-        pass
+        await asyncio.gather(
+            process_actor_response(previous_ai_response, npc_id, pc_id),
+            calculate_and_update_time(user_input, previous_ai_response, pc_id, npc_id)
+        )
 
     world = load_world_instance(world_id)
     world_config = world.get_full_config()
-    global_state = fetch_global_state()
 
-    scene_types = classify_scene(user_input, recent_story)
+    global_state = await fetch_global_state()
+    scene_types = await classify_scene(user_input, recent_story)
 
-    char_data    = fetch_character_data(npc_id, scene_types)
-    user_data    = fetch_character_data(pc_id, scene_types)
-    relationship = fetch_relationship_data(pc_id, npc_id)
-    events       = fetch_recent_events(npc_id, limit=3)
+    db_fetch_tasks = [
+        fetch_character_data(npc_id, scene_types),
+        fetch_character_data(pc_id, scene_types),
+        fetch_relationship_data(pc_id, npc_id),
+        fetch_recent_events(npc_id, limit=3)
+    ]
+
+    db_results: Any = await asyncio.gather(*db_fetch_tasks)
+    char_data, user_data, relationship, events = db_results
     current_dt   = datetime.fromisoformat(global_state["currentTime"])
-    location = global_state.get("currentLocationId", fetch_location(npc_id))
+
+    location_name = await get_location_name_from_id(global_state.get("currentLocationId"))
+    if not location_name:
+        location_name = await fetch_location(npc_id)
 
     present_npc_ids = detect_present_npcs(user_input, recent_story, world.get_npc_name_map())
-    npcs = fetch_npc_profiles(present_npc_ids, npc_id, pc_id) if present_npc_ids else []
+    npcs = await fetch_npc_profiles(present_npc_ids, npc_id, pc_id) if present_npc_ids else []
 
     builder = PromptBuilder(world_config, char_data.get("name"), user_data.get("name"))
 
@@ -307,13 +264,24 @@ def run_manager(
         ],
         recent_story=recent_story,
         user_input=user_input,
-        location=location,
+        location=location_name,
         dt=current_dt,
         npcs=npcs,
     )
 
     return fixed_prompt, genre_prompt, dynamic_prompt, scene_types
 
+async def get_location_name_from_id(location_id: str | None) -> str | None:
+    """주어진 ID로 Location 노드의 이름을 찾습니다."""
+    if not location_id:
+        return None
+    async with async_driver.session() as session:
+        result = await session.run(
+            "MATCH (l:Location {id: $id}) RETURN l.name AS name",
+            id=location_id
+        )
+        record = await result.single()
+        return record["name"] if record else None
 
 if __name__ == "__main__":
     fixed, genre, dynamic, scene_types = run_manager(

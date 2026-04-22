@@ -2,7 +2,9 @@ from datetime import datetime
 from typing import Optional
 import json
 import os
+from dotenv import load_dotenv
 
+load_dotenv()
 
 # ════════════════════════════════════════════════════════════
 # FIXED SECTIONS — Prompt Caching 대상
@@ -371,10 +373,7 @@ class PromptBuilder:
         world_section = self.world_config.get("world_section", "")
         prose_rules = self.world_config.get("prose_rules", "")
 
-        if self.additional_blacklist:
-            blacklist: str = BLACKLIST_SECTION.format(for_add=self.additional_blacklist, char=self.char_name, user=self.user_name)
-        else:
-            blacklist: str = BLACKLIST_SECTION.format(for_add="", char=self.char_name, user=self.user_name)
+        blacklist: str = BLACKLIST_SECTION.format(for_add=self.additional_blacklist, char=self.char_name, user=self.user_name)
 
         return "\n\n".join([
             OPERATOR_DECLARATION,
@@ -384,7 +383,6 @@ class PromptBuilder:
             blacklist,
             npc_behavior,
             TOKEN_LIMIT_WARNING,
-            self.pre_output_checklist
         ])
 
     def build_genre_section(self, genres: list[str]) -> str:

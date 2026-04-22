@@ -38,3 +38,9 @@
 - `ooc_parser`: 더 이상 현재 시간과 장소를 계산하지 않음
 - `promptBuilder.py`, `babe_univ.py`: 이제 세계관과 범용 프롬프트를 완전히 구분함.
 - 이제 `manager_agent.py`가 `run_manager`에서 `world_id`를 변수로 사용함.
+
+## 2026-04-22
+- `complex_updater`, `expression_classifier`, `ooc_parser`, `state_updater`, `time_manager` 리팩토링 및 중복된 기능 삭제
+- `actor_agent`, `manager_agent` 리팩토링
+- `promptBuilder`, `app.py`: 리팩토링 대응 수정
+- `db_utils`, `llm_utils` 추가

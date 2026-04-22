@@ -15,7 +15,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from neo4j import GraphDatabase
 
-from src.updater import time_manager
+from src.updater.time_manager import calculate_and_update_time
 
 # ── 불필요한 로그 억제 ─────────────────────────────────────
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -74,9 +74,6 @@ driver = GraphDatabase.driver(
     os.getenv("NEO4J_URI"),
     auth=(os.getenv("NEO4J_USERNAME"), os.getenv("NEO4J_PASSWORD"))
 )
-
-time_manager = time_manager.TimeManager(driver=driver)
-
 
 # ── OOC physical 변화 → 이벤트 생성 헬퍼 ──────────────
 async def _trigger_ooc_event(ooc_text: str, npc_id: str, pc_id: str, changes: dict) -> None:
@@ -173,7 +170,7 @@ async def on_message(message: cl.Message):
     await time_status_msg.update()
 
     time_plan = await asyncio.to_thread(
-        time_manager.calculate_and_update_time,
+        calculate_and_update_time,
         user_input,
         context_snippet,
         PC_ID,
