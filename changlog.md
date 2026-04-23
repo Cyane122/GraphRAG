@@ -52,3 +52,4 @@
 - `manager_agent.py`: 오타 수정
 - `app.py`: `response_msg` 이중 호출 문제 수정. 이제 `run_manager.py`의 지연 커밋 로직과 중복되지 않으며, 하드코딩 제거됨
 - `llm_utils.py`: `extract_json_from_llm`은 이제 JSON 배열도 파싱할 수 있음
+- `promptBuilder.py`: HOT-COLD Channel 프롬프트 추가

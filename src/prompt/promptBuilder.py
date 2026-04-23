@@ -119,6 +119,17 @@ Extended 4 (for high-density scenes):
 - Light → give it weight (dawn=thin). Smell → anchor in time (fresh coffee).
 - Weave 2-3 senses naturally into every scene entry.
 
+## Hot/Cold - Sensory Axis Rotation
+Hot = contraction/acceleration axis (clench, stiffen, bite, grip, lock, surge...)
+Cold = diffusion/deceleration axis (tremble, loosen, exhale, drip, slacken, drain...)
+- Lv 1–4: 1 physical channel. No Hot/Cold tag required.
+- Lv 5–7: 2 physical channels (different body parts). Hot OR Cold 1+ required. Sustain 2+ turns.
+- Lv 8–10: 2 physical channels + 1 environment channel. 1 turn only.
+  Next turn MUST drop to Lv 5 or below unless {user} input actively sustains intensity.
+- Same sensory axis within 2 turns: FORBIDDEN.
+- Hot + Cold coexistence: ALLOWED. Contradiction = subtext, not error.
+  e.g. jaw clenched (Hot) + fingertips going cold (Cold) = suppressed panic
+
 ## Compound Emotion
 Meaningful emotion is always compound. NEVER single-note.
 BAD: "그는 화가 났다." / GOOD: "주먹이 떨렸다 — 분노인지, 이렇게까지 화가 난 자신이 두려운 건지 알 수 없었다."
@@ -343,18 +354,20 @@ Your checklist inside <thinking> MUST be brief and to the point. Example:
 1. PUPPETRY: OK. {user}'s perspective is not included.
 2. ENDING: OK. Plan to cut after {char}'s key statement.
 3. SHOW/TELL: OK. Emotions shown via physical action (clenching fist).
-4. TONE: OK. User is playful, response will be light comedic.
-5. PATTERNS: OK. No banned structures detected.
-6. VOLUME: Target 3k+. Will expand on the dinner scene details.
+4. EMOTION: Lv6. Hot->jaw looses. Cold->breath releases fastly. Different axis from last turn.
+5. TONE: OK. User is playful, response will be light comedic.
+6. PATTERNS: OK. No banned structures detected.
+7. VOLUME: Target 3k+. Will expand on the dinner scene details.
 </thinking>
 
 Your checklist items:
 1. Anti-Puppetry: Am I describing {user}'s inner thoughts/feelings?
 2. Ending Logic: Where is the highest tension point to cut? Am I avoiding questions/hooks in the last line?
 3. Show, Don't Tell: Are emotions conveyed through physical channels, not named directly?
-4. Tone Match: Is the output tone locked to the user's input tone?
-5. Banned Patterns: Am I avoiding common AI pitfalls (show-then-interpret, tone gloss, etc.)?
-6. Volume: Is the planned output substantial enough? Which parts can be expanded if needed?
+4. [Emo] Plan: What is {char}'s current emotion Lv(1~10)? Which Hot/Cold axis will I use?
+5. Tone Match: Is the output tone locked to the user's input tone?
+6. Banned Patterns: Am I avoiding common AI pitfalls (show-then-interpret, tone gloss, etc.)?
+7. Volume: Is the planned output substantial enough? Which parts can be expanded if needed?
 </cot_instruction>"""
 
 class PromptBuilder:
