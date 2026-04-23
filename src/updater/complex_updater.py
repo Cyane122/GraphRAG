@@ -10,7 +10,7 @@ from datetime import datetime
 
 # 공통 유틸리티 Import
 from src.utils.llm_utils import llm_client, extract_json_from_llm
-from src.utils.db_utils import async_driver, update_dynamic_state, update_relationship_affinity
+from src.utils.db_utils import async_driver, update_dynamic_state, update_relationship_affinity, get_in_universe_time
 
 COMPLEX_MODEL = os.getenv("MODEL_COMPLEX_UPDATER", "claude-sonnet-4-6")
 
@@ -104,7 +104,7 @@ Roleplay scene:
 async def _create_event(event_data: dict, npc_id: str, pc_id: str) -> None:
     if not event_data or not event_data.get("id"):
         return
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+    timestamp = get_in_universe_time()
     async with async_driver.session() as session:
         await session.run("""
             CREATE (:Event {
@@ -230,7 +230,7 @@ async def delegate_complex_update(
     if raw_event and isinstance(raw_event, dict):
         event_id = raw_event.get("id") or raw_event.get("event_id")
         if event_id:
-            ts = datetime.now().strftime("%Y%m%d_%H%M")
+            ts = get_in_universe_time()
             event_id = event_id.replace("YYYYMMDD_HHMM", ts)
             created_event = {
                 "id":         event_id,

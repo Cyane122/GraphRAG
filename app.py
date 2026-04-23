@@ -26,7 +26,7 @@ logging.getLogger("neo4j.notifications").setLevel(logging.WARNING)
 import anthropic
 import chainlit as cl
 
-from src.agents.manager_agent import run_manager
+from src.agents.manager_agent import run_manager, load_world_instance
 from src.ooc.ooc_parser import is_ooc, parse_ooc
 from src.updater.state_updater import process_actor_response
 from src.updater.complex_updater import delegate_complex_update
@@ -70,6 +70,11 @@ RECENT_STORY_TURNS = 3  # recent_story에 포함할 직전 응답 수
 _async_client = anthropic.AsyncAnthropic()
 load_dotenv()
 
+WORLD_ID = os.getenv("WORLD_ID", "babe_univ")
+world = load_world_instance(WORLD_ID)
+world_config = world.get_full_config()
+start_time = world_config.get("start_time")
+
 driver = GraphDatabase.driver(
     os.getenv("NEO4J_URI"),
     auth=(os.getenv("NEO4J_USERNAME"), os.getenv("NEO4J_PASSWORD"))
@@ -96,7 +101,6 @@ async def _trigger_ooc_event(ooc_text: str, npc_id: str, pc_id: str, changes: di
 @cl.on_chat_start
 async def on_chat_start():
     cl.user_session.set("conversation_history", [])
-    cl.user_session.set("current_dt", datetime.now())
     cl.user_session.set("recent_responses", [])
     cl.user_session.set("pending_commit", None)  # 이전 턴 지연 확정용 컨테이너
 
@@ -174,7 +178,8 @@ async def on_message(message: cl.Message):
         user_input,
         context_snippet,
         PC_ID,
-        NPC_ID
+        NPC_ID,
+        start_time
     )
 
     minutes = time_plan.get('elapsed_minutes')

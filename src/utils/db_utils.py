@@ -1,5 +1,7 @@
 # src/utils/db_utils.py
 import os
+from datetime import datetime
+
 from neo4j import AsyncGraphDatabase
 from dotenv import load_dotenv
 from pathlib import Path
@@ -66,3 +68,12 @@ async def advance_cycle_day(char_id: str, days: int) -> None:
             WHERE d.cycle_day IS NOT NULL
             SET d.cycle_day = ((d.cycle_day + $days - 1) % 28) + 1
         """, char_id=char_id, days=days)
+
+async def get_in_universe_time() -> str:
+    async with async_driver.session() as session:
+        rec = await session.run("MATCH (gs:GlobalState {id: 'singleton'}) RETURN gs.currentTime AS ct")
+        row = await rec.single()
+        if row and row["ct"]:
+            dt_obj = datetime.fromisoformat(row["ct"])
+            return dt_obj.strftime("%Y%m%d_%H%M")
+    return "20240101_0000"

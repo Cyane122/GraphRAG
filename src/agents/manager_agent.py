@@ -153,7 +153,7 @@ async def fetch_location(char_id: str) -> str:
         """, char_id=char_id).single()
         return record["name"] if record else "알 수 없는 장소"
 
-async def fetch_global_state() -> dict:
+async def fetch_global_state(fallback_dt: datetime) -> dict:
     """DB의 GlobalState 노드에서 현재 시간, 장소, 날씨를 가져옵니다."""
     async with async_driver.session() as session:
         record = await session.run("""
@@ -162,10 +162,11 @@ async def fetch_global_state() -> dict:
                    gs.weather AS weather, 
                    gs.currentLocationId AS currentLocationId
         """).single()
-        if record:
+        if record and record.get("currentTime"):
             return dict(record)
+
         return {
-            "currentTime": datetime.now().isoformat(),
+            "currentTime": fallback_dt.isoformat(),
             "weather": "Clear",
             "currentLocationId": "알 수 없는 장소"
         }
@@ -230,8 +231,9 @@ async def run_manager(
 
     world = load_world_instance(world_id)
     world_config = world.get_full_config()
+    start_dt = world_config.get("start_time")
 
-    global_state = await fetch_global_state()
+    global_state = await fetch_global_state(start_dt)
     scene_types = await classify_scene(user_input, recent_story)
 
     db_fetch_tasks = [
@@ -243,7 +245,8 @@ async def run_manager(
 
     db_results: Any = await asyncio.gather(*db_fetch_tasks)
     char_data, user_data, relationship, events = db_results
-    current_dt   = datetime.fromisoformat(global_state["currentTime"])
+
+    current_dt = datetime.fromisoformat(global_state.get("current_time"))
 
     location_name = await get_location_name_from_id(global_state.get("currentLocationId"))
     if not location_name:
@@ -265,8 +268,8 @@ async def run_manager(
         recent_story=recent_story,
         user_input=user_input,
         location=location_name,
-        dt=current_dt,
         npcs=npcs,
+        dt=current_dt,
     )
 
     return fixed_prompt, genre_prompt, dynamic_prompt, scene_types

@@ -489,10 +489,11 @@ class PromptBuilder:
         )
         return f"<recent_events>\n{lines}\n</recent_events>"
 
-    @staticmethod
-    def build_header(location: str, dt: Optional[datetime] = None) -> str:
+    def build_header(self, location: str, dt: Optional[datetime] = None) -> str:
+
         if dt is None:
-            dt = datetime.now()
+            dt = self.world_config.get("start_time")
+
         weekdays = ["월", "화", "수", "목", "금", "토", "일"]
         return (
             f"**{dt.year}년 {dt.month}월 {dt.day}일 {weekdays[dt.weekday()]}요일 "

@@ -1,9 +1,16 @@
+from datetime import datetime
+
 from neo4j import GraphDatabase
 
 from .default import World
 
+
+
 class BabeUnivWorld(World):
     WORLD_ID = "babe_univ"
+
+    def get_default_time(self) -> datetime:
+        return datetime(2024, 3, 8, 8, 0)
 
     def get_world_section(self) -> str:
         return """<world>
@@ -74,6 +81,7 @@ Show ONLY through physical interaction with Sian. NEVER meta-explain ("PMS라서
     def get_full_config(self) -> dict:
         res = super().get_full_config()
         res["additional_blacklist"] = self.get_blacklist()
+        res["start_time"] = self.get_default_time()
 
         return res
 
@@ -214,7 +222,7 @@ Show ONLY through physical interaction with Sian. NEVER meta-explain ("PMS라서
             session.run("""
                         CREATE (:Location {
                             id:           "babe_villa_205",
-                            name:         "Babe Villa Room 205",
+                            name:         "바베빌라 205호",
                             description:  "Shared apartment of Sian and Eun-seo. Their private sanctuary.",
                             atmosphere:   "cozy+intimate+relaxed",
                             current_chars: ["eun_seo", "sian"]
@@ -222,8 +230,8 @@ Show ONLY through physical interaction with Sian. NEVER meta-explain ("PMS라서
                     """)
             session.run("""
                         CREATE (:Location {
-                            id:           "babe_univ_gym",
-                            name:         "Babe University Gym",
+                            id:           "babe_fitness",
+                            name:         "바베 피트니스",
                             description:  "Gym where Eun-seo works as a trainer. Shift: Mon/Fri 16:00-23:00.",
                             atmosphere:   "tense+sweaty+energetic"
                         })
@@ -733,9 +741,11 @@ Show ONLY through physical interaction with Sian. NEVER meta-explain ("PMS라서
 
             print("✅ 헬스장 동료 노드 생성 완료 (4명)")
 
-            session.run("""
-                MATCH (gs: GlobalState {id: 'singleton'})
+            session.run(f"""
+                MERGE (gs: GlobalState {{id: 'singleton'}})
                 SET gs.currentLocationId = 'babe_villa_205'
+                    gs.currentTime = '{self.get_default_time().isoformat()}'
+                    gs.weather = 'Clear'
             """)
 
 world_instance = BabeUnivWorld()

@@ -44,3 +44,7 @@
 - `actor_agent`, `manager_agent` 리팩토링
 - `promptBuilder`, `app.py`: 리팩토링 대응 수정
 - `db_utils`, `llm_utils` 추가
+
+## 2026-04-23
+- 모든 `datetime.now()`를 별도 세계관별 `start_time` 변수로 전환함
+  - `app.py`의 로깅용 변수 하나는 제외함

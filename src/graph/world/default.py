@@ -7,6 +7,9 @@ from neo4j import GraphDatabase
 class World:
     WORLD_ID = "default"
 
+    def get_default_time(self) -> datetime:
+        return datetime(2024, 3, 8, 8, 0)
+
     def get_world_section(self) -> str:
         """기본 세계관 설명."""
         return """<world>
