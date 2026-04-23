@@ -12,6 +12,18 @@ class BabeUnivWorld(World):
     def get_default_time(self) -> datetime:
         return datetime(2024, 3, 8, 8, 0)
 
+    def get_pc_id(self) -> str:
+        return "sian"
+
+    def get_npc_id(self) -> str:
+        return "eun_seo"
+
+    def npc_name_kor(self) -> str:
+        return "은서"
+
+    def get_default_location_id(self) -> str:
+        return "babe_villa_205"
+
     def get_world_section(self) -> str:
         return """<world>
 # BABE UNIVERSITY & LOCAL ENVIRONMENT

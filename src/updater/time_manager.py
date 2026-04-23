@@ -8,22 +8,22 @@ from src.utils.db_utils import async_driver, move_location, advance_cycle_day
 TIME_MODEL = os.getenv("MODEL_STATE_UPDATER", "claude-haiku-4-5-20251001")
 
 
-async def _get_current_global_state(fallback_dt: str) -> dict:
+async def _get_current_global_state(fallback_dt: str, default_location_id: str) -> dict:
     """DB에서 현재 전역 상태를 동기적으로 가져옵니다."""
     async with async_driver.session() as session:
         result = await session.run("""
             MATCH (gs:GlobalState {id: 'singleton'})
             RETURN gs.currentTime AS currentTime, gs.weather AS weather, gs.currentLocationId AS currentLocationId
-        """).single()
+        """)
         record = await result.single()
 
-        if result and result.get("currentTime"):
-            return dict(result)
+        if record and record.get("currentTime"):
+            return dict(record)
 
-        return dict(record) if record else {
+        return {
             "currentTime": fallback_dt,
             "weather": "Clear",
-            "currentLocationId": "babe_villa_205"
+            "currentLocationId": default_location_id
         }
 
 async def _get_allowed_locations() -> str:
@@ -35,11 +35,11 @@ async def _get_allowed_locations() -> str:
         return "\n".join(locations) if locations else "- No registered locations."
 
 
-async def calculate_and_update_time(user_input: str, previous_context: str, pc_id: str, npc_id: str, fallback_dt: datetime) -> dict:
+async def calculate_and_update_time(user_input: str, previous_context: str, pc_id: str, npc_id: str, fallback_dt: datetime, default_location_id: str) -> dict:
     """
     유저 입력과 이전 문맥을 분석하여 흐른 시간을 계산하고 DB를 업데이트합니다.
     """
-    current_state = await _get_current_global_state(fallback_dt=fallback_dt.isoformat())
+    current_state = await _get_current_global_state(fallback_dt=fallback_dt.isoformat(), default_location_id=default_location_id)
     current_time_iso = current_state["currentTime"]
     current_time_obj = datetime.fromisoformat(current_time_iso)
 

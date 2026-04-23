@@ -1,9 +1,5 @@
 # TODO-LIST
 
-## [HOTFIX] 출력 잘림 현상 발생
-- CoT 추가로 인해 출력량이 늘어나면서, `max_tokens` 한도에 걸린 것으로 보임.
-- `max_tokens`를 늘리거나, 추론을 briefly하게 하라는 조건(`[CRITICAL: Keep your <thinking> under N words and ALWAYS complete the final sentence]`)을 걸면 좋을 것 같음.
-
 ## TODO - 1순위: 아키텍처 확장 및 리팩토링
 1. 대화 내용 저장 기능
    - 지금까지의 대화 내용을 전부 참조하진 않더라도, 유저가 올라가서 볼 수 있도록 모든 대화 내용을 별도 파일로 저장.

@@ -7,11 +7,9 @@ from datetime import datetime
 from src.prompt.promptBuilder import PromptBuilder
 from importlib import import_module
 from src.graph.world.default import World
-from src.updater.state_updater import process_actor_response
-from src.updater.time_manager import calculate_and_update_time
 from src.utils.db_utils import async_driver
 from src.utils.llm_utils import extract_json_from_llm
-from typing import cast, Any
+from typing import Any
 
 llm = OpenAI(
     base_url="https://openrouter.ai/api/v1",
@@ -146,7 +144,7 @@ async def fetch_recent_events(char_id: str, limit: int = 3) -> list[dict]:
 
 
 async def fetch_location(char_id: str) -> str:
-    with async_driver.session() as session:
+    async with async_driver.session() as session:
         record = await session.run("""
             MATCH (c:Character {id: $char_id})-[:LOCATED_AT]->(l:Location)
             RETURN l.name AS name
@@ -184,7 +182,7 @@ def detect_present_npcs(user_input: str, recent_story: str, npc_name_map: dict[s
 
 async def fetch_npc_profiles(npc_ids: list[str], main_npc_id: str, pc_id: str) -> list[dict]:
     results = []
-    with async_driver.session() as session:
+    async with async_driver.session() as session:
         for npc_id in npc_ids:
             name_rec = await session.run(
                 "MATCH (c:Character {id: $id}) RETURN c.name AS name", id=npc_id
@@ -220,14 +218,7 @@ async def run_manager(
     npc_id: str,
     recent_story: str = "",
     world_id: str = None,
-    previous_ai_response: str = None,
 ) -> tuple[str, str, str, list[str]]:
-
-    if previous_ai_response:
-        await asyncio.gather(
-            process_actor_response(previous_ai_response, npc_id, pc_id),
-            calculate_and_update_time(user_input, previous_ai_response, pc_id, npc_id)
-        )
 
     world = load_world_instance(world_id)
     world_config = world.get_full_config()
@@ -246,11 +237,13 @@ async def run_manager(
     db_results: Any = await asyncio.gather(*db_fetch_tasks)
     char_data, user_data, relationship, events = db_results
 
-    current_dt = datetime.fromisoformat(global_state.get("current_time"))
+    current_dt = datetime.fromisoformat(global_state.get("currentTime"))
 
-    location_name = await get_location_name_from_id(global_state.get("currentLocationId"))
-    if not location_name:
-        location_name = await fetch_location(npc_id)
+    loc_id = global_state.get("currentLocationId")
+    location_name = await get_location_name_from_id(loc_id) or await fetch_location(npc_id)
+
+    if "dynamic_state" in char_data:
+        char_data["dynamic_state"]["location_id"] = location_name
 
     present_npc_ids = detect_present_npcs(user_input, recent_story, world.get_npc_name_map())
     npcs = await fetch_npc_profiles(present_npc_ids, npc_id, pc_id) if present_npc_ids else []

@@ -8,7 +8,7 @@ class World:
     WORLD_ID = "default"
 
     def get_default_time(self) -> datetime:
-        return datetime(2024, 3, 8, 8, 0)
+        return datetime.now() # default = 현재 시간.
 
     def get_world_section(self) -> str:
         """기본 세계관 설명."""
@@ -43,15 +43,30 @@ class World:
             "world_section": self.get_world_section(),
             "specific_prose_rules": self.get_specific_prose_rules(),
             "few_shot_examples": self.get_few_shot_examples(),
-            "additional_blacklist": self.get_blacklist()
+            "additional_blacklist": self.get_blacklist(),
+            "start_time": self.get_default_time(),
+            "pc_id": self.get_pc_id(),
+            "npc_id": self.get_npc_id(),
+            "npc_name_kor": self.npc_name_kor(),
+            "default_location_id": self.get_default_location_id()
         }
+
+    def get_default_location_id(self) -> str:
+        return "default_location"
 
     def get_npc_name_map(self) -> dict[str, str]:
         return {
             "이름": "Name"
         }
 
+    def get_pc_id(self) -> str:
+        return "player"
 
+    def get_npc_id(self) -> str:
+        return "npc"
+
+    def npc_name_kor(self) -> str:
+        return "엔피씨"
 
     def build_schema(self, driver: GraphDatabase.driver):
         """

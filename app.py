@@ -59,10 +59,6 @@ GENERATING_MSGS = [
 ]
 
 # ── 설정 ──────────────────────────────────────────────────
-PC_ID = "sian"
-NPC_ID = "eun_seo"
-NPC_NAME_KOR = "은서"  # 문구 출력을 위한 한글 이름 매핑
-
 MAX_HISTORY_TURNS = 10  # 대화 기록 최대 보존 턴 수
 RECENT_STORY_TURNS = 3  # recent_story에 포함할 직전 응답 수
 
@@ -73,7 +69,11 @@ load_dotenv()
 WORLD_ID = os.getenv("WORLD_ID", "babe_univ")
 world = load_world_instance(WORLD_ID)
 world_config = world.get_full_config()
+
 start_time = world_config.get("start_time")
+PC_ID = world_config.get("pc_id")
+NPC_ID = world_config.get("npc_id")
+NPC_NAME_KOR = world_config.get("npc_name_kor")
 
 driver = GraphDatabase.driver(
     os.getenv("NEO4J_URI"),
@@ -158,7 +158,7 @@ async def on_message(message: cl.Message):
         context_snippet = history[-1].get("context", "")
 
     if is_ooc(user_input):
-        result = await asyncio.to_thread(parse_ooc, user_input, NPC_ID)
+        result = await asyncio.to_thread(parse_ooc, user_input, NPC_ID, NPC_NAME_KOR)
         await cl.Message(content=f"⚙️ OOC: `{result['summary']}`").send()
 
         ooc_changes = result.get("state_changes", {})
@@ -179,7 +179,8 @@ async def on_message(message: cl.Message):
         context_snippet,
         PC_ID,
         NPC_ID,
-        start_time
+        start_time,
+        world_config.get("default_location_id")
     )
 
     minutes = time_plan.get('elapsed_minutes')
@@ -192,15 +193,11 @@ async def on_message(message: cl.Message):
     # ── 3. Manager 파이프라인 (씬 분류) ──────────────────────
     async with cl.Step(name="데이터 추출", show_input=False) as step:
         fixed_prompt, genre_prompt, dynamic_prompt, scene_types = \
-            await asyncio.to_thread(
-                run_manager,
-                user_input=user_input, pc_id=PC_ID, npc_id=NPC_ID, recent_story=recent_story, world_id=os.getenv("WORLD_ID")
-            )
+            await run_manager(user_input=user_input, pc_id=PC_ID, npc_id=NPC_ID, recent_story=recent_story, world_id=os.getenv("WORLD_ID"))
         step.output = f"씬 타입: `{scene_types}`"
 
     # ── 4. Actor 응답 생성 (스트리밍 및 UX 연동) ────────────
     response_msg = cl.Message(content="")
-    await response_msg.send()
 
     _model = os.getenv("MODEL_ACTOR", "claude-haiku-4-5-20251001")
     _system = [{"type": "text", "text": fixed_prompt, "cache_control": {"type": "ephemeral"}}]
@@ -223,14 +220,14 @@ async def on_message(message: cl.Message):
 
         # 1. 모델의 전체 응답을 먼저 받습니다 (UI 스트리밍 없이).
         async with _async_client.messages.stream(
-                model=_model,
-                max_tokens=4096,
-                temperature=1.0,
-                system=_system,
-                messages=[
-                    *history,
-                    {"role": "user", "content": dynamic_prompt},
-                ],
+            model=_model,
+            max_tokens=4096,
+            temperature=1.0,
+            system=_system,
+            messages=[
+                *history,
+                {"role": "user", "content": dynamic_prompt},
+            ],
         ) as stream:
             async for text_chunk in stream.text_stream:
                 raw_response += text_chunk

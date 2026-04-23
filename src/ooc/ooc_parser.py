@@ -5,30 +5,17 @@ Detects *...* markers and extracts world-state changes via LLM.
 
 import re
 import os
-import anthropic
-from neo4j import GraphDatabase
 from dotenv import load_dotenv
 from pathlib import Path
 
-from src.utils.db_utils import update_dynamic_state, move_location
+from src.utils.db_utils import update_dynamic_state, move_location, async_driver
 from src.utils.llm_utils import extract_json_from_llm, llm_client
 
 load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
-client = anthropic.Anthropic()
 OOC_MODEL = os.getenv("MODEL_STATE_UPDATER", "claude-haiku-4-5-20251001")
 
-driver = GraphDatabase.driver(
-    os.getenv("NEO4J_URI"),
-    auth=(os.getenv("NEO4J_USERNAME"), os.getenv("NEO4J_PASSWORD"))
-)
-
 _BOLD_RE = re.compile(r'\*\*.*?\*\*', re.DOTALL)
-
-LOCATIONS = {
-    "babe_villa_205": "바베빌라 205호 (은서+시안의 집, 방, 주방, 욕실 포함)",
-    "babe_univ_gym":  "바베대학교 헬스장 (은서 근무지, 월/금 16:00-23:00)",
-}
 
 _SYSTEM_PROMPT = """\
 You are a state extractor for a Korean roleplay system.
@@ -36,7 +23,7 @@ The player writes scene directions inside *asterisks*.
 Extract world-state changes from the OOC text.
 
 ## Available Location IDs
-LOCATIONS_PLACEHOLDER
+{locations_str}
 
 ## Output — return ONLY this JSON, no explanation, no markdown
 {
@@ -71,11 +58,11 @@ state_changes — DynamicState fields to update
 
   Examples:
   "*잘 자네.*" → no state change
-  "*은서는 좀 화난 듯하다.*" → {"mood": "angry"}
-  "*은서는 허리를 삐끗했다.*" → {"physical_condition": "injured", "injury_detail": "허리 염좌"}
-  "*은서가 발목을 다쳤다.*" → {"physical_condition": "injured", "injury_detail": "발목 부상"}
-  "*은서는 어젯밤 무거운 걸 옮기다가 허리를 삐끗했다.*" → {"physical_condition": "injured", "injury_detail": "허리 염좌"}
-  "*은서가 열이 난다.*" → {"physical_condition": "ill"}
+  "*{npc_name}는 좀 화난 듯하다.*" → {"mood": "angry"}
+  "*{npc_name}는 허리를 삐끗했다.*" → {"physical_condition": "injured", "injury_detail": "허리 염좌"}
+  "*{npc_name}가 발목을 다쳤다.*" → {"physical_condition": "injured", "injury_detail": "발목 부상"}
+  "*{npc_name}는 어젯밤 무거운 걸 옮기다가 허리를 삐끗했다.*" → {"physical_condition": "injured", "injury_detail": "허리 염좌"}
+  "*{npc_name}가 열이 난다.*" → {"physical_condition": "ill"}
 
 summary — one-line Korean description of what changed. "변경 없음" if nothing changed.
 """
@@ -85,16 +72,25 @@ def is_ooc(text: str) -> bool:
     stripped = _BOLD_RE.sub('', text)
     return '*' in stripped
 
+async def _get_allowed_locations() -> str:
+    async with async_driver.session() as session:
+        result = await session.run("MATCH (l:Location) RETURN l.id AS id, l.name AS name")
+        records = await result.data()
+        locations = [f'- "{rec["id"]}" ({rec["name"]})' for rec in records]
+        return "\n".join(locations) if locations else "- No registered locations."
 
-async def parse_ooc(text: str, npc_id: str) -> dict:
+
+async def parse_ooc(text: str, npc_id: str, npc_name: str) -> dict:
     """OOC 텍스트를 분석하고 DB에 즉각 반영합니다 (비동기)"""
 
+    locations = await _get_allowed_locations()
+    system_prompt = _SYSTEM_PROMPT.format(locations_str=locations, npc_name=npc_name)
     # 1. LLM API 호출
     response = llm_client.messages.create(
         model=OOC_MODEL,
         max_tokens=256,
         temperature=0.0,
-        system=_SYSTEM_PROMPT,
+        system=system_prompt,
         messages=[{"role": "user", "content": text}],
     )
 

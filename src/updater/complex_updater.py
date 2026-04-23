@@ -58,13 +58,13 @@ Initial changes detected: {json.dumps(initial_changes, ensure_ascii=False)}
   Examples: meal / convenience store / short chat / routine day / follow-up visit when injury already recorded
 
 ## Calibration
-CREATE (9): 은서 hospitalized after car accident
+CREATE (9): {npc_id} hospitalized after car accident
 CREATE (8): Genuine reconciliation after long emotional burnout
-CREATE (5): 은서 visits orthopedic clinic for first time due to back injury
+CREATE (5): {npc_id} visits orthopedic clinic for first time due to back injury
 CREATE (4): Minor argument leads to a cold war between them
-CREATE (3): First time meeting 강지희
+CREATE (3): First time meeting {npc_id}
 NO EVENT: They had dinner together
-NO EVENT: 은서 got annoyed but recovered quickly
+NO EVENT: {npc_id} got annoyed but recovered quickly
 NO EVENT: Follow-up clinic visit when injury is already in the record
 
 ## Event ID Format
@@ -104,7 +104,7 @@ Roleplay scene:
 async def _create_event(event_data: dict, npc_id: str, pc_id: str) -> None:
     if not event_data or not event_data.get("id"):
         return
-    timestamp = get_in_universe_time()
+    timestamp = await get_in_universe_time()
     async with async_driver.session() as session:
         await session.run("""
             CREATE (:Event {
@@ -230,7 +230,7 @@ async def delegate_complex_update(
     if raw_event and isinstance(raw_event, dict):
         event_id = raw_event.get("id") or raw_event.get("event_id")
         if event_id:
-            ts = get_in_universe_time()
+            ts = await get_in_universe_time()
             event_id = event_id.replace("YYYYMMDD_HHMM", ts)
             created_event = {
                 "id":         event_id,
