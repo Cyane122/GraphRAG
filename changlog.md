@@ -55,5 +55,8 @@
 - `promptBuilder.py`: HOT-COLD Channel 프롬프트 추가
 
 ## 2026-04-24
-- `promptBuilder.py`: 프롬프트 압축 및 중복된 내용 제거
-- `app.py`: `await` 동기화 오류 수정
+- `promptBuilder.py`: 프롬프트 압축 및 개선. 중복된 내용 제거.
+- `app.py`: `await` 동기화 오류 수정. 불러오기 기능 추가.
+- `example.env`: `.env` 예시 파일 추가
+- `embedder.py`: 임베딩 모델 추가
+- `conversation_logger.py`: 채팅 저장 및 불러오기 기능 추가.
