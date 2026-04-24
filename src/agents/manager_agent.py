@@ -8,17 +8,10 @@ from src.prompt.promptBuilder import PromptBuilder
 from importlib import import_module
 from src.graph.world.default import World
 from src.utils.db_utils import async_driver
-from src.utils.llm_utils import extract_json_from_llm
+from src.utils.llm_utils import extract_json_from_llm, llm_client
 from typing import Any
 
-llm = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=os.getenv("OPENROUTER_API_KEY")
-)
-
-CLASSIFIER_MODEL    = os.getenv("MODEL_CLASSIFIER",          "google/gemma-3-12b-it:free")
-CLASSIFIER_FALLBACK = os.getenv("MODEL_CLASSIFIER_FALLBACK", "meta-llama/llama-3.3-70b-instruct:free")
-
+CLASSIFIER_MODEL = os.getenv("MODEL_CLASSIFIER", "claude-haiku-4-5-20251001")
 
 # ════════════════════════════════════════════════════════════
 # 1단계: 씬 분류
@@ -38,24 +31,22 @@ Recent story:
 User input:
 {user_input}"""
 
-    for model in [CLASSIFIER_MODEL, CLASSIFIER_FALLBACK]:
-        try:
-            response = llm.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.0
-            )
-            raw   = response.choices[0].message.content
-            scene_types = extract_json_from_llm(raw)  # 리스트가 아니면 빈 딕셔너리가 반환됨
-            if not isinstance(scene_types, list):  # 리스트가 아니면 예외 발생
-                raise ValueError("not a list")
-            print(f"[씬 분류 / {model}] {scene_types}")
-            return scene_types
-        except Exception as e:
-            print(f"[씬 분류 실패 / {model}] {e}")
-
-    print("[씬 분류] 모든 모델 실패 → 폴백: ['daily']")
-    return ["daily"]
+    try:
+        response = llm_client.messages.create(
+            model=CLASSIFIER_MODEL,
+            max_tokens=64,
+            temperature=0.0,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = response.content[0].text
+        scene_types = extract_json_from_llm(raw)
+        if not isinstance(scene_types, list):
+            raise ValueError("not a list")
+        print(f"[씬 분류 / {CLASSIFIER_MODEL}] {scene_types}")
+        return scene_types
+    except Exception as e:
+        print(f"[씬 분류 실패] {e} → 폴백: ['daily']")
+        return ["daily"]
 
 
 # ════════════════════════════════════════════════════════════
@@ -101,8 +92,8 @@ async def fetch_character_data(char_id: str, scene_types: list[str]) -> dict:
         hub_record = await session.run("""
             MATCH (c:Character {id: $char_id})
             RETURN properties(c) AS props
-        """, char_id=char_id).single()
-
+        """, char_id=char_id)
+        hub_record = await hub_record.single()
         if hub_record:
             # result의 최상위 레벨에 name, id 등의 기본 정보를 먼저 넣습니다.
             result.update(hub_record["props"])
@@ -115,7 +106,7 @@ async def fetch_character_data(char_id: str, scene_types: list[str]) -> dict:
                 MATCH (c:Character {{id: $char_id}})-[:{rel_type}]->(n)
                 RETURN properties(n) AS props
             """, char_id=char_id)
-            record = records.single()
+            record = await records.single()
             if record:
                 key = REL_TO_KEY.get(rel_type, rel_type.lower())
                 result[key] = record["props"]
@@ -127,7 +118,8 @@ async def fetch_relationship_data(char_a: str, char_b: str) -> dict:
         record = await session.run("""
             MATCH (a:Character {id: $a})-[r:RELATIONSHIP]->(b:Character {id: $b})
             RETURN properties(r) AS props
-        """, a=char_a, b=char_b).single()
+        """, a=char_a, b=char_b)
+        record = await record.single()
         return record["props"] if record else {}
 
 
@@ -140,6 +132,7 @@ async def fetch_recent_events(char_id: str, limit: int = 3) -> list[dict]:
             ORDER BY e.timestamp DESC
             LIMIT $limit
         """, char_id=char_id, limit=limit)
+        records = await records.data()
         return [dict(r) for r in records]
 
 
@@ -159,7 +152,8 @@ async def fetch_global_state(fallback_dt: datetime) -> dict:
             RETURN gs.currentTime AS currentTime, 
                    gs.weather AS weather, 
                    gs.currentLocationId AS currentLocationId
-        """).single()
+        """)
+        record = await record.single()
         if record and record.get("currentTime"):
             return dict(record)
 

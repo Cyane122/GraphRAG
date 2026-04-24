@@ -754,9 +754,9 @@ Show ONLY through physical interaction with Sian. NEVER meta-explain ("PMS라서
             print("✅ 헬스장 동료 노드 생성 완료 (4명)")
 
             session.run(f"""
-                MERGE (gs: GlobalState {{id: 'singleton'}})
-                SET gs.currentLocationId = 'babe_villa_205'
-                    gs.currentTime = '{self.get_default_time().isoformat()}'
+                MERGE (gs:GlobalState {{id: 'singleton'}})
+                SET gs.currentLocationId = 'babe_villa_205',
+                    gs.currentTime = '{self.get_default_time().isoformat()}',
                     gs.weather = 'Clear'
             """)
 

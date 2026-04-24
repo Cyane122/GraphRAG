@@ -84,7 +84,9 @@ async def parse_ooc(text: str, npc_id: str, npc_name: str) -> dict:
     """OOC 텍스트를 분석하고 DB에 즉각 반영합니다 (비동기)"""
 
     locations = await _get_allowed_locations()
-    system_prompt = _SYSTEM_PROMPT.format(locations_str=locations, npc_name=npc_name)
+    system_prompt = _SYSTEM_PROMPT \
+        .replace("{locations+_str}", locations) \
+        .replace("{npc}", npc_name)
     # 1. LLM API 호출
     response = llm_client.messages.create(
         model=OOC_MODEL,

@@ -158,7 +158,7 @@ async def on_message(message: cl.Message):
         context_snippet = history[-1].get("context", "")
 
     if is_ooc(user_input):
-        result = await asyncio.to_thread(parse_ooc, user_input, NPC_ID, NPC_NAME_KOR)
+        result = await parse_ooc(user_input, NPC_ID, NPC_NAME_KOR)
         await cl.Message(content=f"⚙️ OOC: `{result['summary']}`").send()
 
         ooc_changes = result.get("state_changes", {})
@@ -173,8 +173,7 @@ async def on_message(message: cl.Message):
     time_status_msg.content = "시간과 공간을 계산하고 있습니다..."
     await time_status_msg.update()
 
-    time_plan = await asyncio.to_thread(
-        calculate_and_update_time,
+    time_plan = await calculate_and_update_time(
         user_input,
         context_snippet,
         PC_ID,
