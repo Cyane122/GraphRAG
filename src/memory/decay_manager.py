@@ -21,7 +21,7 @@ import os
 from datetime import datetime
 
 from src.utils.db_utils import async_driver
-from src.utils.llm_utils import llm_client
+from src.utils.llm_utils import async_llm_client
 from src.utils.embedder import embed_async
 
 DECAY_MODEL = os.getenv("MODEL_STATE_UPDATER", "claude-haiku-4-5-20251001")
@@ -48,7 +48,7 @@ async def ensure_memories_for_event(
     summary:    str,
     importance: int,
     char_ids:   list[str],
-    timestamp:  str,            # ISO 8601 형식 (isoformat())
+    timestamp:  str,
     embedding:  list[float] | None = None,
 ) -> None:
     """
@@ -56,7 +56,6 @@ async def ensure_memories_for_event(
     importance 0~2 이벤트는 Memory 생성 생략 (자율행동 일상 → 프롬프트 노이즈).
 
     timestamp: 반드시 ISO 8601 형식 ("2024-03-08T08:00:00").
-               YYYYMMDD_HHMM 포맷은 파싱 불가 → 호출부에서 .isoformat() 전달 필수.
     """
     if importance <= 2:
         return
@@ -128,18 +127,14 @@ async def run_decay(current_game_time: datetime) -> None:
     for m in memories:
         importance = int(m["importance"] or 3)
         rule       = _get_decay_rule(importance)
-        # Bug fix 1: _parse_dt는 naive datetime 반환 → current_game_time(naive)과 연산 가능
         created    = _parse_dt(m["created_at"])
         days_since = (current_game_time - created).days
 
-        # 삭제
         if rule["delete"] and days_since >= rule["delete"] and m["level"] >= 2:
             await _delete_memory(m["mid"])
             continue
 
-        # 흔적(level 2)
         if rule["level2"] and days_since >= rule["level2"] and m["level"] < 2:
-            # Bug fix 6: traits fetch했지만 _compress_memory에서 사용 안 함 → 제거
             new_summary = await _compress_memory(m["summary"], level=2)
             await _update_memory(
                 m["mid"], new_summary, old_embedding=None,
@@ -148,7 +143,6 @@ async def run_decay(current_game_time: datetime) -> None:
             )
             continue
 
-        # 압축(level 1)
         if rule["level1"] and days_since >= rule["level1"] and m["level"] < 1:
             new_summary = await _compress_memory(m["summary"], level=1)
             await _update_memory(
@@ -158,8 +152,6 @@ async def run_decay(current_game_time: datetime) -> None:
             )
             continue
 
-        # 왜곡 (level 0 유지, summary만 슬쩍 변형)
-        # Bug fix 7: distortion이 None일 수 있으므로 float(... or 0) 처리
         distortion = float(m["distortion"] or 0)
         if rule["distort"] and days_since >= rule["distort"] and distortion < 0.5:
             traits      = await _fetch_char_traits(m["char_id"])
@@ -181,7 +173,6 @@ async def _distort_memory(summary: str, traits: dict, char_id: str) -> str:
     """Haiku가 traits 기반으로 memory를 캐릭터 관점에서 살짝 왜곡."""
     trait_hints = []
 
-    # Bug fix 4: trait_optimism → 실제 존재하는 trait 키로 교체
     if traits.get("trait_self_esteem", 0) > 0.5:
         trait_hints.append("tends to remember things more positively, downplays negatives")
     if traits.get("trait_anxiety_prone", 0) > 0.5:
@@ -212,7 +203,7 @@ Original summary:
 {summary}"""
 
     try:
-        resp = llm_client.messages.create(
+        resp = await async_llm_client.messages.create(
             model=DECAY_MODEL,
             max_tokens=128,
             temperature=0.5,
@@ -239,7 +230,7 @@ Original:
 Return ONLY the compressed version. No explanation."""
 
     try:
-        resp = llm_client.messages.create(
+        resp = await async_llm_client.messages.create(
             model=DECAY_MODEL,
             max_tokens=64,
             temperature=0.3,
@@ -259,11 +250,6 @@ async def _update_memory(
     distortion:    float,
     game_time:     datetime,
 ) -> None:
-    """
-    Memory 노드 summary 갱신 + 재임베딩.
-    Bug fix 5: 임베딩 실패 시 old_embedding 유지 (None 저장 금지).
-    old_embedding이 None이면 DB에서 기존 값 읽어서 유지.
-    """
     new_emb = None
     try:
         new_emb = await embed_async(new_summary)
@@ -272,7 +258,6 @@ async def _update_memory(
 
     async with async_driver.session() as session:
         if new_emb is not None:
-            # 재임베딩 성공 → summary + embedding 모두 갱신
             await session.run("""
                 MATCH (m:Memory {id: $mid})
                 SET m.summary          = $summary,
@@ -283,7 +268,6 @@ async def _update_memory(
             """, mid=mem_id, summary=new_summary, emb=new_emb,
                  level=summary_level, distortion=distortion, ts=game_time.isoformat())
         else:
-            # 재임베딩 실패 → embedding 필드 건드리지 않음
             await session.run("""
                 MATCH (m:Memory {id: $mid})
                 SET m.summary          = $summary,
@@ -321,20 +305,13 @@ async def _fetch_char_traits(char_id: str) -> dict:
 
 
 def _parse_dt(dt_str: str | None) -> datetime:
-    """
-    ISO 8601 또는 YYYYMMDD_HHMM 형식 파싱 → naive datetime 반환.
-    Bug fix 1: timezone-aware datetime 반환 금지.
-               run_decay의 current_game_time이 naive이므로 타입 일치 필요.
-    """
     if not dt_str:
         return datetime(2024, 1, 1)
-    # ISO 8601 시도
     try:
         dt = datetime.fromisoformat(dt_str)
-        return dt.replace(tzinfo=None)   # aware → naive 통일
+        return dt.replace(tzinfo=None)
     except ValueError:
         pass
-    # YYYYMMDD_HHMM fallback
     try:
         return datetime.strptime(dt_str, "%Y%m%d_%H%M")
     except ValueError:

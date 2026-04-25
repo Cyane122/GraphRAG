@@ -8,11 +8,10 @@ Libido / Safety는 이 파일에서 처리하지 않음.
 """
 
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 
-from src.utils.db_utils import async_driver, update_dynamic_state, get_in_universe_time
-from src.utils.llm_utils import llm_client, extract_json_from_llm
-from src.utils.embedder import embed_async
+from src.utils.db_utils import async_driver, update_dynamic_state
+from src.utils.llm_utils import async_llm_client, extract_json_from_llm
 
 ACTION_MODEL = os.getenv("MODEL_STATE_UPDATER", "claude-haiku-4-5-20251001")
 
@@ -34,13 +33,12 @@ NEED_ACTION_HINTS = {
 
 
 async def resolve_action(
-    npc_id:       str,
-    need_name:    str,
-    overflow_time: datetime,   # 0.8 초과 시점
-    location_id:  str,
-    personality:  str,
-    traits:       dict,
-    sexual_tendency: list[str],
+    npc_id:        str,
+    need_name:     str,
+    overflow_time: datetime,
+    location_id:   str,
+    personality:   str,
+    traits:        dict,
 ) -> dict | None:
     """
     Haiku에게 npc_id가 overflow_time에 뭘 했는지 결정하게 함.
@@ -51,19 +49,17 @@ async def resolve_action(
     if need_name not in SETTLE_LEVELS:
         return None
 
-    hint = NEED_ACTION_HINTS.get(need_name, "doing something to address their needs")
-
-    # ── 1. Haiku 행동 결정 ──────────────────────────────────
+    hint   = NEED_ACTION_HINTS.get(need_name, "doing something to address their needs")
     action = await _decide_action(
         npc_id, need_name, hint, overflow_time, location_id, personality, traits
     )
     if not action:
         return None
 
-    # ── 2. Event 노드 생성 ──────────────────────────────────
-    event_id = await _create_event(npc_id, action, overflow_time, location_id)
-
-    # ── 3. 욕구 수치 감소 ────────────────────────────────────
+    event_id = await _create_event(
+        npc_id, action, overflow_time, location_id,
+        need_name=need_name,
+    )
     await _settle_need(npc_id, need_name)
 
     return {"event_id": event_id, **action}
@@ -74,13 +70,13 @@ async def resolve_action(
 # ════════════════════════════════════════════════════════════
 
 async def _decide_action(
-    npc_id:       str,
-    need_name:    str,
-    hint:         str,
+    npc_id:        str,
+    need_name:     str,
+    hint:          str,
     overflow_time: datetime,
-    location_id:  str,
-    personality:  str,
-    traits:       dict,
+    location_id:   str,
+    personality:   str,
+    traits:        dict,
 ) -> dict | None:
     trait_summary = ", ".join(
         f"{k.replace('trait_', '')}={v:+.1f}"
@@ -111,14 +107,13 @@ Return ONLY JSON:
 }}"""
 
     try:
-        resp = llm_client.messages.create(
+        resp = await async_llm_client.messages.create(
             model=ACTION_MODEL,
             max_tokens=256,
             temperature=0.7,
             messages=[{"role": "user", "content": prompt}],
         )
-        raw = resp.content[0].text
-        parsed = extract_json_from_llm(raw)
+        parsed = extract_json_from_llm(resp.content[0].text)
         if not isinstance(parsed, dict) or "action_summary" not in parsed:
             raise ValueError("invalid structure")
         return parsed
@@ -128,44 +123,42 @@ Return ONLY JSON:
 
 
 async def _create_event(
-    npc_id:       str,
-    action:       dict,
+    npc_id:        str,
+    action:        dict,
     overflow_time: datetime,
     origin_loc_id: str,
+    need_name:     str = "",
 ) -> str:
-    ts = overflow_time.strftime("%Y%m%d_%H%M")
-    event_id  = f"{origin_loc_id}_{npc_id}_auto_{ts}"
-    summary   = action.get("action_summary", "")
+    ts         = overflow_time.strftime("%Y%m%d_%H%M")
+    event_id   = f"{origin_loc_id}_{npc_id}_auto_{ts}"
+    summary    = action.get("action_summary", "")
     target_loc = action.get("target_location_id", origin_loc_id)
     importance = int(action.get("importance", 1))
-
-    # 임베딩 (실패 시 None — Vector Index 미등록
 
     async with async_driver.session() as session:
         await session.run("""
             CREATE (e:Event {
-                id:               $eid,
-                summary:          $summary,
-                timestamp:        $ts,
-                location_id:      $loc,
-                impact:           "autonomous need resolution",
-                importance:       $importance,
-                decay_rate:       0.05,
-                summary_level:    0,
-                safety_impact:    0.0,
-                safety_resolved:  true,
-                safety_decay_rate: 0.0,
+                id:                $eid,
+                summary:           $summary,
+                timestamp:         $ts,
+                location_id:       $loc,
+                impact:            "autonomous need resolution",
+                need_name:         $need_name,
+                importance:        $importance,
+                decay_rate:        0.05,
+                summary_level:     0,
+                safety_impact:     0.0,
+                safety_resolved:   true,
+                safety_decay_rate: 0.0
             })
         """, eid=event_id, summary=summary, ts=overflow_time.isoformat(),
-             loc=target_loc, importance=importance)
+             loc=target_loc, importance=importance, need_name=need_name)
 
-        # NPC ─ INVOLVED_IN ─ Event
         await session.run("""
             MATCH (c:Character {id: $cid}), (e:Event {id: $eid})
             CREATE (c)-[:INVOLVED_IN]->(e)
         """, cid=npc_id, eid=event_id)
 
-        # Event ─ OCCURRED_AT ─ Location
         await session.run("""
             MATCH (e:Event {id: $eid}), (l:Location {id: $loc})
             CREATE (e)-[:OCCURRED_AT]->(l)

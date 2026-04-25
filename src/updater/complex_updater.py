@@ -1,4 +1,3 @@
-# src/updater/complex_updater.py
 """
 Complex event handler.
 LLM으로 멀티 노드 업데이트 플랜 생성 → DynamicState 갱신 + 호감도 delta + Event 노드 생성.
@@ -10,7 +9,7 @@ import os
 import json
 from datetime import datetime
 
-from src.utils.llm_utils import llm_client, extract_json_from_llm
+from src.utils.llm_utils import async_llm_client, extract_json_from_llm
 from src.utils.db_utils import (
     async_driver,
     update_dynamic_state,
@@ -25,7 +24,6 @@ COMPLEX_MODEL = os.getenv("MODEL_COMPLEX_UPDATER", "claude-sonnet-4-6")
 
 
 async def _get_current_iso_time() -> str:
-    """GlobalState에서 현재 인게임 시간을 ISO 8601 형식으로 반환. Memory 노드 timestamp 용."""
     from src.utils.db_utils import async_driver as _ad
     async with _ad.session() as session:
         rec = await session.run(
@@ -33,7 +31,7 @@ async def _get_current_iso_time() -> str:
         )
         row = await rec.single()
         if row and row["ct"]:
-            return row["ct"]  # GlobalState.currentTime은 이미 isoformat으로 저장됨
+            return row["ct"]
     return datetime.now().isoformat()
 
 
@@ -41,10 +39,10 @@ async def _get_current_iso_time() -> str:
 # LLM — 업데이트 플랜 생성
 # ════════════════════════════════════════════════════════════
 
-def _generate_update_plan(
-    actor_response: str,
-    npc_id: str,
-    pc_id: str,
+async def _generate_update_plan(
+    actor_response:  str,
+    npc_id:          str,
+    pc_id:           str,
     initial_changes: dict,
 ) -> dict:
     prompt = f"""You are a precise game state manager for a roleplay system.
@@ -109,7 +107,7 @@ If creating an event, replace new_event with:
 Roleplay scene:
 {actor_response[:2000]}"""
 
-    response = llm_client.messages.create(
+    response = await async_llm_client.messages.create(
         model=COMPLEX_MODEL,
         max_tokens=1024,
         temperature=0.0,
@@ -130,12 +128,11 @@ async def _create_event(event_data: dict, npc_id: str, pc_id: str) -> None:
     if not event_data or not event_data.get("id"):
         return
 
-    timestamp_fmt  = await get_in_universe_time()   # YYYYMMDD_HHMM — Event 노드용
-    timestamp_iso  = await _get_current_iso_time()  # ISO 8601 — Memory 노드용
-    summary        = event_data.get("summary", "")
-    importance     = event_data.get("importance", 5)
+    timestamp_fmt = await get_in_universe_time()
+    timestamp_iso = await _get_current_iso_time()
+    summary       = event_data.get("summary", "")
+    importance    = event_data.get("importance", 5)
 
-    # ── 임베딩 생성 ───────────────────────────────────────
     embedding = None
     if summary:
         try:
@@ -146,16 +143,16 @@ async def _create_event(event_data: dict, npc_id: str, pc_id: str) -> None:
     async with async_driver.session() as session:
         await session.run("""
             CREATE (:Event {
-                id:               $id,
-                summary:          $summary,
-                timestamp:        $timestamp,
-                importance:       $importance,
-                impact:           $impact,
-                decay_rate:       0.1,
-                summary_level:    0,
-                safety_impact:    0.0,
-                safety_resolved:  true,
-                safety_decay_rate: 0.0,
+                id:                $id,
+                summary:           $summary,
+                timestamp:         $timestamp,
+                importance:        $importance,
+                impact:            $impact,
+                decay_rate:        0.1,
+                summary_level:     0,
+                safety_impact:     0.0,
+                safety_resolved:   true,
+                safety_decay_rate: 0.0
             })
         """,
             id=event_data["id"],
@@ -180,21 +177,20 @@ async def _create_event(event_data: dict, npc_id: str, pc_id: str) -> None:
 
     print(f"[ComplexUpdater] event created: {event_data['id']} (importance={importance})")
 
-    # ── 캐릭터별 Memory 노드 생성 ─────────────────────────
     await ensure_memories_for_event(
         event_id   = event_data["id"],
         summary    = summary,
         importance = importance,
         char_ids   = [npc_id, pc_id],
-        timestamp  = timestamp_iso,   # ISO 8601 형식 전달
+        timestamp  = timestamp_iso,
         embedding  = embedding,
     )
 
 
 async def _evolve_relationship_status(
-    char_a: str,
-    char_b: str,
-    event_summary: str,
+    char_a:           str,
+    char_b:           str,
+    event_summary:    str,
     event_importance: int,
 ) -> None:
     """importance ≥ 7인 이벤트 발생 시 RELATIONSHIP의 current_status를 재작성."""
@@ -228,7 +224,7 @@ current_status: {current.get('status')}
 
 Return ONLY the new current_status string. No quotes, no JSON, no explanation."""
 
-    response = llm_client.messages.create(
+    response = await async_llm_client.messages.create(
         model=COMPLEX_MODEL,
         max_tokens=256,
         temperature=0.0,
@@ -251,20 +247,20 @@ Return ONLY the new current_status string. No quotes, no JSON, no explanation.""
 # ════════════════════════════════════════════════════════════
 
 async def delegate_complex_update(
-    actor_response:   str,
-    npc_id:           str,
-    pc_id:            str,
-    initial_changes:  dict | None = None,
-    event_only:       bool = False,
-    world_config:     dict | None = None,
-    scene_chars:      list[str] | None = None,
+    actor_response:  str,
+    npc_id:          str,
+    pc_id:           str,
+    initial_changes: dict | None = None,
+    event_only:      bool = False,
+    world_config:    dict | None = None,
+    scene_chars:     list[str] | None = None,
 ) -> None:
     """
     Complex 업데이트 파이프라인.
     event_only=True → DynamicState/호감도 없이 Event 생성만.
     scene_chars: CoT 파싱 결과 → world_builder로 전달.
     """
-    plan = _generate_update_plan(
+    plan = await _generate_update_plan(
         actor_response  = actor_response,
         npc_id          = npc_id,
         pc_id           = pc_id,
@@ -291,7 +287,6 @@ async def delegate_complex_update(
                 new_event.get("importance", 7),
             )
 
-    # ── world_builder: 이름 목록 기반 캐릭터 생성/갱신 ────
     if world_config and scene_chars:
         try:
             await wb_resolve(

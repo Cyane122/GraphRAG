@@ -44,13 +44,12 @@ async def process_actor_response(
     """
     if scene_types and not _needs_classification(actor_response, scene_types):
         print("[StateUpdater] 스킵 (변화 키워드 없음)")
-        # world_builder는 상태 변화 없어도 실행
         if world_config and scene_chars:
             from src.world.world_builder import resolve_and_update
             await resolve_and_update(scene_chars, npc_id, pc_id, world_config)
         return {"updated": {}, "delegated_to_complex": False}
 
-    changes = classify_and_extract(actor_response)
+    changes = await classify_and_extract(actor_response)
     if not changes:
         if world_config and scene_chars:
             from src.world.world_builder import resolve_and_update

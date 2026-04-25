@@ -82,3 +82,5 @@
 - [신규] 대화 리롤 기능 추가
 - `db_utils.py`: 중복 함수 삭제.
 - `action_resolver.py`, `complex_updater.py`: Event 노드 제거. 이제 Memory만으로 기억함.
+- [신규] 그래도 세상은 움직인다 - SNS 기능 추가
+- `llm_utils.py`: async client 추가 및 일부 client 전환

@@ -1,3 +1,4 @@
+# src/agents/manager_agent.py
 """
 파이프라인 오케스트레이터.
 """
@@ -16,6 +17,7 @@ from src.utils.embedder import embed_async
 from src.memory.decay_manager import run_decay
 from src.updater.time_manager import apply_time_updates
 from src.needs.needs_manager import run_needs_update
+from src.world.world_narrator import build_world_context
 
 CLASSIFIER_MODEL = os.getenv("MODEL_CLASSIFIER", "claude-haiku-4-5-20251001")
 
@@ -37,13 +39,12 @@ SCENE_REL_MAP: dict[str, list[str]] = {
     "aegyo":     ["HAS_PROFILE", "HAS_PERSONALITY", "HAS_STATE"],
 }
 
-# rule-based fast-path: 이 패턴이 있으면 LLM 필요
 _NEEDS_LLM_PATTERN = re.compile(
     r"\*|다음\s*날|내일|어제|시간\s*후|분\s*후|나중에|며칠|다음\s*주|"
     r"이동|장소|헬스장|카페|학교|편의점|집에|나갔|들어왔|"
     r"날씨|비|눈|천둥|intimate|직장|workplace"
 )
-_RULE_BASED_MAX_LEN = 60   # 이 길이 이하 + 패턴 없으면 rule-based 처리
+_RULE_BASED_MAX_LEN = 60
 
 
 # ════════════════════════════════════════════════════════════
@@ -51,35 +52,27 @@ _RULE_BASED_MAX_LEN = 60   # 이 길이 이하 + 패턴 없으면 rule-based 처
 # ════════════════════════════════════════════════════════════
 
 def _try_rule_based(user_input: str) -> dict | None:
-    """
-    패턴 없는 짧은 대화 → LLM 없이 처리.
-    처리 불가 시 None 반환 → LLM fallback.
-    """
     if len(user_input) > _RULE_BASED_MAX_LEN:
         return None
     if _NEEDS_LLM_PATTERN.search(user_input):
         return None
     return {
-        "scene_types":    ["daily"],
-        "action_type":    "dialogue",
+        "scene_types":     ["daily"],
+        "action_type":     "dialogue",
         "elapsed_minutes": 2,
-        "new_weather":    None,
+        "new_weather":     None,
         "new_location_id": None,
-        "reason":         "rule-based: short dialogue",
+        "reason":          "rule-based: short dialogue",
     }
 
 
 async def _classify_and_parse_time(
-    user_input:    str,
-    recent_story:  str,
-    global_state:  dict,
-    allowed_locs:  str,
+    user_input:   str,
+    recent_story: str,
+    global_state: dict,
+    allowed_locs: str,
 ) -> dict:
-    """
-    씬 타입 분류 + 시간 계산을 1번의 Haiku 호출로 처리.
-    rule-based fast-path가 None을 반환한 경우에만 호출됨.
-    """
-    current_time = datetime.fromisoformat(global_state["currentTime"])
+    current_time    = datetime.fromisoformat(global_state["currentTime"])
     context_snippet = recent_story[-800:] if recent_story else ""
 
     prompt = f"""You are a combined scene classifier and time parser for a Korean roleplay system.
@@ -130,10 +123,10 @@ new_weather: from [Clear,Cloudy,Foggy,Drizzle,Rain,Heavy Rain,Thunderstorm,Snow,
     except Exception as e:
         print(f"[Classify+Time 실패] {e} → fallback")
         return {
-            "scene_types":    ["daily"],
-            "action_type":    "dialogue",
+            "scene_types":     ["daily"],
+            "action_type":     "dialogue",
             "elapsed_minutes": 3,
-            "new_weather":    None,
+            "new_weather":     None,
             "new_location_id": None,
         }
 
@@ -326,10 +319,10 @@ async def run_manager(
     world_config = world.get_full_config()
     start_dt     = world_config.get("start_time")
 
-    # ── 1. 시간 계산 + 씬 분류 ───────────────────────────────
+    # ── 1. 시간 계산 + 씬 분류 ──────────────────────────────
     global_state = await fetch_global_state(start_dt)
 
-    rule_result  = _try_rule_based(user_input)
+    rule_result = _try_rule_based(user_input)
     if rule_result:
         parse_result = rule_result
         scene_types  = rule_result["scene_types"]
@@ -351,10 +344,9 @@ async def run_manager(
     )
 
     # ── 3. 욕구 업데이트 + libido hints ──────────────────────
-    elapsed_minutes = (current_dt - base_time).total_seconds() / 60
-    elapsed_minutes = max(1.0, elapsed_minutes)
+    elapsed_minutes = max(1.0, (current_dt - base_time).total_seconds() / 60)
 
-    needs_result    = await run_needs_update(
+    needs_result = await run_needs_update(
         pc_id           = pc_id,
         elapsed_minutes = elapsed_minutes,
         current_time    = current_dt,
@@ -368,12 +360,6 @@ async def run_manager(
             await run_decay(current_dt)
         except Exception as e:
             print(f"[Manager] decay 실패 (무시): {e}")
-    needs_result    = await run_needs_update(
-        pc_id           = pc_id,
-        elapsed_minutes = elapsed_minutes,
-        current_time    = current_dt,
-    )
-    libido_hints: dict[str, str] = needs_result.get("libido_hints", {})
 
     # ── 4. DB 병렬 조회 ─────────────────────────────────────
     char_data, user_data, relationship, recent_events = await asyncio.gather(
@@ -386,7 +372,7 @@ async def run_manager(
     # ── 5. Vector 유사 검색 (recall_events) — Memory 기반 ────
     recall_events:    list[dict] = []
     memory_conflicts: list[str]  = []
-    raw_memories:     list[dict] = []   # try 밖 초기화 — NameError 방지
+    raw_memories:     list[dict] = []
     try:
         query_embedding = await embed_async(user_input)
 
@@ -420,7 +406,6 @@ async def run_manager(
                 "summary": m["summary"],
                 "score":   round(m["score"], 3),
             })
-            # 왜곡된 기억 → conflict 플래그
             if m["distortion"] and float(m["distortion"]) > 0.2:
                 memory_conflicts.append(m["summary"])
 
@@ -438,6 +423,18 @@ async def run_manager(
     # ── 7. 씬 내 NPC 감지 ───────────────────────────────────
     present_npc_ids = detect_present_npcs(user_input, recent_story, world.get_npc_name_map())
     npcs = await fetch_npc_profiles(present_npc_ids, npc_id, pc_id) if present_npc_ids else []
+
+    # ── 7.5. 세상은 움직인다 + SNS 피드 ─────────────────────
+    world_context: dict = {}
+    try:
+        world_context = await build_world_context(
+            npc_id       = npc_id,
+            pc_id        = pc_id,
+            location_id  = loc_id or "",
+            current_time = current_dt,
+        )
+    except Exception as e:
+        print(f"[WorldNarrator] 컨텍스트 수집 실패 (무시): {e}")
 
     # ── 8. 프롬프트 조립 ────────────────────────────────────
     builder = PromptBuilder(world_config, char_data.get("name"), user_data.get("name"))
@@ -461,6 +458,7 @@ async def run_manager(
         npcs             = npcs,
         dt               = current_dt,
         memory_conflicts = memory_conflicts,
+        world_context    = world_context,
     )
 
     # ── 9. libido hints → dynamic prompt 주입 ───────────────

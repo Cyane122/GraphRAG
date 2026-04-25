@@ -27,7 +27,7 @@ import re
 from datetime import datetime
 
 from src.utils.db_utils import async_driver
-from src.utils.llm_utils import llm_client, extract_json_from_llm
+from src.utils.llm_utils import async_llm_client, extract_json_from_llm
 from src.needs.traits_initializer import ensure_traits
 
 BUILDER_MODEL = os.getenv("MODEL_STATE_UPDATER", "claude-haiku-4-5-20251001")
@@ -36,9 +36,7 @@ PROMOTE_APPEARANCE_COUNT = 3
 PROMOTE_IMPORTANCE       = 5
 PROMOTE_AFFINITY_ABS     = 40
 
-# ── 모듈 단위 known chars 캐시 ───────────────────────────
-# 최초 조회 후 메모리에 유지. 새 캐릭터 생성/승격 시 갱신.
-_known_chars_cache: dict[str, str] | None = None   # {표시이름: char_id}
+_known_chars_cache: dict[str, str] | None = None
 
 
 # ════════════════════════════════════════════════════════════
@@ -46,38 +44,32 @@ _known_chars_cache: dict[str, str] | None = None   # {표시이름: char_id}
 # ════════════════════════════════════════════════════════════
 
 async def resolve_and_update(
-    char_names:   list[str],
-    main_npc_id:  str,
-    pc_id:        str,
-    world_config: dict,
-    event_id:     str | None = None,
+    char_names:       list[str],
+    main_npc_id:      str,
+    pc_id:            str,
+    world_config:     dict,
+    event_id:         str | None = None,
     event_importance: int = 0,
 ) -> list[str]:
     """
     CoT에서 파싱한 등장인물 이름 목록을 받아 처리.
-    - known: 등장 횟수 증가 + 승격 체크
-    - unknown: stub 생성 (Haiku)
-
     Returns: 이번 턴에 새로 생성된 char_id 목록
     """
     if not char_names:
         return []
 
-    known = await _get_known_chars()
+    known       = await _get_known_chars()
     created_ids: list[str] = []
 
     for name in char_names:
-        # identity resolution
         char_id = _resolve_identity(name, known)
 
         if char_id:
-            # 기존 캐릭터 — 등장 횟수 증가
             if event_id:
                 await _link_to_event(char_id, event_id)
             await _increment_appearance(char_id)
             await _check_and_promote(char_id, main_npc_id, event_importance)
         else:
-            # 신규 캐릭터 — stub 생성
             char_id = await _create_stub(
                 name_kor     = name,
                 main_npc_id  = main_npc_id,
@@ -86,7 +78,7 @@ async def resolve_and_update(
             )
             if char_id:
                 created_ids.append(char_id)
-                _invalidate_cache()   # 캐시 무효화
+                _invalidate_cache()
                 if event_id:
                     await _link_to_event(char_id, event_id)
                 await _increment_appearance(char_id)
@@ -99,7 +91,6 @@ async def resolve_and_update(
 # ════════════════════════════════════════════════════════════
 
 async def _get_known_chars() -> dict[str, str]:
-    """캐시된 known chars 반환. 없으면 DB 조회."""
     global _known_chars_cache
     if _known_chars_cache is not None:
         return _known_chars_cache
@@ -128,14 +119,8 @@ def _invalidate_cache() -> None:
 
 
 def _resolve_identity(name: str, known: dict[str, str]) -> str | None:
-    """
-    이름 → char_id 매핑. 부분 일치까지 체크.
-    예: "지희" → "강지희" 매핑 가능.
-    """
-    # 완전 일치
     if name in known:
         return known[name]
-    # 부분 일치 (2자 이상)
     if len(name) >= 2:
         for k, v in known.items():
             if name in k or k in name:
@@ -148,9 +133,7 @@ def _resolve_identity(name: str, known: dict[str, str]) -> str | None:
 # ════════════════════════════════════════════════════════════
 
 def _kor_to_roman_id(name_kor: str) -> str:
-    """한국어 이름을 DB id용 snake_case roman으로 변환. 단순 음절 매핑."""
-    # 기본 규칙: 그냥 이름 그대로 유니코드로 id 만들면 Neo4j 쿼리에서 불편 → 타임스탬프 suffix 추가
-    ts = datetime.now().strftime("%m%d%H%M")
+    ts   = datetime.now().strftime("%m%d%H%M")
     safe = re.sub(r'[^a-z0-9]', '', name_kor.encode('ascii', 'ignore').decode())
     if not safe:
         safe = "npc"
@@ -164,7 +147,6 @@ async def _create_stub(
     world_config: dict,
 ) -> str | None:
     """Transient NPC stub 생성. char_id 반환."""
-    # 중복 재체크 (race condition 방지)
     async with async_driver.session() as session:
         rec = await session.run(
             "MATCH (c:Character {name: $name}) RETURN c.id AS id", name=name_kor
@@ -173,11 +155,16 @@ async def _create_stub(
         if row:
             return row["id"]
 
-    char_id = _kor_to_roman_id(name_kor)
-    stub    = await _generate_stub_profile(name_kor, world_config, main_npc_id)
+    char_id   = _kor_to_roman_id(name_kor)
+    stub      = await _generate_stub_profile(name_kor, world_config, main_npc_id)
     if not stub:
-        stub = {"personality": "unknown", "context": "", "relation_type": "acquaintance",
-                "relation_status": "first encounter", "initial_affinity": 0}
+        stub = {
+            "personality":    "unknown",
+            "context":        "",
+            "relation_type":  "acquaintance",
+            "relation_status": "first encounter",
+            "initial_affinity": 0,
+        }
 
     timestamp = datetime.now().isoformat()
 
@@ -254,7 +241,7 @@ Return ONLY JSON:
 }}"""
 
     try:
-        resp = llm_client.messages.create(
+        resp = await async_llm_client.messages.create(
             model=BUILDER_MODEL,
             max_tokens=200,
             temperature=0.4,
@@ -314,7 +301,7 @@ async def _check_and_promote(
             MATCH (a:Character {id: $main})-[r:RELATIONSHIP]->(b:Character {id: $cid})
             RETURN r.affinity AS affinity
         """, main=main_npc_id, cid=char_id)
-        rel_row = await rec.single()
+        rel_row  = await rec.single()
         affinity = abs(rel_row["affinity"] or 0) if rel_row else 0
 
     should_promote = (
@@ -322,7 +309,6 @@ async def _check_and_promote(
         or event_importance >= PROMOTE_IMPORTANCE
         or affinity >= PROMOTE_AFFINITY_ABS
     )
-
     if should_promote:
         await _promote_to_named(char_id)
         _invalidate_cache()
@@ -342,7 +328,7 @@ async def _promote_to_named(char_id: str) -> None:
             MATCH (c:Character {id: $cid})-[:HAS_PROFILE]->(sp:StaticProfile)
             RETURN properties(sp) AS props
         """, cid=char_id)
-        row = await rec2.single()
+        row     = await rec2.single()
         profile = dict(row["props"]) if row else {}
 
     event_summaries = "\n".join(
@@ -367,7 +353,7 @@ Return ONLY JSON:
 
     personality_data: dict = {"core_traits": profile.get("personality", "unknown")}
     try:
-        resp = llm_client.messages.create(
+        resp = await async_llm_client.messages.create(
             model=BUILDER_MODEL,
             max_tokens=256,
             temperature=0.5,

@@ -2,17 +2,16 @@
 캐릭터 StaticProfile에 trait_* 필드가 없을 때
 Haiku가 personality 문자열을 보고 생성 → DB에 영구 주입.
 
-호출: needs_manager가 _fetch_traits() 내에서 자동으로 호출.
+호출: needs_manager가 ensure_traits() 내에서 자동으로 호출.
 재생성 없음 — 한 번 쓰면 끝.
 """
 
 import os
 from src.utils.db_utils import async_driver
-from src.utils.llm_utils import llm_client, extract_json_from_llm
+from src.utils.llm_utils import async_llm_client, extract_json_from_llm
 
 TRAITS_MODEL = os.getenv("MODEL_STATE_UPDATER", "claude-haiku-4-5-20251001")
 
-# needs_manager가 읽는 모든 트레이트 키 목록
 ALL_TRAIT_KEYS = [
     "trait_laziness", "trait_vitality", "trait_gluttony", "trait_light_sleeper",
     "trait_sensitivity", "trait_extroversion", "trait_introversion",
@@ -35,7 +34,6 @@ REQUIRED_KEYS = [
 
 
 def _is_traits_complete(props: dict) -> bool:
-    """필수 트레이트가 모두 있는지 확인."""
     return all(k in props for k in REQUIRED_KEYS)
 
 
@@ -43,10 +41,8 @@ async def ensure_traits(char_id: str) -> dict:
     """
     StaticProfile (또는 DynamicState) 에 trait_* 필드가 없으면
     Haiku로 생성해 DB에 저장 후 반환.
-
     이미 존재하면 DB 조회 결과 그대로 반환 (LLM 호출 없음).
     """
-    # ── 1. StaticProfile 먼저 확인 ─────────────────────────
     profile, source_label = await _load_profile(char_id)
     if not profile:
         print(f"[TraitsInit] {char_id}: 프로필 없음 → 기본값 반환")
@@ -55,15 +51,12 @@ async def ensure_traits(char_id: str) -> dict:
     if _is_traits_complete(profile):
         return {k: profile[k] for k in ALL_TRAIT_KEYS if k in profile}
 
-    # ── 2. trait_* 부재 → Haiku 생성 ───────────────────────
     personality = profile.get("personality", "")
     role        = profile.get("role", profile.get("job", ""))
     age         = profile.get("age", "")
     print(f"[TraitsInit] {char_id}: trait_* 없음 → Haiku 생성 중...")
 
     generated = await _generate_traits_from_personality(char_id, personality, role, str(age))
-
-    # ── 3. DB 영구 저장 ─────────────────────────────────────
     await _write_traits_to_db(char_id, source_label, generated)
     print(f"[TraitsInit] {char_id}: 트레이트 생성 완료 → DB 저장")
 
@@ -123,17 +116,16 @@ Examples of mapping:
 NO explanation. ONLY JSON."""
 
     try:
-        resp = llm_client.messages.create(
+        resp = await async_llm_client.messages.create(
             model=TRAITS_MODEL,
             max_tokens=512,
             temperature=0.2,
             messages=[{"role": "user", "content": prompt}],
         )
-        raw = resp.content[0].text
+        raw    = resp.content[0].text
         parsed = extract_json_from_llm(raw)
         if not isinstance(parsed, dict):
             raise ValueError("not a dict")
-        # clamp to [-1.0, 1.0]
         return {k: max(-1.0, min(1.0, float(v))) for k, v in parsed.items() if k in ALL_TRAIT_KEYS}
     except Exception as e:
         print(f"[TraitsInit] Haiku 생성 실패 ({char_id}): {e} → 기본값")

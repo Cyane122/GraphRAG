@@ -1,4 +1,3 @@
-# src/updater/expression_classifier.py
 """
 Classifies expressions in Actor output as Literal or Figurative,
 then extracts DynamicState field updates accordingly.
@@ -6,8 +5,7 @@ then extracts DynamicState field updates accordingly.
 
 import os
 
-# 공통 유틸리티 Import
-from src.utils.llm_utils import llm_client, extract_json_from_llm
+from src.utils.llm_utils import async_llm_client, extract_json_from_llm
 
 CLASSIFIER_MODEL = os.getenv("MODEL_STATE_UPDATER", "claude-haiku-4-5-20251001")
 
@@ -18,7 +16,7 @@ SAFE_FIELDS = {
 PHYSICAL_FIELDS = {"physical_condition", "injury_detail"}
 
 
-def classify_and_extract(actor_response: str) -> dict:
+async def classify_and_extract(actor_response: str) -> dict:
     prompt = f"""You are a state extractor for a roleplay system.
 Read the roleplay text and extract meaningful state changes for the NPC.
 
@@ -47,7 +45,7 @@ describing pain), extract that as current physical state even if it happened ear
 "허리를 누르며 / 병원에서 허리 통증 언급" → LITERAL → physical_condition: injured, injury_detail: "허리 염좌"
 Hospital/clinic scene + pressing body part + describing pain → LITERAL
 
-## Scale Calibration (CRITICAL)
+## Scale Calibration
 Use these examples to calibrate the 0-10 integer scale. Do NOT overestimate.
 
 ### stress_level (General life stress)
@@ -66,13 +64,14 @@ Use these examples to calibrate the 0-10 integer scale. Do NOT overestimate.
 -  2: A single rude customer / Difficult but manageable task
 -  0: Smooth and uneventful shift
 
-Return ONLY a JSON object with changed fields. Empty object {{}} if nothing meaningful changed.
+Return ONLY a JSON object with changed fields.
+Empty object {{}} if nothing meaningful changed.
 No explanation, no markdown.
 
 Roleplay text:
 {actor_response[:1500]}"""
 
-    response = llm_client.messages.create(
+    response = await async_llm_client.messages.create(
         model=CLASSIFIER_MODEL,
         max_tokens=256,
         temperature=0.0,

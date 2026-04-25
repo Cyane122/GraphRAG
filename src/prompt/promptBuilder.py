@@ -1,3 +1,5 @@
+# src/prompt/promptBuilder.py
+
 from datetime import datetime
 from typing import Optional
 import json
@@ -117,7 +119,6 @@ Pair two emotions. In bright scenes: two kinds of brightness, not brightness + s
 부끄러움+기쁨 / 장난기+떨림 / 짜증+웃음참기.
 </emotion_engine>"""
 
-
 STYLE_RULES = """<style>
 # PROSE CRAFT
 
@@ -213,7 +214,6 @@ Professional register: colloquial in narration. ("트레이너" / "클라이언�
 
 {for_add}
 </blacklist>"""
-
 
 NPC_BEHAVIOR_SECTION = """<npc_behavior>
 ## Independence
@@ -324,15 +324,15 @@ TONE: Input=[word]. Output=[word]. Match? [yes/no]
 CUT: Cutting at [moment]. Last line=[env/body/action/sfx]
 TIME: Header=[요일 HH:MM]. Conflict with {char}'s routine? [yes→rewrite/no]
 </thinking>
- 
+
 Fix every quoted violation before writing.
 </cot>"""
-
 
 TOKEN_LIMIT_WARNING = f"""<token_limit_constraint>
 Max output = {os.getenv("MAX_TOKEN", 4096)} tokens. Deliver a complete response within budget.
 <thinking> block must be concise.
 </token_limit_constraint>"""
+
 
 # ════════════════════════════════════════════════════════════
 # PromptBuilder
@@ -354,16 +354,16 @@ class PromptBuilder:
         Cacheable fixed prompt (system block 1).
         Order: OPERATOR → CORE → EMOTION → STYLE → world_section → prose_rules → BLACKLIST → NPC → TOKEN
         """
-        core    = CORE_RULES.format(user=self.user_name, char=self.char_name)
+        core = CORE_RULES.format(user=self.user_name, char=self.char_name)
         emotion = EMOTION_ENGINE.format(user=self.user_name, char=self.char_name)
-        npc     = NPC_BEHAVIOR_SECTION.format(user=self.user_name, char=self.char_name)
-        bl      = BLACKLIST_SECTION.format(
+        npc = NPC_BEHAVIOR_SECTION.format(user=self.user_name, char=self.char_name)
+        bl = BLACKLIST_SECTION.format(
             for_add=self.additional_blacklist,
             char=self.char_name,
             user=self.user_name,
         )
         world_section = self.world_config.get("world_section", "")
-        prose_rules   = self.world_config.get("prose_rules", "")
+        prose_rules = self.world_config.get("prose_rules", "")
 
         parts = [
             OPERATOR_DECLARATION,
@@ -395,16 +395,16 @@ class PromptBuilder:
         return genres
 
     def build_dialogue_examples(
-        self,
-        scene_types: list[str],
-        single_type_good: int = 3,
-        single_type_bad: int = 2,
-        multi_type_good: int = 2,
-        multi_type_bad: int = 1,
+            self,
+            scene_types: list[str],
+            single_type_good: int = 3,
+            single_type_bad: int = 2,
+            multi_type_good: int = 2,
+            multi_type_bad: int = 1,
     ) -> str:
         is_multi = len(scene_types) > 1
         good_n = multi_type_good if is_multi else single_type_good
-        bad_n  = multi_type_bad  if is_multi else single_type_bad
+        bad_n = multi_type_bad if is_multi else single_type_bad
         examples_db = self.world_config.get("few_shot_examples", {})
 
         blocks = []
@@ -413,7 +413,7 @@ class PromptBuilder:
             if not ex:
                 continue
             good_lines = "\n".join(f'  - "{l}"' for l in ex["good"][:good_n])
-            bad_lines  = "\n".join(f'  - "{l}"' for l in ex["bad"][:bad_n])
+            bad_lines = "\n".join(f'  - "{l}"' for l in ex["bad"][:bad_n])
             structural = f"\n{ex['structural'].strip()}" if ex.get("structural") else ""
             blocks.append(
                 f"[{st.upper()}]\nGOOD:\n{good_lines}\nBAD:\n{bad_lines}{structural}"
@@ -460,11 +460,11 @@ class PromptBuilder:
             return ""
         blocks = []
         for npc in npcs:
-            name        = npc.get("name", "?")
-            profile     = npc.get("profile", {})
-            rel         = npc.get("rel_to_npc", {})
+            name = npc.get("name", "?")
+            profile = npc.get("profile", {})
+            rel = npc.get("rel_to_npc", {})
             profile_str = json.dumps(profile, ensure_ascii=False, indent=2)
-            rel_str     = json.dumps(rel, ensure_ascii=False, indent=2) if rel else "없음"
+            rel_str = json.dumps(rel, ensure_ascii=False, indent=2) if rel else "없음"
             blocks.append(
                 f"<npc name=\"{name}\">\n"
                 f"<profile>\n{profile_str}\n</profile>\n"
@@ -478,9 +478,9 @@ class PromptBuilder:
         if not relationship:
             return ""
         return (
-            "<relationship>\n"
-            + json.dumps(relationship, ensure_ascii=False, indent=2)
-            + "\n</relationship>"
+                "<relationship>\n"
+                + json.dumps(relationship, ensure_ascii=False, indent=2)
+                + "\n</relationship>"
         )
 
     @staticmethod
@@ -495,7 +495,10 @@ class PromptBuilder:
         return f"<recent_events>\n{lines}\n</recent_events>"
 
     @staticmethod
-    def build_recall_events_section(recall_events:list[dict], memory_conflicts: list[str] | None = None,) -> str:
+    def build_recall_events_section(
+            recall_events: list[dict],
+            memory_conflicts: list[str] | None = None,
+    ) -> str:
         """Vector 유사 검색으로 회상된 과거 이벤트."""
         if not recall_events:
             return ""
@@ -503,7 +506,7 @@ class PromptBuilder:
         for e in recall_events:
             marker = " [MEMORY_CONFLICT]" if e.get("conflict") else ""
             lines.append(f"- {e.get('summary', '')}{marker}")
-        block = f"<recall_events>\n" + "\n".join(lines) + "\n</recall_events>"
+        block = "<recall_events>\n" + "\n".join(lines) + "\n</recall_events>"
 
         if memory_conflicts:
             conflict_hint = (
@@ -512,8 +515,49 @@ class PromptBuilder:
                 "the user's version contradicts the NPC's memory. "
                 "One soft correction max — then move on. -->"
             )
-            block = conflict_hint + "\\n" + block
+            block = conflict_hint + "\n" + block
         return block
+
+    @staticmethod
+    def build_world_section(world_context: dict) -> str:
+        """
+        세상은 움직인다 + SNS 피드를 dynamic_prompt에 주입.
+
+        world_context:
+          {
+            "nearby_activity": [{"name": str, "summary": str}],
+            "sns_posts":       [str],
+          }
+
+        출력 형식 (Actor LLM에 전달):
+          <world_context>
+          [Nearby Activity]
+          - 강지희: 카페에서 혼자 아메리카노를 마셨다
+
+          [SNS Feed]
+          - kang._.Ji 님이 새 게시글을 올렸습니다: '오늘 왜 이렇게 센치함...'
+          </world_context>
+
+        둘 다 비어 있으면 빈 문자열 반환 (dynamic_prompt에 포함 안 됨).
+        """
+        nearby = world_context.get("nearby_activity", [])
+        sns = world_context.get("sns_posts", [])
+
+        if not nearby and not sns:
+            return ""
+
+        parts: list[str] = []
+
+        if nearby:
+            lines = "\n".join(f"- {a['name']}: {a['summary']}" for a in nearby)
+            parts.append(f"[Nearby Activity]\n{lines}")
+
+        if sns:
+            lines = "\n".join(f"- {p}" for p in sns)
+            parts.append(f"[SNS Feed]\n{lines}")
+
+        inner = "\n\n".join(parts)
+        return f"<world_context>\n{inner}\n</world_context>"
 
     def build_header(self, location: str, dt: Optional[datetime] = None) -> str:
         if dt is None:
@@ -525,19 +569,20 @@ class PromptBuilder:
         )
 
     def build(
-        self,
-        scene_types: list[str],
-        char_data: dict,
-        relationship: dict,
-        events: list[dict],
-        recent_story: str,
-        user_input: str,
-        location: str,
-        dt: Optional[datetime] = None,
-        genres: Optional[list[str]] = None,
-        npcs: Optional[list[dict]] = None,
-        recall_events: Optional[list[dict]] = None,
-        memory_conflicts: Optional[list[str]] = None,
+            self,
+            scene_types: list[str],
+            char_data: dict,
+            relationship: dict,
+            events: list[dict],
+            recent_story: str,
+            user_input: str,
+            location: str,
+            dt: Optional[datetime] = None,
+            genres: Optional[list[str]] = None,
+            npcs: Optional[list[dict]] = None,
+            recall_events: Optional[list[dict]] = None,
+            memory_conflicts: Optional[list[str]] = None,
+            world_context: Optional[dict] = None,
     ) -> tuple[str, str, str]:
         """
         Returns:
@@ -558,6 +603,7 @@ class PromptBuilder:
             self.build_npc_section(npcs or []),
             self.build_events_section(events),
             self.build_recall_events_section(recall_events or [], memory_conflicts or []),
+            self.build_world_section(world_context or {}),
             self.build_dialogue_examples(scene_types),
             f"<context>\n{recent_story}\n</context>" if recent_story else "",
             f"<user_input>\n{user_input}\n</user_input>",
