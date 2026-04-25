@@ -68,3 +68,12 @@
   - `babe_univ.py`: `sexual_tendency`, `libido_drive_modifer`, `libido_excluded` 추가. `trait_*` 필드 추가
 - `manager_agent.py`, `time_manager.py`, `state_updater.py`, `app.py`: LLM 호출 최적화.
 - `app.py`: 코드 간결화 및 리팩토링. 이제 `calculate_and_update_time` 함수를 사용하지 않음. (`manager_agent.py`로 이관)
+
+## 2026-04-25
+- [신규] 신규 캐릭터 추가 기능
+  - `world/world_builder.py`: 이제 챗봇이 새로운 캐릭터의 노드를 생성함
+- `embedder.py`: 원하는 임베딩 모델 사용 가능하도록 개선
+- LLM 호출 최적화: `state_updater.py`, `complex_updater.py`
+- [신규] 기억 왜곡 기능 추가
+  - `decay_manager.py`: 이제 중요하지 않은 기억은 점차 NPC에게 유리하게 변질되어 기억됨
+  - `promptBuilder.py`: 이제 왜곡된 기억이라는 사실을 LLM에게 전달함

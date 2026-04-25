@@ -95,13 +95,43 @@ class World:
 
             # ── Event Vector Index ────────────────────────────
             session.run(f"""
-                CREATE VECTOR INDEX event_embeddings IF NOT EXISTS
-                FOR (e:Event) ON (e.embedding)
-                OPTIONS {{indexConfig: {{
-                    `vector.dimensions`: {EMBEDDING_DIM},
-                    `vector.similarity_function`: 'cosine'
-                }}}}
+            CREATE
+            VECTOR
+            INDEX
+            event_embeddings
+            IF
+            NOT
+            EXISTS
+            FOR(e: Event) ON(e.embedding)
+            OPTIONS
+            {{indexConfig: {{
+                `vector.dimensions`: {EMBEDDING_DIM},
+                `vector.similarity_function`: 'cosine'
+            }}}}
             """)
+
+            # ── Memory Vector Index ───────────────────────────
+            session.run(f"""
+            CREATE
+            VECTOR
+            INDEX
+            memory_embeddings
+            IF
+            NOT
+            EXISTS
+            FOR(m: Memory) ON(m.embedding)
+            OPTIONS
+            {{indexConfig: {{
+                `vector.dimensions`: {EMBEDDING_DIM},
+                `vector.similarity_function`: 'cosine'
+            }}}}
+            """)
+
+            # ── Memory constraint ─────────────────────────────
+            session.run(
+                "CREATE CONSTRAINT IF NOT EXISTS FOR (m:Memory) REQUIRE m.id IS UNIQUE"
+            )
+
             print(f"[{self.WORLD_ID}] Vector Index 생성 완료 (dim={EMBEDDING_DIM}).")
 
             # ── GlobalState ───────────────────────────────────

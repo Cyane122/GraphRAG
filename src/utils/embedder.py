@@ -1,25 +1,27 @@
 """
 텍스트 임베딩 유틸리티.
 
-모델: jhgan/ko-sroberta-multitask (768차원, 한국어 특화)
-설치: pip install sentence-transformers
-
 첫 호출 시 모델을 다운로드/로드합니다 (수 초 소요).
 이후 호출은 캐싱된 모델을 사용합니다.
 """
 
 import asyncio
-from typing import Optional
+import os
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 _model = None  # 싱글톤
-
+MODEL_NAME = os.getenv("MODEL_EMBEDDER")
+EMBEDDING_DIM = os.getenv("EMBEDDING_DIM")
 
 def _get_model():
     global _model
     if _model is None:
-        print("[Embedder] 모델 로드 중: jhgan/ko-sroberta-multitask ...")
+        print(f"[Embedder] 모델 로드 중: {MODEL_NAME} ...")
         from sentence_transformers import SentenceTransformer
-        _model = SentenceTransformer("jhgan/ko-sroberta-multitask")
+        _model = SentenceTransformer(MODEL_NAME)
         print("[Embedder] 모델 로드 완료.")
     return _model
 
@@ -38,4 +40,3 @@ async def embed_async(text: str) -> list[float]:
     return await loop.run_in_executor(None, embed_sync, text)
 
 
-EMBEDDING_DIM = 768  # jhgan/ko-sroberta-multitask 출력 차원

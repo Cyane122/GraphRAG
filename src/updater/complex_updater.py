@@ -1,11 +1,14 @@
+# src/updater/complex_updater.py
 """
 Complex event handler.
 LLM으로 멀티 노드 업데이트 플랜 생성 → DynamicState 갱신 + 호감도 delta + Event 노드 생성.
 Event 생성 시 summary를 임베딩해 Vector Index에 등록.
+Event 생성 후 관련 캐릭터별 Memory 노드도 자동 생성.
 """
 
 import os
 import json
+from datetime import datetime
 
 from src.utils.llm_utils import llm_client, extract_json_from_llm
 from src.utils.db_utils import (
@@ -15,8 +18,23 @@ from src.utils.db_utils import (
     get_in_universe_time,
 )
 from src.utils.embedder import embed_async
+from src.memory.decay_manager import ensure_memories_for_event
+from src.world.world_builder import resolve_and_update as wb_resolve
 
 COMPLEX_MODEL = os.getenv("MODEL_COMPLEX_UPDATER", "claude-sonnet-4-6")
+
+
+async def _get_current_iso_time() -> str:
+    """GlobalState에서 현재 인게임 시간을 ISO 8601 형식으로 반환. Memory 노드 timestamp 용."""
+    from src.utils.db_utils import async_driver as _ad
+    async with _ad.session() as session:
+        rec = await session.run(
+            "MATCH (gs:GlobalState {id: 'singleton'}) RETURN gs.currentTime AS ct"
+        )
+        row = await rec.single()
+        if row and row["ct"]:
+            return row["ct"]  # GlobalState.currentTime은 이미 isoformat으로 저장됨
+    return datetime.now().isoformat()
 
 
 # ════════════════════════════════════════════════════════════
@@ -112,10 +130,12 @@ async def _create_event(event_data: dict, npc_id: str, pc_id: str) -> None:
     if not event_data or not event_data.get("id"):
         return
 
-    timestamp = await get_in_universe_time()
-    summary   = event_data.get("summary", "")
+    timestamp_fmt  = await get_in_universe_time()   # YYYYMMDD_HHMM — Event 노드용
+    timestamp_iso  = await _get_current_iso_time()  # ISO 8601 — Memory 노드용
+    summary        = event_data.get("summary", "")
+    importance     = event_data.get("importance", 5)
 
-    # ── 임베딩 생성 (Vector Index 등록용) ──────────────────
+    # ── 임베딩 생성 ───────────────────────────────────────
     embedding = None
     if summary:
         try:
@@ -126,20 +146,23 @@ async def _create_event(event_data: dict, npc_id: str, pc_id: str) -> None:
     async with async_driver.session() as session:
         await session.run("""
             CREATE (:Event {
-                id:            $id,
-                summary:       $summary,
-                timestamp:     $timestamp,
-                importance:    $importance,
-                impact:        $impact,
-                decay_rate:    0.1,
-                summary_level: 0,
-                embedding:     $embedding
+                id:               $id,
+                summary:          $summary,
+                timestamp:        $timestamp,
+                importance:       $importance,
+                impact:           $impact,
+                decay_rate:       0.1,
+                summary_level:    0,
+                safety_impact:    0.0,
+                safety_resolved:  true,
+                safety_decay_rate: 0.0,
+                embedding:        $embedding
             })
         """,
             id=event_data["id"],
             summary=summary,
-            timestamp=timestamp,
-            importance=event_data.get("importance", 5),
+            timestamp=timestamp_fmt,
+            importance=importance,
             impact=event_data.get("impact", ""),
             embedding=embedding,
         )
@@ -155,9 +178,19 @@ async def _create_event(event_data: dict, npc_id: str, pc_id: str) -> None:
             MATCH (a:Character {id: $a})-[r:RELATIONSHIP]->(b:Character {id: $b})
             SET r.shared_events    = coalesce(r.shared_events, []) + [$event_id],
                 r.last_interaction = $timestamp
-        """, a=npc_id, b=pc_id, event_id=event_data["id"], timestamp=timestamp)
+        """, a=npc_id, b=pc_id, event_id=event_data["id"], timestamp=timestamp_fmt)
 
-    print(f"[ComplexUpdater] event created: {event_data['id']} (embedding={'yes' if embedding else 'no'})")
+    print(f"[ComplexUpdater] event created: {event_data['id']} (importance={importance})")
+
+    # ── 캐릭터별 Memory 노드 생성 ─────────────────────────
+    await ensure_memories_for_event(
+        event_id   = event_data["id"],
+        summary    = summary,
+        importance = importance,
+        char_ids   = [npc_id, pc_id],
+        timestamp  = timestamp_iso,   # ISO 8601 형식 전달
+        embedding  = embedding,
+    )
 
 
 async def _evolve_relationship_status(
@@ -220,21 +253,24 @@ Return ONLY the new current_status string. No quotes, no JSON, no explanation.""
 # ════════════════════════════════════════════════════════════
 
 async def delegate_complex_update(
-    actor_response: str,
-    npc_id: str,
-    pc_id: str,
-    initial_changes: dict | None = None,
-    event_only: bool = False,
+    actor_response:   str,
+    npc_id:           str,
+    pc_id:            str,
+    initial_changes:  dict | None = None,
+    event_only:       bool = False,
+    world_config:     dict | None = None,
+    scene_chars:      list[str] | None = None,
 ) -> None:
     """
     Complex 업데이트 파이프라인.
-    event_only=True → DynamicState/호감도 업데이트 없이 Event 생성만.
+    event_only=True → DynamicState/호감도 없이 Event 생성만.
+    scene_chars: CoT 파싱 결과 → world_builder로 전달.
     """
     plan = _generate_update_plan(
-        actor_response=actor_response,
-        npc_id=npc_id,
-        pc_id=pc_id,
-        initial_changes=initial_changes or {},
+        actor_response  = actor_response,
+        npc_id          = npc_id,
+        pc_id           = pc_id,
+        initial_changes = initial_changes or {},
     )
 
     if not event_only:
@@ -256,3 +292,17 @@ async def delegate_complex_update(
                 new_event.get("summary", ""),
                 new_event.get("importance", 7),
             )
+
+    # ── world_builder: 이름 목록 기반 캐릭터 생성/갱신 ────
+    if world_config and scene_chars:
+        try:
+            await wb_resolve(
+                char_names       = scene_chars,
+                main_npc_id      = npc_id,
+                pc_id            = pc_id,
+                world_config     = world_config,
+                event_id         = new_event.get("id") if new_event else None,
+                event_importance = new_event.get("importance", 0) if new_event else 0,
+            )
+        except Exception as e:
+            print(f"[WorldBuilder] resolve 실패 (무시): {e}")

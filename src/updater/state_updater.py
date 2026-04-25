@@ -1,10 +1,5 @@
 """
 Actor 응답 → expression_classifier → DB 업데이트 → complex_updater 위임.
-
-최적화: _needs_classification() pre-filter로 Haiku 호출 스킵.
-  - intimate / workplace / physical 씬 → 항상 분류
-  - 그 외 씬 → 상태 변화 키워드 hit 시에만 분류
-  - 키워드 미스 → 호출 없이 리턴
 """
 
 import re
@@ -39,17 +34,27 @@ async def process_actor_response(
     npc_id:         str,
     pc_id:          str,
     scene_types:    list[str] | None = None,
+    scene_chars:    list[str] | None = None,
+    world_config:   dict | None = None,
 ) -> dict:
     """
     Actor 응답을 분석하여 상태 업데이트.
-    scene_types 미전달 시 항상 분류 (이전 동작 유지).
+    scene_types 미전달 시 항상 분류.
+    scene_chars: CoT에서 파싱한 등장인물 풀네임 목록 → world_builder로 전달.
     """
     if scene_types and not _needs_classification(actor_response, scene_types):
         print("[StateUpdater] 스킵 (변화 키워드 없음)")
+        # world_builder는 상태 변화 없어도 실행
+        if world_config and scene_chars:
+            from src.world.world_builder import resolve_and_update
+            await resolve_and_update(scene_chars, npc_id, pc_id, world_config)
         return {"updated": {}, "delegated_to_complex": False}
 
     changes = classify_and_extract(actor_response)
     if not changes:
+        if world_config and scene_chars:
+            from src.world.world_builder import resolve_and_update
+            await resolve_and_update(scene_chars, npc_id, pc_id, world_config)
         return {"updated": {}, "delegated_to_complex": False}
 
     physical_val  = changes.get("physical_condition", "")
@@ -73,6 +78,13 @@ async def process_actor_response(
 
     if needs_complex:
         from src.updater.complex_updater import delegate_complex_update
-        await delegate_complex_update(actor_response, npc_id, pc_id, changes)
+        await delegate_complex_update(
+            actor_response  = actor_response,
+            npc_id          = npc_id,
+            pc_id           = pc_id,
+            initial_changes = changes,
+            world_config    = world_config,
+            scene_chars     = scene_chars or [],
+        )
 
     return {"updated": simple_changes, "delegated_to_complex": needs_complex}

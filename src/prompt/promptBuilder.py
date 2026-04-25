@@ -358,12 +358,12 @@ Max output = {os.getenv("MAX_TOKEN", 4096)} tokens. Deliver a complete response 
 <thinking> block must be concise.
 </token_limit_constraint>"""
 
-
 PRE_OUTPUT_CHECKLIST = """<cot>
 Before writing, open <thinking> and complete this scan. One line per item. Quote the violation or write "none."
 
 <thinking>
 SCENE: [What's happening — 1 sentence]
+CHARACTERS: [이 씬에 등장하는 모든 인물을 성+이름 3자리 한국어 풀네임 JSON 배열로. 예: ["김철수", "박민서", "강은하"] / 이름 불명 인물 제외]
 PUPPETRY: [{user}'s inner state/action I planned to narrate → quote or "none"]
 SHOW/TELL:
 (a) Sentence explaining/classifying the one immediately before it? [quote or "none"]
@@ -543,15 +543,25 @@ class PromptBuilder:
         return f"<recent_events>\n{lines}\n</recent_events>"
 
     @staticmethod
-    def build_recall_events_section(recall_events: list[dict]) -> str:
+    def build_recall_events_section(recall_events:list[dict], memory_conflicts: list[str] | None = None,) -> str:
         """Vector 유사 검색으로 회상된 과거 이벤트."""
         if not recall_events:
             return ""
-        lines = "\n".join(
-            f"- [{e.get('timestamp', '?')}] {e.get('summary', '')} (sim={e.get('score', '?')})"
-            for e in recall_events
-        )
-        return f"<recall_events>\n{lines}\n</recall_events>"
+        lines = []
+        for e in recall_events:
+            marker = " [MEMORY_CONFLICT]" if e.get("conflict") else ""
+            lines.append(f"- {e.get('summary', '')}{marker}")
+        block = f"<recall_events>\n" + "\n".join(lines) + "\n</recall_events>"
+
+        if memory_conflicts:
+            conflict_hint = (
+                "<!-- MEMORY_CONFLICT detected: NPC's memory of this event differs "
+                "from what the user may believe. React with mild natural confusion if "
+                "the user's version contradicts the NPC's memory. "
+                "One soft correction max — then move on. -->"
+            )
+            block = conflict_hint + "\\n" + block
+        return block
 
     def build_header(self, location: str, dt: Optional[datetime] = None) -> str:
         if dt is None:
@@ -575,6 +585,7 @@ class PromptBuilder:
         genres: Optional[list[str]] = None,
         npcs: Optional[list[dict]] = None,
         recall_events: Optional[list[dict]] = None,
+        memory_conflicts: Optional[list[str]] = None,
     ) -> tuple[str, str, str]:
         """
         Returns:
@@ -594,7 +605,7 @@ class PromptBuilder:
             self.build_relationship_section(relationship),
             self.build_npc_section(npcs or []),
             self.build_events_section(events),
-            self.build_recall_events_section(recall_events or []),
+            self.build_recall_events_section(recall_events or [], memory_conflicts or []),
             self.build_dialogue_examples(scene_types),
             f"<context>\n{recent_story}\n</context>" if recent_story else "",
             f"<user_input>\n{user_input}\n</user_input>",

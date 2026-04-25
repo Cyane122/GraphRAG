@@ -71,7 +71,9 @@ async def _commit_pending(pending: dict) -> None:
     await msg.send()
     await process_actor_response(
         pending["ai_response"], NPC_ID, PC_ID,
-        scene_types=pending.get("scene_types"),
+        scene_types  = pending.get("scene_types"),
+        scene_chars  = pending.get("scene_chars", []),
+        world_config = world_config,
     )
     append_turn(
         user_input  = pending["user_input"],
@@ -104,6 +106,7 @@ async def _stream_actor(
     await response_msg.send()
 
     raw = ""
+    scene_chars: list[str] = []
     async with cl.Step(name="사고 과정", show_input=False) as step:
         async with _async_client.messages.stream(
             model       = model,
@@ -116,14 +119,36 @@ async def _stream_actor(
                 raw += chunk
 
         m = re.search(r"<thinking>(.*?)</thinking>", raw, re.DOTALL)
-        step.output = f"```thought\n{m.group(1).strip()}\n```" if m else "사고 과정이 생략되었습니다."
+        if m:
+            thinking_text = m.group(1)
+            step.output = f"```thought\n{thinking_text.strip()}\n```"
+            # CHARACTERS 줄 파싱 — 3자리 한국어 풀네임 배열
+            chars_m = re.search(
+                r'CHARACTERS:\s*(\[.*?\])',
+                thinking_text,
+                re.DOTALL,
+            )
+            if chars_m:
+                try:
+                    import json as _json
+                    parsed_chars = _json.loads(chars_m.group(1))
+                    # 2~4자리 한국어 이름만 허용 (숫자·영문 제외)
+                    scene_chars = [
+                        c for c in parsed_chars
+                        if isinstance(c, str) and 2 <= len(c) <= 4
+                        and re.match(r'^[가-힣]+$', c)
+                    ]
+                except Exception:
+                    pass
+        else:
+            step.output = "사고 과정이 생략되었습니다."
 
     full = re.sub(r"<thinking>.*?</thinking>\s*", "", raw, flags=re.DOTALL).strip()
     for token in full:
         await response_msg.stream_token(token)
         await asyncio.sleep(0.005)
     await response_msg.update()
-    return full
+    return full, scene_chars
 
 
 async def _load_log_into_session(file_path: Path) -> None:
@@ -173,7 +198,9 @@ async def on_chat_end():
         asyncio.create_task(
             process_actor_response(
                 pending["ai_response"], NPC_ID, PC_ID,
-                scene_types=pending.get("scene_types"),
+                scene_types  = pending.get("scene_types"),
+                scene_chars  = pending.get("scene_chars", []),
+                world_config = world_config,
             )
         )
         append_turn(
@@ -232,7 +259,7 @@ async def on_message(message: cl.Message):
         step.output = f"씬 타입: `{scene_types}`"
 
     # 4. Actor 스트리밍
-    full_response = await _stream_actor(fixed, genre, dynamic, history)
+    full_response, scene_chars = await _stream_actor(fixed, genre, dynamic, history)
 
     # 5. 히스토리 갱신 + 지연 확정 예약
     history += [{"role": "user", "content": dynamic}, {"role": "assistant", "content": full_response}]
@@ -242,8 +269,9 @@ async def on_message(message: cl.Message):
     recent_responses.append(full_response[:1500])
     cl.user_session.set("recent_responses", recent_responses[-RECENT_STORY_TURNS:])
     cl.user_session.set("pending_commit", {
-        "user_input":  user_input,
-        "ai_response": full_response,
-        "scene_types": scene_types,
-        "timestamp":   datetime.now(),
+        "user_input":   user_input,
+        "ai_response":  full_response,
+        "scene_types":  scene_types,
+        "scene_chars":  scene_chars,
+        "timestamp":    datetime.now(),
     })

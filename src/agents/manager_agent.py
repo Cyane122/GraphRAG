@@ -1,11 +1,5 @@
 """
 파이프라인 오케스트레이터.
-
-변경사항 (LLM 호출 최적화):
-  - classify_scene + calculate_and_update_time → _classify_and_parse_time (1 call)
-  - 짧은 대화 입력은 rule-based fast-path (0 LLM calls)
-  - run_needs_update 내부 호출 → libido_hints를 dynamic prompt에 직접 주입
-  - expression_classifier 스킵 로직은 state_updater.py에 위임
 """
 
 import asyncio
@@ -13,13 +7,13 @@ import os
 import re
 from datetime import datetime
 from importlib import import_module
-from typing import Any
 
 from src.prompt.promptBuilder import PromptBuilder
 from src.graph.world.default import World
 from src.utils.db_utils import async_driver, fetch_similar_events
 from src.utils.llm_utils import extract_json_from_llm, llm_client
 from src.utils.embedder import embed_async
+from src.memory.decay_manager import run_decay
 from src.updater.time_manager import apply_time_updates
 from src.needs.needs_manager import run_needs_update
 
@@ -348,15 +342,32 @@ async def run_manager(
         scene_types = parse_result.get("scene_types") or ["daily"]
 
     # ── 2. DB 시간 사이드이펙트 ──────────────────────────────
+    base_time  = datetime.fromisoformat(global_state["currentTime"])
     current_dt = await apply_time_updates(
-        plan           = parse_result,
-        base_time      = datetime.fromisoformat(global_state["currentTime"]),
-        pc_id          = pc_id,
-        npc_id         = npc_id,
+        plan      = parse_result,
+        base_time = base_time,
+        pc_id     = pc_id,
+        npc_id    = npc_id,
     )
 
     # ── 3. 욕구 업데이트 + libido hints ──────────────────────
-    elapsed_minutes = float(parse_result.get("elapsed_minutes") or 2)
+    elapsed_minutes = (current_dt - base_time).total_seconds() / 60
+    elapsed_minutes = max(1.0, elapsed_minutes)
+
+    needs_result    = await run_needs_update(
+        pc_id           = pc_id,
+        elapsed_minutes = elapsed_minutes,
+        current_time    = current_dt,
+    )
+    libido_hints: dict[str, str] = needs_result.get("libido_hints", {})
+
+    # ── 3-1. 기억 풍화 (날짜 변경 시) ────────────────────────
+    days_passed = (current_dt.date() - base_time.date()).days
+    if days_passed > 0:
+        try:
+            await run_decay(current_dt)
+        except Exception as e:
+            print(f"[Manager] decay 실패 (무시): {e}")
     needs_result    = await run_needs_update(
         pc_id           = pc_id,
         elapsed_minutes = elapsed_minutes,
@@ -372,17 +383,47 @@ async def run_manager(
         fetch_recent_events(npc_id, limit=3),
     )
 
-    # ── 5. Vector 유사 검색 (recall_events) ─────────────────
-    recall_events: list[dict] = []
+    # ── 5. Vector 유사 검색 (recall_events) — Memory 기반 ────
+    recall_events:    list[dict] = []
+    memory_conflicts: list[str]  = []
+    raw_memories:     list[dict] = []   # try 밖 초기화 — NameError 방지
     try:
-        query_embedding   = await embed_async(user_input)
-        recall_candidates = await fetch_similar_events(
-            char_id         = npc_id,
-            query_embedding = query_embedding,
-            limit           = 2,
-        )
-        recent_ids    = {e["id"] for e in recent_events}
-        recall_events = [e for e in recall_candidates if e["id"] not in recent_ids]
+        query_embedding = await embed_async(user_input)
+
+        async with async_driver.session() as session:
+            rec = await session.run("""
+                CALL db.index.vector.queryNodes('memory_embeddings', $candidates, $embedding)
+                YIELD node AS mem, score
+                MATCH (c:Character {id: $char_id})-[:REMEMBERS]->(mem)
+                WHERE score >= $threshold AND mem.summary_level < 3
+                RETURN mem.event_id         AS id,
+                       mem.summary          AS summary,
+                       mem.distortion_level AS distortion,
+                       score
+                ORDER BY score DESC
+                LIMIT $limit
+            """,
+                char_id    = npc_id,
+                embedding  = query_embedding,
+                candidates = 10,
+                threshold  = 0.65,
+                limit      = 2,
+            )
+            raw_memories = await rec.data()
+
+        recent_ids = {e["id"] for e in recent_events}
+        for m in raw_memories:
+            if m["id"] in recent_ids:
+                continue
+            recall_events.append({
+                "id":      m["id"],
+                "summary": m["summary"],
+                "score":   round(m["score"], 3),
+            })
+            # 왜곡된 기억 → conflict 플래그
+            if m["distortion"] and float(m["distortion"]) > 0.2:
+                memory_conflicts.append(m["summary"])
+
     except Exception as e:
         print(f"[Manager] recall_events 조회 실패 (무시): {e}")
 
@@ -402,22 +443,24 @@ async def run_manager(
     builder = PromptBuilder(world_config, char_data.get("name"), user_data.get("name"))
 
     fixed_prompt, genre_prompt, dynamic_prompt = builder.build(
-        scene_types  = scene_types,
-        char_data    = char_data,
-        relationship = relationship,
-        events       = [
+        scene_types      = scene_types,
+        char_data        = char_data,
+        relationship     = relationship,
+        events           = [
             {"timestamp": e["timestamp"], "summary": e["summary"]}
             for e in recent_events
         ],
-        recall_events = [
-            {"timestamp": e["timestamp"], "summary": e["summary"], "score": round(e.get("score", 0), 3)}
+        recall_events    = [
+            {"summary": e["summary"], "score": e.get("score", 0),
+             "conflict": e["id"] in [m["id"] for m in raw_memories if float(m.get("distortion") or 0) > 0.2]}
             for e in recall_events
         ],
-        recent_story = recent_story,
-        user_input   = user_input,
-        location     = location_name,
-        npcs         = npcs,
-        dt           = current_dt,
+        recent_story     = recent_story,
+        user_input       = user_input,
+        location         = location_name,
+        npcs             = npcs,
+        dt               = current_dt,
+        memory_conflicts = memory_conflicts,
     )
 
     # ── 9. libido hints → dynamic prompt 주입 ───────────────
