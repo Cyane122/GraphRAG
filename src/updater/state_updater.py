@@ -1,97 +1,78 @@
-# src/updater/state_updater.py
 """
-Actor 응답을 받은 뒤 비동기로 실행되는 단순 상태 업데이터.
+Actor 응답 → expression_classifier → DB 업데이트 → complex_updater 위임.
 
-흐름:
-  Actor 응답 → expression_classifier.classify_and_extract()
-             → DB 업데이트 (neo4j)
-             → 복합 이벤트 판별 → Sonnet 위임 (complex_updater)
-
-단순 업데이트 조건:
-  - 단일 노드 변경 (DynamicState만)
-  - 수치/위치/감정 변경
-
-복합 이벤트 위임 조건:
-  - physical_condition + injury_detail 동시 변경
-  - affinity 변경 (관계 노드도 함께 업데이트 필요)
-  - hospitalized (입원 이벤트 생성 필요)
+최적화: _needs_classification() pre-filter로 Haiku 호출 스킵.
+  - intimate / workplace / physical 씬 → 항상 분류
+  - 그 외 씬 → 상태 변화 키워드 hit 시에만 분류
+  - 키워드 미스 → 호출 없이 리턴
 """
 
-import asyncio
+import re
 
 from src.utils.db_utils import update_dynamic_state, update_relationship_affinity
 from src.updater.expression_classifier import classify_and_extract
 
-# 복합 업데이트가 필요한 필드 조합
-COMPLEX_TRIGGERS = {
-    "hospitalized",   # physical_condition = hospitalized
-    "affinity",       # 관계 노드 변경 필요
-}
+# 상태 변화가 일어났을 가능성이 있는 키워드 패턴
+_CHANGE_PATTERN = re.compile(
+    r"다쳤|부상|병원|골절|삐었|쓰러|기절|아프|열이|입원|"
+    r"이동했|나갔|도착|들어왔|장소|"
+    r"스트레스|화났|슬퍼|불안|우울|힘들|짜증|무너|"
+    r"싸웠|화해|고백|사귀|헤어|"
+    r"injured|hospitalized|arrived|moved|stressed"
+)
 
-# ════════════════════════════════════════════════════════════
-# 메인 진입점 (비동기)
-# ════════════════════════════════════════════════════════════
+# 이 씬 타입은 키워드 여부 상관없이 항상 분류
+_ALWAYS_CLASSIFY = {"intimate", "workplace", "physical"}
+
+COMPLEX_TRIGGERS = {"hospitalized", "affinity"}
+
+
+def _needs_classification(actor_response: str, scene_types: list[str]) -> bool:
+    """Haiku 호출이 필요한지 판단. False면 분류 전체 스킵."""
+    if any(t in scene_types for t in _ALWAYS_CLASSIFY):
+        return True
+    return bool(_CHANGE_PATTERN.search(actor_response))
+
 
 async def process_actor_response(
     actor_response: str,
-    npc_id: str,
-    pc_id: str,
+    npc_id:         str,
+    pc_id:          str,
+    scene_types:    list[str] | None = None,
 ) -> dict:
     """
-    Actor 응답을 비동기로 분석하여 상태 업데이트.
-    복합 이벤트는 complex_updater에 위임.
-
-    Returns:
-        {"updated": dict, "delegated_to_complex": bool}
+    Actor 응답을 분석하여 상태 업데이트.
+    scene_types 미전달 시 항상 분류 (이전 동작 유지).
     """
-    # 1. 표현 분류 + 필드 추출
+    if scene_types and not _needs_classification(actor_response, scene_types):
+        print("[StateUpdater] 스킵 (변화 키워드 없음)")
+        return {"updated": {}, "delegated_to_complex": False}
+
     changes = classify_and_extract(actor_response)
     if not changes:
         return {"updated": {}, "delegated_to_complex": False}
 
-    # 2. 복합 이벤트 판별
-    needs_complex = False
     physical_val  = changes.get("physical_condition", "")
+    needs_complex = (
+        physical_val == "hospitalized"
+        or "affinity" in changes
+        or ("injury_detail" in changes and "physical_condition" in changes)
+    )
 
-    if physical_val == "hospitalized":
-        needs_complex = True
-    if "affinity" in changes:
-        needs_complex = True
-    if "injury_detail" in changes and "physical_condition" in changes:
-        needs_complex = True   # 부상 복합 처리
-
-    # 3. 단순 업데이트 분리 처리
     simple_changes = {
         k: v for k, v in changes.items()
         if k not in {"affinity"} and not needs_complex
     }
-
     if simple_changes:
         await update_dynamic_state(npc_id, simple_changes)
 
-    # 4. affinity는 별도 처리 (단순이라도)
     if "affinity" in changes and not needs_complex:
         delta = changes["affinity"]
         if isinstance(delta, (int, float)):
             await update_relationship_affinity(npc_id, pc_id, int(delta))
 
-    # 5. 복합 이벤트 위임 (import는 순환 방지를 위해 지연)
     if needs_complex:
         from src.updater.complex_updater import delegate_complex_update
         await delegate_complex_update(actor_response, npc_id, pc_id, changes)
 
-    return {
-        "updated":               simple_changes,
-        "delegated_to_complex":  needs_complex,
-    }
-
-
-# ── 동기 래퍼 (Chainlit에서 asyncio.create_task로 호출 시 사용) ─
-def schedule_update(actor_response: str, npc_id: str, pc_id: str) -> None:
-    """
-    Chainlit의 이벤트 루프에서 fire-and-forget으로 호출.
-    응답 생성과 병렬 실행되므로 유저 응답을 블로킹하지 않음.
-    """
-    asyncio.create_task(
-        process_actor_response(actor_response, npc_id, pc_id)
-    )
+    return {"updated": simple_changes, "delegated_to_complex": needs_complex}

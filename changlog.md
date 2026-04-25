@@ -60,3 +60,11 @@
 - `example.env`: `.env` 예시 파일 추가
 - `embedder.py`: 임베딩 모델 추가
 - `conversation_logger.py`: 채팅 저장 및 불러오기 기능 추가.
+- [신규] 욕구 시스템 추가
+  - `needs_manager.py`
+  - `traits_initializer.py`
+  - `action_resolver.py`
+- [신규] 스키마 대응 추가
+  - `babe_univ.py`: `sexual_tendency`, `libido_drive_modifer`, `libido_excluded` 추가. `trait_*` 필드 추가
+- `manager_agent.py`, `time_manager.py`, `state_updater.py`, `app.py`: LLM 호출 최적화.
+- `app.py`: 코드 간결화 및 리팩토링. 이제 `calculate_and_update_time` 함수를 사용하지 않음. (`manager_agent.py`로 이관)

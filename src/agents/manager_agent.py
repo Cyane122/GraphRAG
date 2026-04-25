@@ -1,4 +1,16 @@
+"""
+파이프라인 오케스트레이터.
+
+변경사항 (LLM 호출 최적화):
+  - classify_scene + calculate_and_update_time → _classify_and_parse_time (1 call)
+  - 짧은 대화 입력은 rule-based fast-path (0 LLM calls)
+  - run_needs_update 내부 호출 → libido_hints를 dynamic prompt에 직접 주입
+  - expression_classifier 스킵 로직은 state_updater.py에 위임
+"""
+
+import asyncio
 import os
+import re
 from datetime import datetime
 from importlib import import_module
 from typing import Any
@@ -8,6 +20,8 @@ from src.graph.world.default import World
 from src.utils.db_utils import async_driver, fetch_similar_events
 from src.utils.llm_utils import extract_json_from_llm, llm_client
 from src.utils.embedder import embed_async
+from src.updater.time_manager import apply_time_updates
+from src.needs.needs_manager import run_needs_update
 
 CLASSIFIER_MODEL = os.getenv("MODEL_CLASSIFIER", "claude-haiku-4-5-20251001")
 
@@ -29,41 +43,105 @@ SCENE_REL_MAP: dict[str, list[str]] = {
     "aegyo":     ["HAS_PROFILE", "HAS_PERSONALITY", "HAS_STATE"],
 }
 
+# rule-based fast-path: 이 패턴이 있으면 LLM 필요
+_NEEDS_LLM_PATTERN = re.compile(
+    r"\*|다음\s*날|내일|어제|시간\s*후|분\s*후|나중에|며칠|다음\s*주|"
+    r"이동|장소|헬스장|카페|학교|편의점|집에|나갔|들어왔|"
+    r"날씨|비|눈|천둥|intimate|직장|workplace"
+)
+_RULE_BASED_MAX_LEN = 60   # 이 길이 이하 + 패턴 없으면 rule-based 처리
+
 
 # ════════════════════════════════════════════════════════════
-# 씬 분류
+# 씬 분류 + 시간 계산 (통합)
 # ════════════════════════════════════════════════════════════
 
-async def classify_scene(user_input: str, recent_story: str) -> list[str]:
-    prompt = f"""You are a scene classifier for a roleplay system.
-Analyze the user input and recent story, return a JSON array of scene types.
+def _try_rule_based(user_input: str) -> dict | None:
+    """
+    패턴 없는 짧은 대화 → LLM 없이 처리.
+    처리 불가 시 None 반환 → LLM fallback.
+    """
+    if len(user_input) > _RULE_BASED_MAX_LEN:
+        return None
+    if _NEEDS_LLM_PATTERN.search(user_input):
+        return None
+    return {
+        "scene_types":    ["daily"],
+        "action_type":    "dialogue",
+        "elapsed_minutes": 2,
+        "new_weather":    None,
+        "new_location_id": None,
+        "reason":         "rule-based: short dialogue",
+    }
 
-Possible types: daily / emotional / physical / intimate / workplace / aegyo
-Multiple types allowed. Return ONLY a JSON array. No explanation, no markdown.
-Example: ["daily", "emotional"]
 
-Recent story:
-{recent_story}
+async def _classify_and_parse_time(
+    user_input:    str,
+    recent_story:  str,
+    global_state:  dict,
+    allowed_locs:  str,
+) -> dict:
+    """
+    씬 타입 분류 + 시간 계산을 1번의 Haiku 호출로 처리.
+    rule-based fast-path가 None을 반환한 경우에만 호출됨.
+    """
+    current_time = datetime.fromisoformat(global_state["currentTime"])
+    context_snippet = recent_story[-800:] if recent_story else ""
 
-User input:
-{user_input}"""
+    prompt = f"""You are a combined scene classifier and time parser for a Korean roleplay system.
+Analyze the user input and return a single JSON object. No explanation, no markdown.
+
+[Current World State]
+Time: {current_time.strftime("%Y-%m-%d %H:%M")} | Weather: {global_state["weather"]} | Location: {global_state["currentLocationId"]}
+
+[Allowed Locations]
+{allowed_locs}
+
+[Context]
+{context_snippet}
+
+[User Input]
+{user_input}
+
+[Rules]
+scene_types: array of ["daily","emotional","physical","intimate","workplace","aegyo"] (1+ required)
+action_type: "dialogue"(3min) | "action"(10min) | "movement"(25min) | "ooc_jump"(null min, use target_hour)
+target_hour: int (0-23) only for ooc_jump. Map: 새벽→3, 아침→8, 점심→12, 오후→15, 저녁→19, 밤→23
+new_location_id: existing ID from Allowed Locations ONLY, else null
+new_weather: from [Clear,Cloudy,Foggy,Drizzle,Rain,Heavy Rain,Thunderstorm,Snow,Heavy Snow,Windy] or null
+
+[Output — ONLY this JSON]
+{{
+  "scene_types": [...],
+  "action_type": "...",
+  "target_hour": null,
+  "elapsed_minutes": 3,
+  "new_weather": null,
+  "new_location_id": null,
+  "reason": "..."
+}}"""
 
     try:
-        response = llm_client.messages.create(
+        resp = llm_client.messages.create(
             model=CLASSIFIER_MODEL,
-            max_tokens=64,
+            max_tokens=128,
             temperature=0.0,
             messages=[{"role": "user", "content": prompt}],
         )
-        raw = response.content[0].text
-        scene_types = extract_json_from_llm(raw)
-        if not isinstance(scene_types, list):
-            raise ValueError("not a list")
-        print(f"[씬 분류 / {CLASSIFIER_MODEL}] {scene_types}")
-        return scene_types
+        parsed = extract_json_from_llm(resp.content[0].text)
+        if not isinstance(parsed, dict) or "scene_types" not in parsed:
+            raise ValueError("invalid structure")
+        print(f"[Classify+Time / {CLASSIFIER_MODEL}] scene={parsed.get('scene_types')} elapsed={parsed.get('elapsed_minutes')}min")
+        return parsed
     except Exception as e:
-        print(f"[씬 분류 실패] {e} → 폴백: ['daily']")
-        return ["daily"]
+        print(f"[Classify+Time 실패] {e} → fallback")
+        return {
+            "scene_types":    ["daily"],
+            "action_type":    "dialogue",
+            "elapsed_minutes": 3,
+            "new_weather":    None,
+            "new_location_id": None,
+        }
 
 
 # ════════════════════════════════════════════════════════════
@@ -83,7 +161,7 @@ def load_world_instance(world_id: str) -> World:
 
 
 # ════════════════════════════════════════════════════════════
-# DB 조회 함수
+# DB 조회
 # ════════════════════════════════════════════════════════════
 
 async def fetch_character_data(char_id: str, scene_types: list[str]) -> dict:
@@ -166,8 +244,27 @@ async def fetch_global_state(fallback_dt: datetime) -> dict:
     }
 
 
+async def _get_allowed_locations() -> str:
+    async with async_driver.session() as session:
+        result = await session.run("MATCH (l:Location) RETURN l.id AS id, l.name AS name")
+        records = await result.data()
+        locs = [f'- "{r["id"]}" ({r["name"]})' for r in records]
+        return "\n".join(locs) if locs else "- No registered locations."
+
+
+async def get_location_name_from_id(location_id: str | None) -> str | None:
+    if not location_id:
+        return None
+    async with async_driver.session() as session:
+        result = await session.run(
+            "MATCH (l:Location {id: $id}) RETURN l.name AS name", id=location_id
+        )
+        record = await result.single()
+        return record["name"] if record else None
+
+
 def detect_present_npcs(
-    user_input: str,
+    user_input:   str,
     recent_story: str,
     npc_name_map: dict[str, str],
 ) -> list[str]:
@@ -182,15 +279,17 @@ def detect_present_npcs(
 
 
 async def fetch_npc_profiles(
-    npc_ids: list[str],
+    npc_ids:     list[str],
     main_npc_id: str,
-    pc_id: str,
+    pc_id:       str,
 ) -> list[dict]:
     results = []
     async with async_driver.session() as session:
-        for npc_id in npc_ids:
+        for nid in npc_ids:
+            if nid in (main_npc_id, pc_id):
+                continue
             name_rec = await session.run(
-                "MATCH (c:Character {id: $id}) RETURN c.name AS name", id=npc_id
+                "MATCH (c:Character {id: $id}) RETURN c.name AS name", id=nid
             )
             name_row = await name_rec.single()
             if not name_row:
@@ -199,17 +298,17 @@ async def fetch_npc_profiles(
             profile_rec = await session.run("""
                 MATCH (c:Character {id: $id})-[:HAS_PROFILE]->(p)
                 RETURN properties(p) AS props
-            """, id=npc_id)
+            """, id=nid)
             profile_row = await profile_rec.single()
 
             rel_rec = await session.run("""
                 MATCH (a:Character {id: $a})-[r:RELATIONSHIP]->(b:Character {id: $b})
                 RETURN properties(r) AS props
-            """, a=main_npc_id, b=npc_id)
+            """, a=main_npc_id, b=nid)
             rel_row = await rel_rec.single()
 
             results.append({
-                "char_id":    npc_id,
+                "char_id":    nid,
                 "name":       name_row["name"],
                 "profile":    profile_row["props"] if profile_row else {},
                 "rel_to_npc": rel_row["props"]     if rel_row     else {},
@@ -217,110 +316,133 @@ async def fetch_npc_profiles(
     return results
 
 
-async def get_location_name_from_id(location_id: str | None) -> str | None:
-    if not location_id:
-        return None
-    async with async_driver.session() as session:
-        result = await session.run(
-            "MATCH (l:Location {id: $id}) RETURN l.name AS name", id=location_id
-        )
-        record = await result.single()
-        return record["name"] if record else None
-
-
 # ════════════════════════════════════════════════════════════
 # 메인 파이프라인
 # ════════════════════════════════════════════════════════════
 
 async def run_manager(
-    user_input: str,
-    pc_id: str,
-    npc_id: str,
+    user_input:   str,
+    pc_id:        str,
+    npc_id:       str,
     recent_story: str = "",
-    world_id: str = None,
+    world_id:     str = None,
 ) -> tuple[str, str, str, list[str]]:
 
     world        = load_world_instance(world_id)
     world_config = world.get_full_config()
     start_dt     = world_config.get("start_time")
 
+    # ── 1. 시간 계산 + 씬 분류 ───────────────────────────────
     global_state = await fetch_global_state(start_dt)
-    scene_types  = await classify_scene(user_input, recent_story)
 
-    # ── DB 병렬 조회 ─────────────────────────────────────
-    db_fetch_tasks = [
+    rule_result  = _try_rule_based(user_input)
+    if rule_result:
+        parse_result = rule_result
+        scene_types  = rule_result["scene_types"]
+        print(f"[Classify+Time / rule-based] scene={scene_types} elapsed={rule_result['elapsed_minutes']}min")
+    else:
+        allowed_locs = await _get_allowed_locations()
+        parse_result = await _classify_and_parse_time(
+            user_input, recent_story, global_state, allowed_locs
+        )
+        scene_types = parse_result.get("scene_types") or ["daily"]
+
+    # ── 2. DB 시간 사이드이펙트 ──────────────────────────────
+    current_dt = await apply_time_updates(
+        plan           = parse_result,
+        base_time      = datetime.fromisoformat(global_state["currentTime"]),
+        pc_id          = pc_id,
+        npc_id         = npc_id,
+    )
+
+    # ── 3. 욕구 업데이트 + libido hints ──────────────────────
+    elapsed_minutes = float(parse_result.get("elapsed_minutes") or 2)
+    needs_result    = await run_needs_update(
+        pc_id           = pc_id,
+        elapsed_minutes = elapsed_minutes,
+        current_time    = current_dt,
+    )
+    libido_hints: dict[str, str] = needs_result.get("libido_hints", {})
+
+    # ── 4. DB 병렬 조회 ─────────────────────────────────────
+    char_data, user_data, relationship, recent_events = await asyncio.gather(
         fetch_character_data(npc_id, scene_types),
         fetch_character_data(pc_id,  scene_types),
         fetch_relationship_data(pc_id, npc_id),
         fetch_recent_events(npc_id, limit=3),
-    ]
-    db_results: Any = await asyncio.gather(*db_fetch_tasks)
-    char_data, user_data, relationship, recent_events = db_results
+    )
 
-    # ── Vector 유사 검색 (recall_events) ─────────────────
+    # ── 5. Vector 유사 검색 (recall_events) ─────────────────
     recall_events: list[dict] = []
     try:
-        query_embedding = await embed_async(user_input)
+        query_embedding   = await embed_async(user_input)
         recall_candidates = await fetch_similar_events(
-            char_id=npc_id,
-            query_embedding=query_embedding,
-            limit=2,
+            char_id         = npc_id,
+            query_embedding = query_embedding,
+            limit           = 2,
         )
-        # recent_events와 중복 제거
-        recent_ids = {e["id"] for e in recent_events}
+        recent_ids    = {e["id"] for e in recent_events}
         recall_events = [e for e in recall_candidates if e["id"] not in recent_ids]
     except Exception as e:
         print(f"[Manager] recall_events 조회 실패 (무시): {e}")
 
-    # ── 위치 정보 ─────────────────────────────────────────
-    current_dt    = datetime.fromisoformat(global_state.get("currentTime"))
-    loc_id        = global_state.get("currentLocationId")
+    # ── 6. 위치 정보 ────────────────────────────────────────
+    updated_state = await fetch_global_state(start_dt)
+    loc_id        = updated_state.get("currentLocationId")
     location_name = await get_location_name_from_id(loc_id) or await fetch_location(npc_id)
 
     if "dynamic_state" in char_data:
         char_data["dynamic_state"]["location_id"] = location_name
 
-    # ── 씬 내 NPC 감지 ───────────────────────────────────
+    # ── 7. 씬 내 NPC 감지 ───────────────────────────────────
     present_npc_ids = detect_present_npcs(user_input, recent_story, world.get_npc_name_map())
     npcs = await fetch_npc_profiles(present_npc_ids, npc_id, pc_id) if present_npc_ids else []
 
-    # ── 프롬프트 조립 ─────────────────────────────────────
+    # ── 8. 프롬프트 조립 ────────────────────────────────────
     builder = PromptBuilder(world_config, char_data.get("name"), user_data.get("name"))
 
     fixed_prompt, genre_prompt, dynamic_prompt = builder.build(
-        scene_types=scene_types,
-        char_data=char_data,
-        relationship=relationship,
-        events=[
+        scene_types  = scene_types,
+        char_data    = char_data,
+        relationship = relationship,
+        events       = [
             {"timestamp": e["timestamp"], "summary": e["summary"]}
             for e in recent_events
         ],
-        recall_events=[
+        recall_events = [
             {"timestamp": e["timestamp"], "summary": e["summary"], "score": round(e.get("score", 0), 3)}
             for e in recall_events
         ],
-        recent_story=recent_story,
-        user_input=user_input,
-        location=location_name,
-        npcs=npcs,
-        dt=current_dt,
+        recent_story = recent_story,
+        user_input   = user_input,
+        location     = location_name,
+        npcs         = npcs,
+        dt           = current_dt,
     )
+
+    # ── 9. libido hints → dynamic prompt 주입 ───────────────
+    if libido_hints:
+        hint_block     = "\n".join(f"<!-- {v} -->" for v in libido_hints.values())
+        dynamic_prompt = hint_block + "\n\n" + dynamic_prompt
 
     return fixed_prompt, genre_prompt, dynamic_prompt, scene_types
 
 
-if __name__ == "__main__":
-    import asyncio
+# ════════════════════════════════════════════════════════════
+# 테스트
+# ════════════════════════════════════════════════════════════
 
+if __name__ == "__main__":
     async def _test():
         fixed, genre, dynamic, scene_types = await run_manager(
-            user_input="*지희와 아린이 놀러 왔다. 은서와 셋이 소파에 앉아 수다를 떤다.*",
-            pc_id="sian", npc_id="eun_seo",
-            recent_story="토요일 오후, 은서네 집.",
-            world_id="babe_univ",
+            user_input   = "*지희와 아린이 놀러 왔다. 은서와 셋이 소파에 앉아 수다를 떤다.*",
+            pc_id        = "sian",
+            npc_id       = "eun_seo",
+            recent_story = "토요일 오후, 은서네 집.",
+            world_id     = "babe_univ",
         )
-        print("=== FIXED ==="); print(fixed[:200], "...\n")
-        print("=== GENRE ==="); print(genre[:200] if genre else "(없음)", "\n")
+        print("=== FIXED ===");   print(fixed[:200],  "...\n")
+        print("=== GENRE ===");   print(genre[:200] if genre else "(없음)", "\n")
         print("=== DYNAMIC ==="); print(dynamic)
         print("\n=== 씬 타입 ==="); print(scene_types)
 
