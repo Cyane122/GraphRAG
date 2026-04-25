@@ -156,7 +156,6 @@ async def _create_event(event_data: dict, npc_id: str, pc_id: str) -> None:
                 safety_impact:    0.0,
                 safety_resolved:  true,
                 safety_decay_rate: 0.0,
-                embedding:        $embedding
             })
         """,
             id=event_data["id"],
@@ -164,7 +163,6 @@ async def _create_event(event_data: dict, npc_id: str, pc_id: str) -> None:
             timestamp=timestamp_fmt,
             importance=importance,
             impact=event_data.get("impact", ""),
-            embedding=embedding,
         )
 
         for char_id in [npc_id, pc_id]:

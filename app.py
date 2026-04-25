@@ -1,5 +1,6 @@
 # app.py
 import asyncio
+import json
 import logging
 import os
 import re
@@ -13,7 +14,7 @@ from neo4j import GraphDatabase
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("openai").setLevel(logging.WARNING)
-logging.getLogger("neo4j.notifications").setLevel(logging.WARNING)
+logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
 
 import anthropic
 import chainlit as cl
@@ -45,6 +46,7 @@ GENERATING_MSGS = [
 # ── 설정 ─────────────────────────────────────────────────
 MAX_HISTORY_TURNS  = 10
 RECENT_STORY_TURNS = 3
+_TAG_CLOSE         = "</thinking>"
 
 _async_client = anthropic.AsyncAnthropic()
 
@@ -87,68 +89,63 @@ async def _commit_pending(pending: dict) -> None:
 
 
 async def _stream_actor(
-    fixed_prompt:  str,
-    genre_prompt:  str,
+    fixed_prompt:   str,
+    genre_prompt:   str,
     dynamic_prompt: str,
-    history:       list[dict],
-) -> str:
-    """Actor 스트리밍. 전체 응답 문자열 반환."""
-    model   = os.getenv("MODEL_ACTOR", "claude-haiku-4-5-20251001")
-    system  = [{"type": "text", "text": fixed_prompt, "cache_control": {"type": "ephemeral"}}]
+    history:        list[dict],
+) -> tuple[str, list[str], cl.Message]:
+    model  = os.getenv("MODEL_ACTOR", "claude-haiku-4-5-20251001")
+    system = [{"type": "text", "text": fixed_prompt, "cache_control": {"type": "ephemeral"}}]
     if genre_prompt:
         system.append({"type": "text", "text": genre_prompt})
 
-    response_msg = cl.Message(content="")
-    await cl.Message(
+    gen_msg = cl.Message(
         content=random.choice(GENERATING_MSGS).format(char=NPC_NAME_KOR),
         author="System",
-    ).send()
-    await response_msg.send()
+    )
+    await gen_msg.send()
 
+    # ① 전체 수신 (gen_msg가 thinking + generation 내내 표시됨)
     raw = ""
-    scene_chars: list[str] = []
-    async with cl.Step(name="사고 과정", show_input=False) as step:
-        async with _async_client.messages.stream(
-            model       = model,
-            max_tokens  = 4096,
-            temperature = 1.0,
-            system      = system,
-            messages    = [*history, {"role": "user", "content": dynamic_prompt}],
-        ) as stream:
-            async for chunk in stream.text_stream:
-                raw += chunk
+    async with _async_client.messages.stream(
+        model       = model,
+        max_tokens  = int(os.getenv("MAX_TOKEN", 4096)),
+        temperature = 1.0,
+        system      = system,
+        messages    = [*history, {"role": "user", "content": dynamic_prompt}],
+    ) as stream:
+        async for chunk in stream.text_stream:
+            raw += chunk
 
-        m = re.search(r"<thinking>(.*?)</thinking>", raw, re.DOTALL)
-        if m:
-            thinking_text = m.group(1)
-            step.output = f"```thought\n{thinking_text.strip()}\n```"
-            # CHARACTERS 줄 파싱 — 3자리 한국어 풀네임 배열
-            chars_m = re.search(
-                r'CHARACTERS:\s*(\[.*?\])',
-                thinking_text,
-                re.DOTALL,
-            )
-            if chars_m:
-                try:
-                    import json as _json
-                    parsed_chars = _json.loads(chars_m.group(1))
-                    # 2~4자리 한국어 이름만 허용 (숫자·영문 제외)
-                    scene_chars = [
-                        c for c in parsed_chars
-                        if isinstance(c, str) and 2 <= len(c) <= 4
-                        and re.match(r'^[가-힣]+$', c)
-                    ]
-                except Exception:
-                    pass
-        else:
-            step.output = "사고 과정이 생략되었습니다."
-
+    # ② thinking 제거
     full = re.sub(r"<thinking>.*?</thinking>\s*", "", raw, flags=re.DOTALL).strip()
+
+    # ③ gen_msg 제거 → 본문 스트리밍 시작
+    await gen_msg.remove()
+    response_msg = cl.Message(content="", author=NPC_NAME_KOR)
+    await response_msg.send()
     for token in full:
         await response_msg.stream_token(token)
-        await asyncio.sleep(0.005)
+        await asyncio.sleep(0.003)
     await response_msg.update()
-    return full, scene_chars
+
+    # ④ CHARACTERS 파싱
+    scene_chars: list[str] = []
+    m = re.search(r"<thinking>(.*?)</thinking>", raw, re.DOTALL)
+    if m:
+        chars_m = re.search(r"CHARACTERS:\s*(\[.*?\])", m.group(1), re.DOTALL)
+        if chars_m:
+            try:
+                parsed = json.loads(chars_m.group(1))
+                scene_chars = [
+                    c for c in parsed
+                    if isinstance(c, str) and 2 <= len(c) <= 4
+                    and re.match(r"^[가-힣]+$", c)
+                ]
+            except Exception:
+                pass
+
+    return full, scene_chars, response_msg
 
 
 async def _load_log_into_session(file_path: Path) -> None:
@@ -162,14 +159,35 @@ async def _load_log_into_session(file_path: Path) -> None:
     for turn in turns:
         await cl.Message(content=turn["user_input"],  author="You").send()
         await cl.Message(content=turn["ai_response"], author=NPC_NAME_KOR).send()
-        new_history += [{"role": "user", "content": turn["user_input"]},
-                        {"role": "assistant", "content": turn["ai_response"]}]
+        new_history += [{"role": "user",      "content": turn["user_input"]},
+                        {"role": "assistant",  "content": turn["ai_response"]}]
         new_recent.append(turn["ai_response"][:1500])
 
     cl.user_session.set("conversation_history", new_history[-MAX_HISTORY_TURNS * 2:])
     cl.user_session.set("recent_responses",     new_recent[-RECENT_STORY_TURNS:])
     cl.user_session.set("pending_commit",        None)
     await cl.Message(content=f"✅ {len(turns)}턴 복원 완료.").send()
+
+
+# ════════════════════════════════════════════════════════════
+# 리롤
+# ════════════════════════════════════════════════════════════
+
+@cl.action_callback("reroll")
+async def on_reroll(action: cl.Action):
+    """
+    이전 턴 pending_commit을 폐기하고 동일 입력으로 재생성.
+    히스토리·recent_responses를 이 턴 이전 스냅샷으로 복원.
+    """
+    pending = cl.user_session.get("pending_commit")
+    if not pending:
+        return
+
+    cl.user_session.set("conversation_history", pending["history_snapshot"])
+    cl.user_session.set("recent_responses",     pending["recent_snapshot"])
+    cl.user_session.set("pending_commit",        None)
+
+    await on_message(cl.Message(content=pending["user_input"]))
 
 
 # ════════════════════════════════════════════════════════════
@@ -230,23 +248,29 @@ async def on_message(message: cl.Message):
     history:          list[dict] = cl.user_session.get("conversation_history")
     recent_responses: list[str]  = cl.user_session.get("recent_responses")
 
-    # 1. 이전 턴 확정
+    # ── 1. 이전 턴 확정 ──────────────────────────────────
     pending = cl.user_session.get("pending_commit")
     if pending:
         await _commit_pending(pending)
         cl.user_session.set("pending_commit", None)
 
-    # 2. OOC
+    # ── 2. OOC ───────────────────────────────────────────
+    ooc_changes: dict = {}
     if is_ooc(user_input):
-        result = await parse_ooc(user_input, NPC_ID, NPC_NAME_KOR)
-        await cl.Message(content=f"⚙️ OOC: `{result['summary']}`").send()
-        ooc_changes = result.get("state_changes", {})
+        async with cl.Step(name="⚙️ OOC", show_input=False) as step:
+            result      = await parse_ooc(user_input, NPC_ID, NPC_NAME_KOR)
+            ooc_changes = result.get("state_changes", {})
+            lines       = [f"**{result['summary']}**"]
+            if ooc_changes:
+                lines += [f"- `{k}` → `{v}`" for k, v in ooc_changes.items()]
+            step.output = "\n".join(lines)
+
         if ooc_changes.get("physical_condition") in ("injured", "ill", "hospitalized"):
             asyncio.create_task(
                 delegate_complex_update(user_input, NPC_ID, PC_ID, ooc_changes, event_only=True)
             )
 
-    # 3. Manager (씬 분류 + 시간 + 욕구 + 프롬프트 조립)
+    # ── 3. Manager (씬 분류 + 시간 + 욕구 + 프롬프트 조립) ─
     recent_story = "\n".join(recent_responses[-RECENT_STORY_TURNS:])
     async with cl.Step(name="데이터 추출", show_input=False) as step:
         fixed, genre, dynamic, scene_types = await run_manager(
@@ -258,20 +282,34 @@ async def on_message(message: cl.Message):
         )
         step.output = f"씬 타입: `{scene_types}`"
 
-    # 4. Actor 스트리밍
-    full_response, scene_chars = await _stream_actor(fixed, genre, dynamic, history)
+    # ── 4. Actor 스트리밍 ─────────────────────────────────
+    full_response, scene_chars, response_msg = await _stream_actor(
+        fixed, genre, dynamic, history
+    )
 
-    # 5. 히스토리 갱신 + 지연 확정 예약
+    # ── 5. 히스토리 갱신 ─────────────────────────────────
+    # 리롤 대비: 이 턴 추가 이전 스냅샷 저장
+    history_snapshot = list(history)
+    recent_snapshot  = list(recent_responses)
+
     history += [{"role": "user", "content": dynamic}, {"role": "assistant", "content": full_response}]
     del history[:-MAX_HISTORY_TURNS * 2]
     cl.user_session.set("conversation_history", history)
 
     recent_responses.append(full_response[:1500])
     cl.user_session.set("recent_responses", recent_responses[-RECENT_STORY_TURNS:])
+
+    # ── 6. 지연 확정 예약 ─────────────────────────────────
     cl.user_session.set("pending_commit", {
-        "user_input":   user_input,
-        "ai_response":  full_response,
-        "scene_types":  scene_types,
-        "scene_chars":  scene_chars,
-        "timestamp":    datetime.now(),
+        "user_input":       user_input,
+        "ai_response":      full_response,
+        "scene_types":      scene_types,
+        "scene_chars":      scene_chars,
+        "timestamp":        datetime.now(),
+        "history_snapshot": history_snapshot,
+        "recent_snapshot":  recent_snapshot,
     })
+
+    # ── 7. 리롤 버튼 ─────────────────────────────────────
+    response_msg.actions = [cl.Action(name="reroll", label="🔄 다시 쓰기", payload={"action": "reroll"})]
+    await response_msg.update()

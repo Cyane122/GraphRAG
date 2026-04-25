@@ -77,3 +77,8 @@
 - [신규] 기억 왜곡 기능 추가
   - `decay_manager.py`: 이제 중요하지 않은 기억은 점차 NPC에게 유리하게 변질되어 기억됨
   - `promptBuilder.py`: 이제 왜곡된 기억이라는 사실을 LLM에게 전달함
+- `promptBuilder.py`, `babe_univ.py`: 긍정형 프롬프트로 수정.
+- `app.py`: 재구조화. 이제 더 깔끔하게 출력됨.
+- [신규] 대화 리롤 기능 추가
+- `db_utils.py`: 중복 함수 삭제.
+- `action_resolver.py`, `complex_updater.py`: Event 노드 제거. 이제 Memory만으로 기억함.

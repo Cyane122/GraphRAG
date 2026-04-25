@@ -10,7 +10,7 @@ from importlib import import_module
 
 from src.prompt.promptBuilder import PromptBuilder
 from src.graph.world.default import World
-from src.utils.db_utils import async_driver, fetch_similar_events
+from src.utils.db_utils import async_driver
 from src.utils.llm_utils import extract_json_from_llm, llm_client
 from src.utils.embedder import embed_async
 from src.memory.decay_manager import run_decay

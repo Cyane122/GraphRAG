@@ -139,11 +139,7 @@ async def _create_event(
     target_loc = action.get("target_location_id", origin_loc_id)
     importance = int(action.get("importance", 1))
 
-    # 임베딩 (실패 시 None — Vector Index 미등록)
-    try:
-        embedding = await embed_async(summary)
-    except Exception:
-        embedding = None
+    # 임베딩 (실패 시 None — Vector Index 미등록
 
     async with async_driver.session() as session:
         await session.run("""
@@ -159,10 +155,9 @@ async def _create_event(
                 safety_impact:    0.0,
                 safety_resolved:  true,
                 safety_decay_rate: 0.0,
-                embedding:        $emb
             })
         """, eid=event_id, summary=summary, ts=overflow_time.isoformat(),
-             loc=target_loc, importance=importance, emb=embedding)
+             loc=target_loc, importance=importance)
 
         # NPC ─ INVOLVED_IN ─ Event
         await session.run("""
