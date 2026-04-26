@@ -84,3 +84,10 @@
 - `action_resolver.py`, `complex_updater.py`: Event 노드 제거. 이제 Memory만으로 기억함.
 - [신규] 그래도 세상은 움직인다 - SNS 기능 추가
 - `llm_utils.py`: async client 추가 및 일부 client 전환
+
+## 2026-04-26
+- [신규] 테마 설정 완료
+- `promptBuilder.py`, `babe_univ.py`: 프롬프트 개선
+- `count_tokens.py`, `test_connection.py`: 이제 `GraphRAG\script`에 위치함
+- `llm_utils.py`: `extract_json_from_llm`이 haiku의 불안정한 응답에도 강건하도록 수정함
+- `app.py`: 대화 로그 저장 기능 추가

@@ -77,6 +77,8 @@ async def _classify_and_parse_time(
 
     prompt = f"""You are a combined scene classifier and time parser for a Korean roleplay system.
 Analyze the user input and return a single JSON object. No explanation, no markdown.
+Return ONLY valid JSON. No markdown fences. No ellipsis. No truncation.
+If a field is uncertain, use null — never use "...".
 
 [Current World State]
 Time: {current_time.strftime("%Y-%m-%d %H:%M")} | Weather: {global_state["weather"]} | Location: {global_state["currentLocationId"]}
@@ -111,11 +113,12 @@ new_weather: from [Clear,Cloudy,Foggy,Drizzle,Rain,Heavy Rain,Thunderstorm,Snow,
     try:
         resp = llm_client.messages.create(
             model=CLASSIFIER_MODEL,
-            max_tokens=128,
+            max_tokens=256,
             temperature=0.0,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": prompt}, {"role": "assistant", "content": "{"}],
         )
-        parsed = extract_json_from_llm(resp.content[0].text)
+        raw = "{" + resp.content[0].text
+        parsed = extract_json_from_llm(raw)
         if not isinstance(parsed, dict) or "scene_types" not in parsed:
             raise ValueError("invalid structure")
         print(f"[Classify+Time / {CLASSIFIER_MODEL}] scene={parsed.get('scene_types')} elapsed={parsed.get('elapsed_minutes')}min")

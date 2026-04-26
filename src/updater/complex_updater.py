@@ -1,8 +1,8 @@
 """
-Complex event handler.
-LLM으로 멀티 노드 업데이트 플랜 생성 → DynamicState 갱신 + 호감도 delta + Event 노드 생성.
-Event 생성 시 summary를 임베딩해 Vector Index에 등록.
-Event 생성 후 관련 캐릭터별 Memory 노드도 자동 생성.
+멀티 노드 업데이트 및 이벤트 노드 생성 담당.
+LLM으로 업데이트 플랜 생성 → DynamicState 갱신 + 호감도 delta + Memory 노드 생성.
+outfit / injury_marks 필드를 업데이트 플랜에 포함해 묘사 일관성 버퍼를 지원한다.
+importance ≥ 7 이벤트 발생 시 RELATIONSHIP.current_status 양방향 재작성.
 """
 
 import os
@@ -58,7 +58,17 @@ Initial changes detected: {json.dumps(initial_changes, ensure_ascii=False)}
 - Only update {npc_id}'s state based on what ACTUALLY happened to {npc_id}.
 
 ## Tasks
-1. Update DynamicState fields as needed (physical/mental/mood/stress/location)
+1. Update DynamicState fields as needed — only include fields that ACTUALLY changed:
+   - physical_condition: healthy/fatigued/injured/ill/hospitalized
+   - mental_condition: stable/stressed/anxious/depressed/exhausted
+   - mood: calm/happy/sad/angry/anxious/tired/annoyed/excited
+   - stress_level: 0–10 integer
+   - workplace_stress_level: 0–10 integer
+   - outfit: current clothing IF explicitly described (Korean, ≤25 chars). Omit if not mentioned.
+     e.g. "청바지 + 흰 니트" / "운동복 차림" / "수면 반바지 + 민소매"
+   - injury_marks: "없음" OR visible injury description IF changed this scene. Omit if unchanged.
+     e.g. "오른 발목 부상" / "팔 찰과상" / "없음" (when healed)
+   - injury_detail: body part + type (LITERAL physical only)
 2. Return relationship affinity delta as integer (e.g. +5 or -10), null if unchanged
 3. Create an Event node only if the scene meets the criteria below
 

@@ -1,13 +1,136 @@
 @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css');
 
-/* ── 전체 폰트 Pretendard ───────────────────────── */
+/* ══════════════════════════════════════════════
+   폰트
+══════════════════════════════════════════════ */
 * {
   font-family: 'Pretendard', -apple-system, BlinkMacSystemFont,
                'Segoe UI', sans-serif !important;
 }
 
-/* ── 이탤릭(*...*) → 회색 ───────────────────────── */
-em, i {
-  color: #6b7280;
+/* ══════════════════════════════════════════════
+   이탤릭 → 회색 (행동 묘사)
+══════════════════════════════════════════════ */
+em {
+  color: #9ca3af;
   font-style: italic;
 }
+
+/* ══════════════════════════════════════════════
+   시간대 CSS 변수 기본값 (night)
+══════════════════════════════════════════════ */
+:root {
+  --time-bg-from : #04040f;
+  --time-bg-mid  : #08081e;
+  --time-bg-to   : #0d0d2e;
+  --bubble-bg    : rgba(18, 18, 38, 0.58);
+  --bubble-border: rgba(255, 255, 255, 0.06);
+  --text-primary : #e8e8f2;
+  --text-italic  : #9ca3af;
+}
+
+/* ══════════════════════════════════════════════
+   시간대별 CSS 변수 재정의
+══════════════════════════════════════════════ */
+html[data-time="dawn"] {
+  --time-bg-from : #090920;
+  --time-bg-mid  : #1e1045;
+  --time-bg-to   : #4a2060;
+  --bubble-bg    : rgba(14, 8, 36, 0.60);
+}
+
+html[data-time="morning"] {
+  --time-bg-from : #120830;
+  --time-bg-mid  : #6b2d72;
+  --time-bg-to   : #c45c87;
+  --bubble-bg    : rgba(22, 8, 44, 0.58);
+}
+
+html[data-time="day"] {
+  --time-bg-from : #0a1e4a;
+  --time-bg-mid  : #1a3a8a;
+  --time-bg-to   : #2563c8;
+  --bubble-bg    : rgba(10, 20, 60, 0.55);
+}
+
+html[data-time="evening"] {
+  --time-bg-from : #150830;
+  --time-bg-mid  : #8b2d5a;
+  --time-bg-to   : #d4603a;
+  --bubble-bg    : rgba(24, 8, 32, 0.60);
+}
+
+html[data-time="night"] {
+  --time-bg-from : #04040f;
+  --time-bg-mid  : #08081e;
+  --time-bg-to   : #0d0d2e;
+  --bubble-bg    : rgba(6, 6, 20, 0.62);
+}
+
+/* ══════════════════════════════════════════════
+   배경 그라데이션
+══════════════════════════════════════════════ */
+html,
+body,
+#root {
+  background: linear-gradient(
+    180deg,
+    var(--time-bg-from)  0%,
+    var(--time-bg-mid)  50%,
+    var(--time-bg-to)  100%
+  ) fixed !important;
+  min-height: 100vh;
+  transition: background 2s ease;
+}
+
+/* ══════════════════════════════════════════════
+   반투명 말풍선
+   Chainlit 버전에 따라 셀렉터 조정 필요
+══════════════════════════════════════════════ */
+
+/* 메시지 컨테이너 공통 */
+.cl-message,
+[class*="Message"],
+.message-content,
+.prose {
+  background : var(--bubble-bg) !important;
+  border     : 1px solid var(--bubble-border) !important;
+  border-radius: 14px !important;
+  backdrop-filter: blur(8px) !important;
+  -webkit-backdrop-filter: blur(8px) !important;
+  padding    : 14px 18px !important;
+  transition : background 1.5s ease;
+}
+
+/* 텍스트 색상 */
+.cl-message p,
+.cl-message span,
+.prose p,
+.prose span,
+[class*="Message"] p,
+[class*="Message"] span {
+  color: var(--text-primary) !important;
+}
+
+/* Step / 상태 표시기 */
+.cl-step,
+[class*="Step"] {
+  background: rgba(255, 255, 255, 0.04) !important;
+  border    : 1px solid rgba(255, 255, 255, 0.06) !important;
+  border-radius: 10px !important;
+}
+
+/* 입력창 */
+.cl-input-container,
+[class*="InputContainer"],
+textarea {
+  background: rgba(255, 255, 255, 0.06) !important;
+  border    : 1px solid rgba(255, 255, 255, 0.12) !important;
+  border-radius: 12px !important;
+  color     : #e8e8f2 !important;
+}
+
+/* 스크롤바 */
+::-webkit-scrollbar       { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 4px; }
