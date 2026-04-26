@@ -349,6 +349,7 @@ EMOTION: Lv[1–10]. Hot→[body:verb]. Cold→[body:verb]. Same axis last turn?
 TONE: {user}'s emotional tone=[word]. Planned output mood=[word]. Match? [yes/no]
 CUT: Cutting at [moment]. Last line=[env/body/action/sfx]. Conflict resolved? [yes→rewrite/no]
 TIME: Header=[요일 HH:MM]. Conflict with {char}'s routine? [yes→rewrite/no]
+{world_cot_append}
 
 PRE-DRAFT: [1–2 sentences — {char} and world only. {user} speaks or acts in this draft? → rewrite.]
 
@@ -413,7 +414,7 @@ class PromptBuilder:
         self.char_name = char_name
         self.user_name = user_name
         self.pre_output_checklist = PRE_OUTPUT_CHECKLIST.format(
-            user=self.user_name, char=self.char_name
+            user=self.user_name, char=self.char_name, world_cot_append=self.world_config.get("world_cot_append", "")
         )
         self.additional_blacklist = self.world_config.get("additional_blacklist", "")
 
@@ -656,6 +657,7 @@ class PromptBuilder:
         genre_prompt = build_genre_section(genres)
 
         dynamic_parts = [
+            self.world_config.get("alteration_section", ""),
             self.build_header(location, dt),
             self.build_character_section(char_data, scene_types),
             self.build_relationship_section(relationship),

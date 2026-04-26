@@ -439,6 +439,11 @@ async def run_manager(
     except Exception as e:
         print(f"[WorldNarrator] 컨텍스트 수집 실패 (무시): {e}")
 
+    if hasattr(world, "get_full_config_async"):
+        world_config = await world.get_full_config_async([npc_id, pc_id], async_driver)
+    else:
+        world_config = world.get_full_config()
+
     # ── 8. 프롬프트 조립 ────────────────────────────────────
     builder = PromptBuilder(world_config, char_data.get("name"), user_data.get("name"))
 
