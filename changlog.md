@@ -91,3 +91,7 @@
 - `count_tokens.py`, `test_connection.py`: 이제 `GraphRAG\script`에 위치함
 - `llm_utils.py`: `extract_json_from_llm`이 haiku의 불안정한 응답에도 강건하도록 수정함
 - `app.py`: 대화 로그 저장 기능 추가
+
+## 2026-04-28
+- [신규] 1인칭-3인칭 분리 기능 추가
+- [신규] 연령대 설정 기능 추가 (r18, 15, all)

@@ -1,8 +1,10 @@
+# app.py
 """
 Chainlit 메인 앱.
 세션 초기화, 메시지 루프, OOC 분기, Manager 파이프라인,
 Actor 스트리밍, 지연 확정(Deferred Commit), 리롤 처리.
 _stream_actor에서 인게임 시각을 파싱해 TimeTheme 엘리먼트로 배경 갱신.
+PERSPECTIVE 환경변수(1/3)로 1인칭/3인칭 전환.
 """
 
 import asyncio
@@ -31,6 +33,9 @@ from src.updater.complex_updater import delegate_complex_update
 from src.utils.conversation_logger import append_turn, parse_log_file
 
 load_dotenv()
+
+# ── 시점 설정 ─────────────────────────────────────────────
+PERSPECTIVE = int(os.getenv("PERSPECTIVE", 3))
 
 # ── 문구 풀 ──────────────────────────────────────────────
 UPDATING_MSGS = [
@@ -64,7 +69,7 @@ _async_client = anthropic.AsyncAnthropic()
 
 WORLD_ID     = os.getenv("WORLD_ID", "babe_univ")
 world        = load_world_instance(WORLD_ID)
-world_config = world.get_full_config()
+world_config = world.get_full_config(PERSPECTIVE)
 PC_ID        = world_config["pc_id"]
 NPC_ID       = world_config["npc_id"]
 NPC_NAME_KOR = world_config["npc_name_kor"]
@@ -222,33 +227,31 @@ async def on_reroll(action: cl.Action):
 
     # 히스토리 롤백
     cl.user_session.set("conversation_history", pending["history_snapshot"])
-    cl.user_session.set("recent_responses", pending["recent_snapshot"])
-    cl.user_session.set("pending_commit", None)
+    cl.user_session.set("recent_responses",     pending["recent_snapshot"])
+    cl.user_session.set("pending_commit",        None)
 
-    user_input = pending["user_input"]
-    history: list[dict] = cl.user_session.get("conversation_history")
-    recent_responses: list[str] = cl.user_session.get("recent_responses")
+    user_input        = pending["user_input"]
+    history:          list[dict] = cl.user_session.get("conversation_history")
+    recent_responses: list[str]  = cl.user_session.get("recent_responses")
 
-    # Manager
     recent_story = "\n".join(recent_responses[-RECENT_STORY_TURNS:])
     async with cl.Step(name="데이터 추출", show_input=False) as step:
         fixed, genre, dynamic, scene_types = await run_manager(
-            user_input=user_input,
-            pc_id=PC_ID,
-            npc_id=NPC_ID,
-            recent_story=recent_story,
-            world_id=WORLD_ID,
+            user_input   = user_input,
+            pc_id        = PC_ID,
+            npc_id       = NPC_ID,
+            recent_story = recent_story,
+            world_id     = WORLD_ID,
+            perspective  = PERSPECTIVE,
         )
         step.output = f"씬 타입: `{scene_types}` (리롤)"
 
-    # Actor 스트리밍
     full_response, scene_chars, response_msg, hour = await _stream_actor(
         fixed, genre, dynamic, history
     )
 
-    # 히스토리 갱신
     history_snapshot = list(history)
-    recent_snapshot = list(recent_responses)
+    recent_snapshot  = list(recent_responses)
 
     history += [{"role": "user", "content": dynamic}, {"role": "assistant", "content": full_response}]
     del history[:-MAX_HISTORY_TURNS * 2]
@@ -257,18 +260,16 @@ async def on_reroll(action: cl.Action):
     recent_responses.append(full_response[:1500])
     cl.user_session.set("recent_responses", recent_responses[-RECENT_STORY_TURNS:])
 
-    # 지연 확정 예약
     cl.user_session.set("pending_commit", {
-        "user_input": user_input,
-        "ai_response": full_response,
-        "scene_types": scene_types,
-        "scene_chars": scene_chars,
-        "timestamp": datetime.now(),
+        "user_input":       user_input,
+        "ai_response":      full_response,
+        "scene_types":      scene_types,
+        "scene_chars":      scene_chars,
+        "timestamp":        datetime.now(),
         "history_snapshot": history_snapshot,
-        "recent_snapshot": recent_snapshot,
+        "recent_snapshot":  recent_snapshot,
     })
 
-    # 리롤 버튼 + 시간 테마
     response_msg.actions = [cl.Action(name="reroll", label="🔄 다시 쓰기", payload={"action": "reroll"})]
     await response_msg.update()
     await _inject_time_theme(hour, for_id=response_msg.id)
@@ -364,6 +365,7 @@ async def on_message(message: cl.Message):
             npc_id       = NPC_ID,
             recent_story = recent_story,
             world_id     = WORLD_ID,
+            perspective  = PERSPECTIVE,
         )
         step.output = f"씬 타입: `{scene_types}`"
 

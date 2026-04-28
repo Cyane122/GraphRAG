@@ -1,6 +1,8 @@
 # src/agents/manager_agent.py
 """
 파이프라인 오케스트레이터.
+씬 타입 분류, 시간 계산, 프롬프트 조립을 담당.
+perspective 파라미터를 world.get_full_config()와 PromptBuilder에 전달.
 """
 
 import asyncio
@@ -115,9 +117,12 @@ new_weather: from [Clear,Cloudy,Foggy,Drizzle,Rain,Heavy Rain,Thunderstorm,Snow,
             model=CLASSIFIER_MODEL,
             max_tokens=256,
             temperature=0.0,
-            messages=[{"role": "user", "content": prompt}, {"role": "assistant", "content": "{"}],
+            messages=[
+                {"role": "user",      "content": prompt},
+                {"role": "assistant", "content": "{"},
+            ],
         )
-        raw = "{" + resp.content[0].text
+        raw    = "{" + resp.content[0].text
         parsed = extract_json_from_llm(raw)
         if not isinstance(parsed, dict) or "scene_types" not in parsed:
             raise ValueError("invalid structure")
@@ -236,9 +241,9 @@ async def fetch_global_state(fallback_dt: datetime) -> dict:
 
 async def _get_allowed_locations() -> str:
     async with async_driver.session() as session:
-        result = await session.run("MATCH (l:Location) RETURN l.id AS id, l.name AS name")
+        result  = await session.run("MATCH (l:Location) RETURN l.id AS id, l.name AS name")
         records = await result.data()
-        locs = [f'- "{r["id"]}" ({r["name"]})' for r in records]
+        locs    = [f'- "{r["id"]}" ({r["name"]})' for r in records]
         return "\n".join(locs) if locs else "- No registered locations."
 
 
@@ -258,7 +263,7 @@ def detect_present_npcs(
     recent_story: str,
     npc_name_map: dict[str, str],
 ) -> list[str]:
-    text = f"{user_input} {recent_story}"
+    text  = f"{user_input} {recent_story}"
     found: set[str] = set()
     for keyword, char_id in npc_name_map.items():
         if keyword in text:
@@ -316,10 +321,11 @@ async def run_manager(
     npc_id:       str,
     recent_story: str = "",
     world_id:     str = None,
+    perspective:  int = 3,
 ) -> tuple[str, str, str, list[str]]:
 
     world        = load_world_instance(world_id)
-    world_config = world.get_full_config()
+    world_config = world.get_full_config(perspective)
     start_dt     = world_config.get("start_time")
 
     # ── 1. 시간 계산 + 씬 분류 ──────────────────────────────
@@ -442,10 +448,15 @@ async def run_manager(
     if hasattr(world, "get_full_config_async"):
         world_config = await world.get_full_config_async([npc_id, pc_id], async_driver)
     else:
-        world_config = world.get_full_config()
+        world_config = world.get_full_config(perspective)
 
     # ── 8. 프롬프트 조립 ────────────────────────────────────
-    builder = PromptBuilder(world_config, char_data.get("name"), user_data.get("name"))
+    builder = PromptBuilder(
+        world_config,
+        char_data.get("name"),
+        user_data.get("name"),
+        perspective=perspective,
+    )
 
     fixed_prompt, genre_prompt, dynamic_prompt = builder.build(
         scene_types      = scene_types,
@@ -456,8 +467,11 @@ async def run_manager(
             for e in recent_events
         ],
         recall_events    = [
-            {"summary": e["summary"], "score": e.get("score", 0),
-             "conflict": e["id"] in [m["id"] for m in raw_memories if float(m.get("distortion") or 0) > 0.2]}
+            {
+                "summary":  e["summary"],
+                "score":    e.get("score", 0),
+                "conflict": e["id"] in [m["id"] for m in raw_memories if float(m.get("distortion") or 0) > 0.2],
+            }
             for e in recall_events
         ],
         recent_story     = recent_story,
@@ -489,6 +503,7 @@ if __name__ == "__main__":
             npc_id       = "eun_seo",
             recent_story = "토요일 오후, 은서네 집.",
             world_id     = "babe_univ",
+            perspective  = 3,
         )
         print("=== FIXED ===");   print(fixed[:200],  "...\n")
         print("=== GENRE ===");   print(genre[:200] if genre else "(없음)", "\n")
