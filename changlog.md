@@ -95,3 +95,8 @@
 ## 2026-04-28
 - [신규] 1인칭-3인칭 분리 기능 추가
 - [신규] 연령대 설정 기능 추가 (r18, 15, all)
+
+## 2026-05-03
+- [변경] LLM 모델 Gemini 3.1 Pro, Gemini 3.0 Flash로 변경
+- [추가] Hugging Face Token 추가
+- [추가] `pregenancy_manager.py` 추가.
