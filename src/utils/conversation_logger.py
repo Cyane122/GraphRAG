@@ -20,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 
 LOGS_DIR = Path("logs")
-_AI_HEADER_RE = re.compile(r"\*\*\d{4}년")
+_AI_HEADER_RE = re.compile(r"\*\*(?:제국력\s+)?\d{4}년")
 
 
 def get_log_path(dt: datetime | None = None) -> Path:
@@ -46,11 +46,6 @@ def append_turn(
 
 
 def parse_log_file(path: Path) -> list[dict]:
-    """
-    로그 파일을 파싱해 턴 목록 반환.
-
-    반환: [{"user_input": str, "ai_response": str}, ...]
-    """
     if not path.exists():
         return []
 
@@ -63,14 +58,21 @@ def parse_log_file(path: Path) -> list[dict]:
         if not block or "[U]" not in block:
             continue
 
-        # [U]\n 이후 ~ 다음 빈 줄 + **YYYY년 이전 = 유저 입력
-        u_match = re.search(r"\[U\]\n(.*?)(?=\n\n\*\*\d{4}년)", block, re.DOTALL)
+        # [U]\n 이후 ~ 다음 빈 줄 + **(제국력) YYYY년 이전까지를 유저 입력으로 매칭
+        # (?=\n\n\*\*(?:제국력\s+)?\d{4}년) 부분을 수정함
+        u_match = re.search(r"\[U\]\n(.*?)(?=\n\n\*\*(?:제국력\s+)?\d{4}년)", block, re.DOTALL)
         if not u_match:
-            continue
+            # 헤더 형식이 안 맞으면 블록 전체를 뒤져서라도 ai_match 위치를 찾아야 함
+            ai_match = _AI_HEADER_RE.search(block)
+            if ai_match:
+                # [U] 이후부터 ai_match 시작 전까지를 user_input으로 간주
+                user_input = block[block.find("[U]")+3 : ai_match.start()].strip()
+            else:
+                continue
+        else:
+            user_input = u_match.group(1).strip()
 
-        user_input = u_match.group(1).strip()
-
-        # **YYYY년 이후 전부 = AI 응답
+        # AI 응답 파싱
         ai_match = _AI_HEADER_RE.search(block)
         if not ai_match:
             continue

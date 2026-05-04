@@ -3,13 +3,16 @@ LITERAL/FIGURATIVE 분류기.
 Actor 응답 텍스트에서 DynamicState 변경 필드를 추출한다.
 outfit(현재 의상)과 injury_marks(가시적 부상 흔적)를 포함해
 묘사 일관성 버퍼를 지원한다.
+
+- google.cloud.aiplatform_v1beta1.GenerationConfig import 제거
+- sympy.physics.units.temperature import 제거 (오삽입)
 """
 
 import os
 
-from src.utils.llm_utils import async_llm_client, extract_json_from_llm
+from src.utils.llm_utils import get_model, extract_json_from_llm
 
-CLASSIFIER_MODEL = os.getenv("MODEL_STATE_UPDATER", "claude-haiku-4-5-20251001")
+CLASSIFIER_MODEL = os.getenv("MODEL_STATE_UPDATER", "gemini-3-flash-preview")
 
 SAFE_FIELDS = {
     "mood", "mental_condition", "stress_level",
@@ -18,12 +21,37 @@ SAFE_FIELDS = {
 }
 PHYSICAL_FIELDS = {"physical_condition", "injury_detail"}
 
+def _sanitize_stress_level(value = None) -> int | None:
+    """
+    LLM이 stress_level에 대해 반환할 수 있는 다양한 값을 정수로 변환합니다.
+    - 정수이면 그대로 반환
+    - "5" 같은 숫자 문자열이면 정수로 변환
+    - "low", "medium", "high" 같은 문자열이면 미리 정의된 값으로 매핑
+    - 그 외의 경우는 None을 반환하여 해당 필드를 무시하도록 함
+    """
+    if isinstance(value, int) and 0 <= value <= 10:
+        return value
+    if isinstance(value, str):
+        try:
+            # "3", "7" 등 숫자 형태의 문자열 처리
+            num_val = int(value)
+            if 0 <= num_val <= 10:
+                return num_val
+        except (ValueError, TypeError):
+            # "low", "medium" 등 텍스트 형태의 문자열 처리
+            mapping = {
+                "none": 0, "very low": 1, "low": 2,
+                "medium-low": 4, "medium": 5, "mid": 5,
+                "medium-high": 6, "high": 8, "very high": 9, "max": 10
+            }
+            return mapping.get(value.lower().strip())
+    return None
 
 async def classify_and_extract(actor_response: str) -> dict:
-    prompt = f"""You are a state extractor for a roleplay system.
-Read the roleplay text and extract meaningful state changes for the NPC.
+    system_instruction = """You are a state extractor for a roleplay system.
+Read the roleplay text and extract meaningful state changes for the NPC."""
 
-## Classification
+    prompt = f"""## Classification
 LITERAL: Direct physical events — injury, illness, confirmed physical state, clothing description
   "팔을 다쳤어" / "발목을 삐었다" / "열이 38도야" / rubbing injured area at a clinic
   "코트를 걸쳤다" / "민소매 차림이었다" / "잠옷 바지를 입은 채"
@@ -81,17 +109,23 @@ No explanation, no markdown.
 Roleplay text:
 {actor_response[:1500]}"""
 
-    response = await async_llm_client.messages.create(
-        model=CLASSIFIER_MODEL,
-        max_tokens=256,
-        temperature=0.0,
-        messages=[{"role": "user", "content": prompt}],
+    model = get_model(model_name=CLASSIFIER_MODEL, system_prompt=system_instruction)
+
+    response = await model.generate_content_async(
+        prompt,
+        generation_config={"temperature": 0.0, "max_output_tokens": 1024, "thinking_config": {"thinking_level": "LOW"}, "response_mime_type": "application/json"}
     )
 
-    changes = extract_json_from_llm(response.content[0].text)
+    changes = extract_json_from_llm(response.text, source="expression_classifier")
 
     safe_changes = {}
     for field, value in changes.items():
+        if field in {"stress_level", "workplace_stress_level"}:
+            sanitized_value = _sanitize_stress_level(value)
+            if sanitized_value is not None:
+                safe_changes[field] = sanitized_value
+            # 유효하지 않은 값이면 필드 자체를 무시하고 넘어감
+            continue
         if field in SAFE_FIELDS:
             safe_changes[field] = value
         elif field in PHYSICAL_FIELDS:

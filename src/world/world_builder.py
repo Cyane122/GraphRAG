@@ -27,7 +27,7 @@ import re
 from datetime import datetime
 
 from src.utils.db_utils import async_driver
-from src.utils.llm_utils import async_llm_client, extract_json_from_llm
+from src.utils.llm_utils import get_model, extract_json_from_llm
 from src.needs.traits_initializer import ensure_traits
 
 BUILDER_MODEL = os.getenv("MODEL_STATE_UPDATER", "claude-haiku-4-5-20251001")
@@ -221,13 +221,13 @@ async def _generate_stub_profile(
     name_kor:    str,
     world_config: dict,
     main_npc_id: str,
-) -> dict | None:
+) -> dict | list | None:
     """Haiku 1회 — stub 프로필 초안 생성."""
     world_ctx = world_config.get("world_section", "")[:300]
 
-    prompt = f"""Generate a minimal character stub for a new NPC in a Korean slice-of-life roleplay.
+    system_instruction = "Generate a minimal character stub for a new NPC in a Korean slice-of-life roleplay."
 
-World: {world_ctx}
+    prompt = f"""World: {world_ctx}
 Main NPC: {main_npc_id}
 New character name: {name_kor}
 
@@ -241,17 +241,16 @@ Return ONLY JSON:
 }}"""
 
     try:
-        resp = await async_llm_client.messages.create(
-            model=BUILDER_MODEL,
-            max_tokens=200,
-            temperature=0.4,
-            messages=[{"role": "user", "content": prompt}],
+        model = get_model(BUILDER_MODEL, system_prompt=system_instruction)
+        resp = await model.generate_content_async(
+            prompt,
+            generation_config={}
         )
-        parsed = extract_json_from_llm(resp.content[0].text)
-        return parsed if isinstance(parsed, dict) else None
+        return extract_json_from_llm(resp.text)
     except Exception as e:
         print(f"[WorldBuilder] stub 생성 실패: {e}")
         return None
+
 
 
 # ════════════════════════════════════════════════════════════
@@ -336,9 +335,9 @@ async def _promote_to_named(char_id: str) -> None:
         for e in events if e.get("summary")
     ) or "(없음)"
 
-    prompt = f"""Generate a Personality profile for an NPC in a Korean slice-of-life roleplay.
+    system_instruction = "Generate a Personality profile for an NPC in a Korean slice-of-life roleplay."
 
-Character: {profile.get('name_kor', char_id)}
+    prompt = f"""Character: {profile.get('name_kor', char_id)}
 Known personality: {profile.get('personality', '')}
 Context: {profile.get('context', '')}
 Events: {event_summaries}
@@ -353,13 +352,12 @@ Return ONLY JSON:
 
     personality_data: dict = {"core_traits": profile.get("personality", "unknown")}
     try:
-        resp = await async_llm_client.messages.create(
-            model=BUILDER_MODEL,
-            max_tokens=256,
-            temperature=0.5,
-            messages=[{"role": "user", "content": prompt}],
+        model = get_model(BUILDER_MODEL, system_prompt=system_instruction)
+        resp = await model.generate_content_async(
+            prompt,
+            generation_config={}
         )
-        parsed = extract_json_from_llm(resp.content[0].text)
+        parsed = extract_json_from_llm(resp.text)
         if isinstance(parsed, dict):
             personality_data = parsed
     except Exception as e:

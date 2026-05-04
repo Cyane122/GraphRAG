@@ -11,7 +11,7 @@ import os
 from datetime import datetime
 
 from src.utils.db_utils import async_driver, update_dynamic_state
-from src.utils.llm_utils import async_llm_client, extract_json_from_llm
+from src.utils.llm_utils import get_model, extract_json_from_llm
 
 ACTION_MODEL = os.getenv("MODEL_STATE_UPDATER", "claude-haiku-4-5-20251001")
 
@@ -85,9 +85,9 @@ async def _decide_action(
     )
     time_str = overflow_time.strftime("%Y-%m-%d %H:%M")
 
-    prompt = f"""You are an NPC behavior engine for a Korean slice-of-life roleplay.
+    system_instruction = "You are an NPC behavior engine for a Korean slice-of-life roleplay."
 
-NPC: {npc_id}
+    prompt = f"""NPC: {npc_id}
 Personality: {personality}
 Key traits: {trait_summary or "neutral"}
 Location at time: {location_id}
@@ -98,22 +98,24 @@ Likely behavior category: {hint}
 Decide exactly what this NPC did to address their need.
 Be specific but brief. Match the personality. Keep it mundane and realistic.
 
-Return ONLY JSON:
+Return ONLY valid JSON. Never use "..." as a value — always write the complete string:
 {{
-  "action_summary": "...",     // 1 sentence, Korean OK, what they did
-  "target_location_id": "...", // where they went (use existing loc id or same location)
+  "action_summary": "편의점에서 컵라면을 먹었다",  // 1 sentence, Korean, complete
+  "target_location_id": "loc_id_here", // where they went (use existing loc id or same location)
   "duration_minutes": 20,      // how long it took (int)
   "importance": 1              // always 1 for autonomous daily needs
 }}"""
 
     try:
-        resp = await async_llm_client.messages.create(
-            model=ACTION_MODEL,
-            max_tokens=256,
-            temperature=0.7,
-            messages=[{"role": "user", "content": prompt}],
+        model = get_model(ACTION_MODEL, system_prompt=system_instruction)
+        resp = await model.generate_content_async(
+            prompt,
+            generation_config={
+                "max_output_tokens": 1024,
+                "temperature": 0.7
+            }
         )
-        parsed = extract_json_from_llm(resp.content[0].text)
+        parsed = extract_json_from_llm(resp.text)
         if not isinstance(parsed, dict) or "action_summary" not in parsed:
             raise ValueError("invalid structure")
         return parsed

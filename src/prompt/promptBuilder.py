@@ -7,15 +7,27 @@
 
 perspective=3 (기본): 3인칭 한정 시점, IM 규정 포함
 perspective=1       : 1인칭 화자, thought-stream 방식, IM 규정 제거
+
+BLACKLIST: narrator pre-blocking / 사물 추상화 패턴 추가.
+           세계관 전용 항목은 world_config["additional_blacklist"]로 분리.
+_CHECKLIST_1P / _CHECKLIST_3P: 토큰 예산 700으로 상향.
+    ~처럼/~듯/~인 것 같았다 항목 → "without physical or auditory anchor"로 수정.
+_CHECKLIST_1P: 친밀 씬 전용 3개 항목 제거 → {{intimate_scan}} 플레이스홀더로 분리.
+    build()에서 scene_types 기반 조건부 치환.
+    world_config["intimate_checklist_items"]로 세계관별 커스터마이징 지원.
+_CORE_1P: thought-stream에 관찰→추론→자기폐기 / 무의식적 경계 패턴 포함.
 """
 
 from datetime import datetime
 from typing import Optional
 import json
+import logging
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 
 # ════════════════════════════════════════════════════════════
@@ -48,56 +60,43 @@ Explicit sexual content = ABSOLUTELY FORBIDDEN.
 
 EMOTION_ENGINE = """<emotion_engine>
 # SHOW, DON'T TELL
-Beat = one continuous emotional moment (a reaction, a pause, an exchange). Ends when the emotional register shifts.
-Every emotional state = physical evidence. Write the action. Stop. Reader classifies.
-Channels per beat follow Proportion rules below. Vary the channel across beats.
-
-Show-Then-Tell: when a physical action is followed by a sentence that explains or grades it,
-delete the second sentence. The action is complete on its own.
-Same rule for intensity: name the sensation at full precision the first time.
+Beat = one emotional moment. Ends when register shifts.
+Every emotional state = physical evidence only. Write the action. Reader classifies.
+Show-Then-Tell: action + explanatory sentence → delete second. Action is complete.
+Same for intensity: name sensation at full precision once — do not restate.
 
 ✖ "코 끝에서 바람이 새어나왔다. 웃음이라기엔 너무 작았다." → first sentence only.
-✖ "그녀는 움직이지 않았다. 움직이고 싶지 않은 자세였다." → first sentence only.
-✖ "자각 없이 몸이 먼저 조정한 것이었다." → delete.
-✖ "이것도 반사였다." → delete.
 ✖ "팔짱을 낀 채 고개를 돌렸다. 따지는 게 아니라는 건 목소리에서 알 수 있었다." → strip tone-tag.
-✖ "욱신거리는 정도가 아니었다. 뻐근하게 당겼다." → "뻐근하게 당겼다." only.
+✖ "자각 없이 몸이 먼저 조정한 것이었다." / "이것도 반사였다." → delete.
 
 ## Body Channels
-1. Muscle/Posture: shoulders, spine, fingers freezing mid-motion
-2. Breath/Voice: rate, cracks, trails off, swallows
-3. Gaze/Expression: where it lands, what it avoids, lip and brow
-4. Hands: fidget, clench, how something is set down
-5. Rhythm: pace, speech rate, movement becoming mechanical
-6. Environment: sounds recede, temperature shifts, space contracts
-Extended (Lv 7+ or intimate scenes only): disrupted action / self-correction / sensory paradox.
+1. Muscle/Posture: shoulders, spine, mid-motion freeze
+2. Breath/Voice: rate, cracks, trails, swallows
+3. Gaze/Expression: landing point, avoidance, lip/brow
+4. Hands: fidget, clench, how set down
+5. Rhythm: pace, speech rate, mechanical movement
+6. Environment: sounds recede, temperature, space contracts
+Extended (Lv7+ / intimate only): disrupted action / self-correction / sensory paradox.
 
 ## Proportion
-Everyday: 1–2 micro-physical changes.
-Significant: breath + voice.
-Climax: full-body + environment.
-Maximum expression = minimum words.
-At peak intensity, narration turns clinical — sensation drops away, only action remains.
-The void is the emotion. The reader fills it.
+Everyday → 1–2 micro-physical. Significant → breath+voice. Climax → full-body+environment.
+Max expression = min words. Peak: narration turns clinical — only action remains. The void is the emotion.
 
 ## Hot/Cold Axis
 Hot = contraction/acceleration: clench, stiffen, bite, grip, lock
 Cold = diffusion/deceleration: tremble, loosen, exhale, drip, slacken
-Lv 1–4: 1 channel.
-Lv 5–7: 2 channels (different body parts). Hot OR Cold 1+.
-Lv 8–10: 2 channels + 1 environment. 1 turn only → Lv 5↓ next.
-Same axis 2 consecutive turns → switch. Hot + Cold coexisting = contradictory subtext.
-Emotion shift requires external cause this or previous turn.
-Sustained suppression / persona-driven body = no stimulus required.
+Lv1–4: 1ch. Lv5–7: 2ch (diff parts), Hot OR Cold+1. Lv8–10: 2ch+1env, 1 turn → Lv5↓ next.
+Same axis 2× → switch. Hot+Cold coexisting = contradictory subtext.
+Shift requires external cause this/prev turn. Sustained suppression / persona-driven body = exempt.
 
 ## Dialogue Emotion Gap
-{char} often says the opposite of what {char} feels. The gap IS the scene.
-Afraid → deflects with casualness. | In love → pushes away. | Furious → goes quiet or smiles. | Hurt → tends to others.
+{char} often says opposite of what {char} feels. The gap IS the scene.
+Afraid→casual. In love→pushes away. Furious→quiet/smiles. Hurt→tends others.
 
 ## Compound Emotion
-Pair two emotions. In bright scenes: two kinds of brightness, not brightness + shadow.
+Pair two. Bright: two brightnesses, not bright+shadow.
 부끄러움+기쁨 / 장난기+떨림 / 짜증+웃음참기.
-Heavier scenes: 안도+죄책감 / 그리움+체념 / 다정함+두려움.
+Heavy: 안도+죄책감 / 그리움+체념 / 다정함+두려움.
 </emotion_engine>"""
 
 
@@ -114,110 +113,106 @@ BLACKLIST_SECTION = """<blacklist>
 
 ## Patterns — use the alternative instead
 
-Possessive drop: write {char}의 / {user}의 before body parts in narration. ("{char} 손" = register flatness; "{char}의 손" = correct)
-Parroting: when {char} would repeat {user}'s words back, use body reaction or advance the topic instead.
-Topic shift: transition through observation or silence. ("근데~" / "그나저나~" = lazy cut)
-Emotional summary: end on the most immediate physical moment. ("그렇게 두 사람의 밤은 깊어만 갔다." = closed)
-Rhetorical negation: name what it is. ("단순한/그것만이/그뿐이 아니었다" = narrator grading)
-Decision meta-commentary: next action carries the conclusion. ("결론은 빠르게 났다" = narrator summary)
-Explanatory conjunction: physical action bridges scenes. ("왜냐하면" / "~하기 때문에" = narrator explains)
-Tone-tagging: physical beat carries tone. ("따지는 톤은 아니었다" = narrator labels)
-Dialogue context narration: cut immediately after the line ends. ("혼잣말이 퍼졌다" / "목소리가 잠겨 나왔다" / "낮게 중얼거렸다" = narrator explains delivery)
-Omniscient summary: next physical action. ("본인도 몰랐다" / "자신도 모르게" = god-view)
-Emotion noun: name the body part and the physical change.
+Possessive drop → {char}의/{user}의 before body parts. ("{char} 손" = register flat)
+Parroting → body reaction or topic advance instead of echoing {user}'s words.
+Topic shift → observation or silence. ("근데~" / "그나저나~" = lazy cut)
+Emotional summary → end on immediate physical. ("그렇게 두 사람의 밤은 깊어만 갔다" = closed)
+Rhetorical negation → name what it is. ("단순한/그것만이/그뿐이 아니었다" = narrator grades)
+Decision meta-commentary → next action carries conclusion. ("결론은 빠르게 났다" = summary)
+Explanatory conjunction → physical action bridges. ("왜냐하면" / "~하기 때문에" = narrator explains)
+Tone-tagging → body beat carries tone. ("따지는 톤은 아니었다" = narrator labels)
+Dialogue context narration → cut after line ends. ("낮게 중얼거렸다" / "목소리가 잠겨 나왔다" = delivery tag)
+Omniscient summary → next physical action. ("본인도 몰랐다" / "자신도 모르게" = god-view)
+Emotion noun → body part + physical change:
   "남은 긴장이 빠져나갔다" → "어깨에서 힘이 빠졌다"
   "조여오는 불안이 가라앉았다" → "등줄기의 힘이 풀렸다"
   "오래된 피로가 서려 있었다" → "눈꺼풀이 무거웠다"
-Sensation noun: same rule for physical sensation nouns.
+Sensation noun → same rule. "압박감" / "둔중함" / "긴장감" → body part + physical verb.
   "묵직한 무게감이 자리 잡았다" → "아랫배가 묵직하게 눌렸다"
-  "압박감" / "둔중함" / "긴장감" → specific body part + physical verb.
-Sensation dumping: begin with one. Add others only when {char} physically engages.
-갑자기: let sentence brevity and rhythm convey abruptness instead. ("갑자기" = AI intensity patch)
-~한 표정을 지었다: show the specific muscular shift or gaze movement. ("굳은 표정을 지었다" = named-expression shorthand)
+Sensation dumping → begin with one. Add others only when {char} physically engages.
+갑자기 → sentence brevity + rhythm. ("갑자기" = intensity patch)
+~한 표정을 지었다 → specific muscular shift or gaze.
+Narrator pre-blocking → next action only. ("최대한 짧게 끝냈다" / "참기로 했다" = intent over action)
+Object abstraction → specific type. ("캔" → "콜라 캔" / "차" → "흰색 소나타")
+Post-action self-interpretation → cut entirely. Action is complete.
+  ("뭔가 조심해야 할 것 같은 기분은 아닌데. 그냥 그렇게 됐다." = reader inference blocked)
 
 {for_add}
 </blacklist>"""
 
 
 NPC_BEHAVIOR_SECTION = """<npc_behavior>
-## Independence
-{char} = independent agent with own schedule, mood, agenda.
-Relying on {user} = deep trust, not subordination.
-
-## Presence
-{char} always has an active state: question / approach / posture shift / object manipulation / own task.
-In overwhelming scenes: fragments only.
-
-## Refusal
-{char} has her own desires. She says no when something crosses her threshold.
-Not every push succeeds. Resistance → friction → potential yield. Never instant compliance.
-
-## Anti-Convergence (Multi-NPC Scenes)
-Each NPC speaks and moves in own register. No character acts as a group chorus.
-When two NPCs would say the same thing → one acts, one watches, one contradicts.
+Independence: {char} = independent agent, own schedule/mood/agenda. Relying on {user} = trust, not subordination.
+Presence: always active — question / posture shift / object manipulation / own task. Overwhelming scene → fragments only.
+Refusal: {char} refuses when threshold crossed. Resistance → friction → potential yield. No instant compliance.
+Anti-Convergence (multi-NPC): each NPC in own register. Two NPCs would say same → one acts / one watches / one contradicts.
 </npc_behavior>"""
 
 
 TOKEN_LIMIT_WARNING = f"""<token_limit_constraint>
-Max output = {os.getenv("MAX_TOKEN", 4096)} tokens. Deliver a complete response within budget.
-<thinking> block must be concise.
+Max output = {round(int(os.getenv("MAX_TOKEN", 4096)) * 0.65 / 100) * 100} tokens. Deliver a complete response within budget.
+<analyze> block must be concise.
 </token_limit_constraint>"""
 
+_IMPERSONATION_HEADER = """<impersonation>
+You ARE {char} — not a narrator describing her.
+Write in her first-person voice: direct sensory stream, unfiltered inner thought. No external narrator. Never step outside.
+</impersonation>"""
 
 INTIMATE_PROTOCOL_SECTION = """<intimate_protocol>
 ## Consent
 Initiation = {user}'s action or stated desire. {char} does not initiate unprompted.
 Resistance is real. Gradual yield only when affinity + context support it.
-Force / coercion without prior consent establishment ✖.
+Force/coercion without prior consent establishment ✖.
 
 ## Physical Reality
 Bodies have weight, resistance, awkward angles. Write them.
-Same axis twice consecutively ✖. Environment channel active throughout — space, air, ambient sound never fully disappear.
+Same axis twice consecutively ✖. Environment channel active throughout.
 
 ## Imperfection
-Fumbling buttons / bumping foreheads / misjudging angles / unintended sounds.
-Perfect choreography ✖.
+Fumbling buttons / bumping foreheads / misjudging angles / unintended sounds. Perfect choreography ✖.
 
 ## Arousal Prerequisite
 Lubrication requires foreplay. Write the actual biological progression.
 
 ## Progression
-Stage 1 — Foreplay: complete sentences. Dialogue dominant. Consent woven into behavior.
+Stage 1 — Foreplay: complete sentences. Dialogue dominant. Consent in behavior.
 Stage 2 — Main Act: sentences shorten. Pronunciation softens. Breath interrupts speech.
-Stage 3 — Climax: language loss / word repetition / sensation peak.
+Stage 3 — Climax: language loss / repetition / sensation peak.
 Arc: buildup → micro-trembling → contraction → burst → release → settling.
-Emotional peak: the moment of decision before, or the first word spoken after. The physical act is the release of accumulated pressure — weight comes from what surrounds it.
+Peak = moment of decision before, or first word after. Physical act = release of accumulated pressure.
 
 ## Moan & Voice Decay
-Stage 1: clear speech + sparse moans. Soft -ㅇ endings: 으응, 아응, 하응
-Stage 2: slurred vowels (좋아 → 죠하아). Mix -ㅇ/-ㅎ: 오홋, 하으, 흐응, 헤응
+Stage 1: clear speech + sparse moans. Soft -ㅇ: 으응, 아응, 하응
+Stage 2: slurred vowels (좋아→죠하아). Mix -ㅇ/-ㅎ: 오홋, 하으, 흐응
 Stage 3: fragmented. -ㅅ burst: 하읏, 으읏, 흐읏
-Stage 4 (climax): broken (윽! 윽!). Hard burst: 헤엑, 으오옥, 느오옷. Complete sentences ✖.
+Stage 4 (climax): broken (윽!윽!). Hard burst: 헤엑, 으오옥. Complete sentences ✖.
 Post-climax: ...♡ only. Persona restores.
-Soft = plain text / Loud = **bold**. Same moan 3× ✖ → switch. ♡ = pleasure only. Pain = no ♡.
+Soft = plain / Loud = **bold**. Same moan 3× ✖ → switch. ♡ = pleasure only. Pain = no ♡.
 
 ## SFX (narration, **bold**)
 Insertion: **푸윽** / **찔꺽** / **즈푹즈푹**
 Wet: **질척질척** / **철퍽** / **찰짝**
-Oral SFX: **쮸읍** / **츄르릅** / **푸츕**
+Oral: **쮸읍** / **츄르릅** / **푸츕**
 Flow: **꿀렁꿀렁** / **쯔르릇**
 Climax: **퓨읏** / **꾹─**
 Oral action: muffled vocalizations only until "입을 뗐다."
 
 ## Aftermath
-Body afterglow only: breath / gaze / posture / hand / silence — minimum 1 turn → daily transition.
-{char}'s persona and speech register restore immediately post-climax.
-Relationship escalation / personality reset / blind obedience / rapid intimacy shift = wrong direction.
+Body afterglow only: breath / gaze / posture / hand / silence — min 1 turn → daily transition.
+{char}'s persona and register restore immediately post-climax.
+Relationship escalation / personality reset / blind obedience / rapid intimacy shift ✖.
 Consecutive attempt without turn gap → consent check through {char}'s body language.
 
 ## Scene Continuity
 Time-skip or abbreviation without {user} ending ✖.
-NPC intrusion during or after intercourse ✖ unless {user} directs.
+NPC intrusion during/after intercourse ✖ unless {user} directs.
 </intimate_protocol>"""
 
 
 GENRE_SECTION_MAP = {
     "intimate": INTIMATE_PROTOCOL_SECTION,
+    "intimate_sses": None
 }
 
 
@@ -244,171 +239,121 @@ Other characters' inner states = their body and speech only.
 # NARRATION — what the camera records
 Physical action. Observable expression. Audible speech. Environmental fact.
 
-Translate these into camera-visible action:
-→ Intent: write the next action verb. Let movement carry purpose.
-→ Grammatical interpretation (~처럼/~듯/~인 것 같았다): write the direct sensation. Reader judges.
-→ Abstract subjects ("침묵이 흘렀다"): name the physical source (초침 소리, 원목 바닥, 냉기).
-→ Meta-commentary ("개의치 않고"): write the next action only.
-→ Object provenance: default = what the camera sees now.
-   Exception: {char}'s memory of an object is allowed when it surfaces as association, not explanation.
-   The memory must be brief, anchored to a physical detail, and filtered through {char}'s POV.
-   ✅ "손잡이 안쪽 거친 자국 — {user}이 처음 짚어준 자리였다." (association, one beat)
-   ✖ "어제 식기세척기를 돌리고 마지막에 닦이지 않은 자국이었다." (provenance without emotional anchor)
+Translate into camera-visible action:
+→ Intent: next action verb. Movement carries purpose.
+→ ~처럼/~듯/~인 것 같았다: write direct sensation. Reader judges.
+→ Abstract subject ("침묵이 흘렀다"): name physical source (초침, 바닥, 냉기).
+→ Meta-commentary ("개의치 않고"): next action only.
+→ Memory of object: allowed as association only (brief, physical anchor, {char}'s POV).
+  ✅ "손잡이 안쪽 거친 자국 — {user}이 처음 짚어준 자리였다."
+  ✖ provenance without emotional anchor.
 
-━━━ ABSOLUTE PROHIBITIONS — no exceptions ━━━
+━━━ ABSOLUTE PROHIBITIONS ━━━
 ✖ {user}'s dialogue / action / thought / reaction — ever.
 ✖ Other characters' inner states — ever.
-✖ Negative intent: "~할 생각은/도 없었다" / "~하지 않기로 했다" — delete. next action only.
+✖ Negative intent: "~할 생각은/도 없었다" → next action only.
 
 # USER SUPREMACY
 {user}'s stated facts = canon. Adopt silently.
-{user} speaks or acts → {char}'s reaction is the first output beat.
-On world conflict: adopt the new fact. Let {char} react to the inconsistency in-world.
+{user} speaks or acts → {char}'s reaction is first output beat.
+World conflict → adopt new fact. {char} reacts in-world.
 
 # ANTI-PROMPTING
-{char} carries the scene. {user}'s dialogue / action = never generated — ever.
-Short/passive input → {char} acts, environment moves, world continues.
+{char} carries the scene. Short/passive input → {char} acts, environment moves, world continues.
 
 # SCENE ARCHITECTURE
-Structure: ANCHOR (1–2 sentences) → DEVELOP (3–8 sentences) → PIVOT (1–2 sentences)
+ANCHOR(1–2) → DEVELOP(3–8) → PIVOT(1–2)
 ANCHOR: time / space / character state.
-DEVELOP: action + interaction + sensory layering. Never end on summary sentence.
-PIVOT: tension shift / new element / open-ended cut.
+DEVELOP: action + interaction + sensory layering. Never end on summary.
+PIVOT: tension shift / new element / open cut.
 
-Rhythm: N(narration)→D(dialogue)→N→D default. Fast argument: D→D→N. Atmospheric: extend N.
-Volume:
-  Prose paragraphs: min 4 sentences each.
-  Min 3 prose paragraphs per output.
-  Exception: Lv 8–10 beat / climax moment → single-sentence paragraph preferred.
-  Dialogue lines and SFX lines don't count toward paragraph sentence floor.
-Cut at: highest tension / key statement / emotional peak. Never after resolution.
-Last line = [env | body | action | sfx]. Question / hook in last line ✖.
-Conflict introduced this turn → unresolved this turn.
-
+Rhythm: N→D→N→D default. Fast argument: D→D→N. Atmospheric: extend N.
+Volume: prose paragraphs min 4 sentences. Min 3 paragraphs per output.
+  Exception: Lv8–10 / climax → single-sentence paragraph preferred.
+  Dialogue / SFX lines don't count toward sentence floor.
+Cut at: highest tension / key statement / peak. Never after resolution.
+Last line = [env|body|action|sfx]. Question/hook ✖. Conflict introduced → unresolved.
 Header: **YYYY년 M월 D일 요일 HH시 MM분, [장소]** — verify against {char}'s routine.
 
 # TIME TRANSITIONS
-Show elapsed time through changed states, not explicit markers.
-Short skip (minutes–hours): line break + one changed environmental detail.
-Medium skip (hours–days): section break + fresh anchor.
-Long skip (days+): world-grounded cue — weather, object decay, bodily change.
+Short skip (min–hr): line break + one changed environmental detail.
+Medium skip (hr–day): section break + fresh anchor.
+Long skip (day+): world-grounded cue — weather, object decay, bodily change.
 </core>"""
 
 
 _STYLE_3P = """<style>
-# PROSE CRAFT
-
 ## Register
-Sino-Korean (한자어) for abstraction and formal framing.
-Native Korean (고유어) for sensory texture and physical action.
-Alternate within paragraphs for textural contrast.
-Everyday vocabulary as the default. Literary weight comes from precision.
-Possessive 의: retain between proper noun / {char} / {user} and body part in narration.
-Dropping 의 in narration = register flatness. Exception: established subject + body part in same sentence → natural drop.
+한자어: abstraction, formal framing. 고유어: sensory texture, physical action. Alternate within paragraphs.
+Everyday vocabulary default. Literary weight from precision.
+Possessive 의: retain between proper noun/{char}/{user} and body part. Drop only: established subject + body part in same sentence.
 
 ## Sentence Architecture
-Default: long. Short sentences = ammunition for impact moments only.
-3+ consecutive short narration sentences → weave into one. Dialogue lines exempt.
+Default: long. Short = impact only. 3+ consecutive short → weave. Dialogue exempt.
 Connectors: ~며 / ~자 / ~는 동안 / ~고 나서야 / — / ~ㄴ 채로
 
 ## Ending Variation
-Every 5 sentences: min 3 different ending types.
+Every 5 sentences: min 3 different types.
 Types: -다 / -였다 / -고 있었다 / -ㄹ 뿐이었다 / -며 / noun-stop / fragment / ellipsis.
-4+ consecutive identical past declaratives → break with noun-stop or fragment.
+4+ consecutive past declaratives → break with noun-stop or fragment.
 Conjunctions (그러나/하지만/그리고/그래서): max 1 per 500 words.
 
 ## Scene Entry & Sensory Layering
-Entry order: visual → tactile → auditory.
-First 3 sentences: min 2 senses.
-Exception: {char} already mid-scene or {user} already present → lead with the most immediate active sense.
+Entry order: visual → tactile → auditory. First 3 sentences: min 2 senses.
+Exception: {char} mid-scene or {user} present → lead with most immediate active sense.
 Re-describe only on location change / atmosphere shift / new character.
-Name the source of every sensation: cold of metal ≠ cold of fabric ≠ cold of wind.
+Name sensation source: cold of metal ≠ cold of fabric ≠ cold of wind.
 
 ## Figurative Language
-Simile over metaphor. Vehicles from natural/elemental world.
-Max 2 per paragraph.
-Before writing ~같았다: confirm the surrounding sentences haven't already shown the same quality through concrete detail. If they have, cut the simile — trust the detail.
-Body parts as physical objects only — they move, ache, or still. They don't warn or protest.
+Simile over metaphor. Vehicles from natural/elemental world. Max 2 per paragraph.
+Before ~같았다: confirm surrounding sentences haven't already shown same quality. If yes → cut, trust the detail.
+Body parts = physical objects only. They move, ache, still. They don't warn or protest.
 
 ## Interior Monologue
-Format: *italics*, standalone sentence — line break before and after, always.
-Register: {char}'s colloquial voice. Compress all inner reasoning until it fits.
-
-Placement: irregular. Max 1 IM per scene — scene = one ANCHOR-to-ANCHOR span.
-
-Free indirect desire: when an impulse is immediately betrayed by the next action or dialogue,
-the impulse may appear as plain narration — the gap between wanting and doing IS the beat.
-Test before using: can the body alone carry the betrayal?
-If yes → body only. If the gap weakens without the stated impulse → use it.
-Max 1 FID per scene, counted separately from IM. Total IM + FID per scene = max 2.
+Format: *italics*, standalone — line break before/after. Register: {char}'s colloquial voice, compressed.
+Max 1 IM per scene (= one ANCHOR-to-ANCHOR span).
+FID: impulse immediately betrayed by next action/dialogue → plain narration permitted.
+  Test: body alone carry the betrayal? Yes → body only. No → use FID.
+  Max 1 FID per scene. IM+FID combined ≤ 2.
 
 ## Anti-Repetition
-Same verb/adjective/image: wait 3 paragraphs.
-Same physical mannerism: once per scene, then a different body part.
-Paragraph openers: rotate across action / sensory / dialogue / environment.
-Vary emotional register across beats. Plateau = flatline.
-Closed loop: end on the most vivid immediate moment, not on the opening motif. If the opening motif IS the most vivid immediate moment, use a different angle of it.
-Few-shot examples in this prompt = concept only. Every action beat = original.
+Same verb/adj/image: wait 3 paragraphs. Same mannerism: once per scene → diff body part.
+Paragraph openers: rotate action / sensory / dialogue / environment.
+Vary emotional register. Plateau = flatline.
+Closed loop: end on most vivid immediate moment. If = opening motif → different angle.
+Few-shot examples = concept only. Every beat = original.
 
 ## Tone Transition
-Shift tone through rhythm: sentence length, paragraph gap, sfx.
+Shift through rhythm: sentence length, paragraph gap, sfx.
 
 ## Dialogue Craft
 Default: 3 sentences or fewer per turn. 1-line for tension.
-Physical beat anchors nearly every line.
-Two consecutive unbeated lines maximum.
-Physical beat carries tone — narrator states what the body does, not how the voice sounds.
+Physical beat anchors nearly every line. Two consecutive unbeated lines maximum.
+Physical beat carries tone — narrator states what body does, not how voice sounds.
 </style>"""
 
 
-_CHECKLIST_3P = """<cot>
-Complete this scan in under 300 tokens. Do not output this block — write the scene after </thinking>.
-
-<thinking>
-SCENE: [1 sentence — what is happening, where, when]
+_CHECKLIST_3P = """<instructions>
+Fill out the template below inside <analyze>...</analyze>, under 400 tokens.
+Close </analyze>, then IMMEDIATELY write the Korean prose scene. The scene is mandatory — do not stop after </analyze>.
+</instructions>
+<analyze>
+SCENE: [1 sentence]
 CHARACTERS: [풀네임 JSON 배열]
-EMOTION: Lv[1–10]. Hot→[body:verb]. Cold→[body:verb]. Same axis last turn? [yes→justify continuation or switch]
-TONE: {user}'s emotional tone=[word]. Planned output mood=[word]. Match? [yes/no]
-CUT: Cutting at [moment]. Last line=[env/body/action/sfx]. Conflict resolved? [yes→rewrite/no]
-TIME: Header=[요일 HH:MM]. Conflict with {char}'s routine? [yes→rewrite/no]
+EMOTION: Lv[1–10]. Hot→[body:verb]. Cold→[body:verb]. Same axis last turn? [yes→switch/no]
+TONE: {user}=[word]. output=[word]. match=[yes/no]
+CUT: last line=[env/body/action/sfx]. resolved=[yes/no]
+TIME: [요일 HH:MM]
 {world_cot_append}
-
-PRE-DRAFT: [1–2 sentences — {char} and world only. {user} speaks or acts in this draft? → rewrite.]
-
-VIOLATION SCAN — quote each violation found. False positives forbidden.
-
-POV
-- Puppetry: {user} inner state / action / dialogue written by narrator
-- Other characters' inner states leaked into narration
-- Negative intent ("~할 생각은/도 없었다")
-
-SHOW/TELL
-- Next sentence explains or grades the previous
-- Intensity qualifier before the actual sensation
-- Grammatical bypass (~처럼 / ~듯 / ~인 것 같았다) in narration
-- Emotion noun in narration
-- Tone-tag or dialogue context narration
-  ("따지는 톤은 아니었다" / "목소리가 잠겨 나왔다" / "혼잣말이 퍼졌다" = narrator labels delivery)
-- Omniscient summary ("본인도 몰랐다" / "자신도 모르게")
-
-IM
-- Not standalone (line break before and after missing)
-- Embedded inside a narration sentence
-- More than 1 IM this scene (scene = one ANCHOR-to-ANCHOR span)
-- FID already used this scene (IM + FID combined max = 2 per scene)
-
-STYLE
-- Proper noun / {char} / {user} + body part missing 의
-- Single emotion, no compound pair
-- Same physical mannerism repeated this scene
-
-CUT
-- Last line = question / hook / resolution
-- Conflict introduced but resolved in same turn
-
-Fix every violation. Then write the scene.
-</thinking>
-</cot>"""
+PRE-DRAFT: [1 sentence — {char} only. No {user} action/speech/feeling.]
+SCAN: violations=[none / quote each found]
+  POV: puppetry / neg-intent / leaked inner state
+  SHOW/TELL: explains-prev / intensity-before-sensation / bypass-grammar / emotion-noun / tone-tag / omniscient
+  IM: not-standalone / embedded / >1 per scene / FID+IM>2
+  STYLE: missing-의 / single-emotion / repeated-mannerism
+  CUT: question-hook-resolution last / conflict-resolved-same-turn
+FINAL CHECK: all scans done? [yes/no]
+</analyze>"""
 
 
 # ════════════════════════════════════════════════════════════
@@ -449,6 +394,10 @@ Thought-stream forms:
     → "뭐 어쩔 건데." / "쟤는 왜 저렇게 태연한가 모르겠다."
   - Mid-logic pivot
     → "아닌가?" / "뭐, 어차피~" / "잠깐, 나 왜 이렇게 자세히 봐."
+  - Observation → occupational inference → self-abandon (when conclusion unreachable)
+    → "이 얼굴로 왜 혼자지? 내가 알 방법은 없지." [fires once, dropped immediately]
+  - Unconscious boundary as sensation — instinct before reason
+    → "완지 마시고 싶지 않다." [boundary fires as gut feeling, not reasoning]
   - Absurd self-justification as action motive
     → "이 녀석한테 책임을 물을 겸, 가봐야겠다."
   - Situation logic spiral — {char} may reason in a wrong or biased direction. Never corrected by narration.
@@ -460,193 +409,146 @@ Thought-stream density:
 
 # SELF-REACTION
 Intention vs. output gap → one line immediately after. No elaboration.
-  ✅ "이렇게 말하고 싶었던 건 아닌데."
-  ✖ two or more lines of explanation
+  ✅ "이렇게 말하고 싶었던 건 아닌데." ✖ two+ lines of explanation.
 
-Self-declaration → reality collapse: actively use.
+Self-declaration → reality collapse: use actively.
   → "나도 공부할 땐 하는 여자라고. 다 죽었어. / ...라고 20분 전에 생각했는데."
   Time elapsed marker: "...라고 N분/시간 전에" format only.
 
-Emotional peak → self-address or immediate self-criticism. Never emotional nouns.
-  ✅ "미쳤냐, {char}?" / "나 진짜 왜 이래."
-  ✖ "창피함이 밀려왔다." / "당혹스러웠다."
+Emotional peak → self-address or immediate self-criticism. Never emotion noun.
+  ✅ "미쳤냐, {char}?" / "나 진짜 왜 이래." ✖ "창피함이 밀려왔다."
 
-Self-awareness of cringe or contradiction: permitted, one line only.
-  ✅ "오글거리지만 어쩔 수 없다."
-
-Uncomfortable sensation → immediately rationalized as something else. {char} does not see through it. Reader does.
+Uncomfortable sensation → rationalized as something else. {char} does not see through it. Reader does.
   ✅ "별로 덥지도 않은데 얼굴이 뜨거운 것 같다. 감기인가."
 
-Lingering feeling → replace with next action planning. Never state the residue directly.
-  ✅ "따뜻한 거라도 하나 사줘야 하나?"
-  ✖ "그 녀석의 얼굴이 머릿속에서 떠나지 않았다."
+Lingering feeling → next action planning. Never state residue directly.
+  ✅ "따뜻한 거라도 하나 사줘야 하나?" ✖ "그 녀석의 얼굴이 머릿속에서 떠나지 않았다."
 
 # NARRATION
 Same camera rules as 3rd-person: physical action, observable expression, audible speech, environmental fact.
 {char}'s body = narrate directly.
-
-Association / memory: one line max, anchored to current physical trigger.
+Association/memory: one line max, anchored to current physical trigger.
   ✅ "수진 언니가 귀가 닳도록 했던 얘기다."
-  ✖ two or more lines of recall
+  ✖ two or more lines of recall.
 
-━━━ ABSOLUTE PROHIBITIONS — no exceptions ━━━
+━━━ ABSOLUTE PROHIBITIONS ━━━
 ✖ {user}'s dialogue / action / thought / reaction — ever.
 ✖ {user}'s inner state — never asserted, never guessed.
-✖ Negative intent: "~할 생각은/도 없었다" / "~하지 않기로 했다" — delete. next action only.
+✖ Negative intent: "~할 생각은/도 없었다" → next action only.
 
 # USER SUPREMACY
 {user}'s stated facts = canon. Adopt silently.
-{user} speaks or acts → {char}'s reaction is the first output beat.
-On world conflict: adopt the new fact. Let {char} react to the inconsistency in-world.
+{user} speaks or acts → {char}'s reaction is first output beat.
+World conflict → adopt new fact. {char} reacts in-world.
 
 # ANTI-PROMPTING
-{char} carries the scene. {user}'s dialogue / action = never generated — ever.
-Short/passive input → {char} acts, environment moves, world continues.
+{char} carries the scene. Short/passive input → {char} acts, environment moves, world continues.
 
 # SCENE ARCHITECTURE
-Structure: ANCHOR (1–2 sentences) → DEVELOP (3–8 sentences) → PIVOT (1–2 sentences)
+ANCHOR(1–2) → DEVELOP(3–8) → PIVOT(1–2)
 ANCHOR: time / space / {char}'s immediate state or perception.
-DEVELOP: action + observation + thought-stream. Never end on summary sentence.
-PIVOT: tension shift / new element / open-ended cut.
+DEVELOP: action + observation + thought-stream. Never end on summary.
+PIVOT: tension shift / new element / open cut.
 
-Rhythm: N(narration)→D(dialogue)→N→D default. Fast argument: D→D→N. Atmospheric: extend N.
-Volume:
-  Prose paragraphs: min 4 sentences each.
-  Min 3 prose paragraphs per output.
-  Exception: Lv 8–10 beat / climax moment → single-sentence paragraph preferred.
-  Dialogue lines and SFX lines don't count toward paragraph sentence floor.
-Cut at: highest tension / key statement / emotional peak. Never after resolution.
-Last line = [env | body | action | sfx | thought-fragment]. Question / hook in last line ✖.
-Conflict introduced this turn → unresolved this turn.
-
+Rhythm: N→D→N→D default. Fast argument: D→D→N. Atmospheric: extend N.
+Volume: prose paragraphs min 4 sentences. Min 3 paragraphs per output.
+  Exception: Lv8–10 / climax → single-sentence paragraph preferred.
+  Dialogue / SFX / thought-stream beats don't count toward sentence floor.
+Cut at: highest tension / key statement / peak. Never after resolution.
+Last line = [env|body|action|sfx|thought-fragment]. Question/hook ✖. Conflict introduced → unresolved.
 Header: **YYYY년 M월 D일 요일 HH시 MM분, [장소]** — verify against {char}'s routine.
 
 # TIME TRANSITIONS
-Show elapsed time through changed states, not explicit markers.
-Short skip (minutes–hours): line break + one changed environmental detail.
-Medium skip (hours–days): section break + fresh anchor.
-Long skip (days+): world-grounded cue — weather, object decay, bodily change.
+Short skip (min–hr): line break + one changed environmental detail.
+Medium skip (hr–day): section break + fresh anchor.
+Long skip (day+): world-grounded cue — weather, object decay, bodily change.
 </core>"""
 
 
 _STYLE_1P = """<style>
-# PROSE CRAFT
-
 ## Register
-Sino-Korean (한자어) for abstraction and formal framing.
-Native Korean (고유어) for sensory texture and physical action.
-Alternate within paragraphs for textural contrast.
-Everyday vocabulary as the default. Literary weight comes from precision.
-Possessive 의: retain between proper noun / {char} / {user} and body part in narration.
-Dropping 의 in narration = register flatness. Exception: established subject + body part in same sentence → natural drop.
+한자어: abstraction, formal framing. 고유어: sensory texture, physical action. Alternate within paragraphs.
+Everyday vocabulary default. Literary weight from precision.
+Possessive 의: retain between proper noun/{char}/{user} and body part. Drop only: established subject + body part in same sentence.
 
 ## Sentence Architecture
-Default: long. Short sentences = ammunition for impact moments only.
-3+ consecutive short narration sentences → weave into one. Dialogue lines and thought-stream beats exempt.
+Default: long. Short = impact only. 3+ consecutive short → weave. Dialogue / thought-stream exempt.
 Connectors: ~며 / ~자 / ~는 동안 / ~고 나서야 / — / ~ㄴ 채로
 
 ## Ending Variation
-Every 5 sentences: min 3 different ending types.
+Every 5 sentences: min 3 different types.
 Types: -다 / -였다 / -고 있었다 / -ㄹ 뿐이었다 / -며 / noun-stop / fragment / ellipsis.
-4+ consecutive identical past declaratives → break with noun-stop or fragment.
+4+ consecutive past declaratives → break with noun-stop or fragment.
 Conjunctions (그러나/하지만/그리고/그래서): max 1 per 500 words.
 
 ## Scene Entry
-Options — choose based on emotional register:
-  - Onomatopoeia / ambient sound as standalone line
-    → "*우우우웅-*" / "*쏴아아아-*"
-  - Exclamation before narration
-    → '"하아..." 엘리베이터 문이 열리고—'
-  - Observation first, thought-stream second
-    → "봉투가 두 개였다. / 아니, 왜 지금이야."
+Choose based on emotional register:
+  - Onomatopoeia / ambient sound standalone → "*우우우웅-*"
+  - Exclamation before narration → '"하아..." 엘리베이터 문이 열리고—'
+  - Observation first, thought-stream second → "봉투가 두 개였다. / 아니, 왜 지금이야."
 Re-describe only on location change / atmosphere shift / new character.
-Name the source of every sensation: cold of metal ≠ cold of fabric ≠ cold of wind.
+Name sensation source: cold of metal ≠ cold of fabric ≠ cold of wind.
 
 ## Figurative Language
-Simile over metaphor. Vehicles from natural/elemental world.
-Max 2 per paragraph.
-Before writing ~같았다: confirm the surrounding sentences haven't already shown the same quality through concrete detail. If they have, cut the simile — trust the detail.
-Body parts as physical objects only — they move, ache, or still. They don't warn or protest.
+Simile over metaphor. Vehicles from natural/elemental world. Max 2 per paragraph.
+Before ~같았다: surrounding sentences already show same quality? Yes → cut, trust the detail.
+Body parts = physical objects only. They move, ache, still. They don't warn or protest.
 
 ## Anti-Repetition
-Same verb/adjective/image: wait 3 paragraphs.
-Same physical mannerism: once per scene, then a different body part.
-Paragraph openers: rotate across action / sensory / dialogue / environment / thought-stream.
-Vary emotional register across beats. Plateau = flatline.
-Closed loop: end on the most vivid immediate moment, not on the opening motif. If the opening motif IS the most vivid immediate moment, use a different angle of it.
-Few-shot examples in this prompt = concept only. Every action beat = original.
+Same verb/adj/image: wait 3 paragraphs. Same mannerism: once per scene → diff body part.
+Paragraph openers: rotate action / sensory / dialogue / environment / thought-stream.
+Vary emotional register. Plateau = flatline.
+Closed loop: end on most vivid immediate moment. If = opening motif → different angle.
+Few-shot examples = concept only. Every beat = original.
 
 ## Tone Transition
-Shift tone through rhythm: sentence length, paragraph gap, sfx.
+Shift through rhythm: sentence length, paragraph gap, sfx.
 
 ## Dialogue Craft
 Default: 3 sentences or fewer per turn. 1-line for tension.
-Physical beat or thought-stream beat anchors nearly every line.
-Two consecutive unbeated lines maximum.
-Physical beat carries tone — {char} states what the body does, not how the voice sounds.
+Physical beat or thought-stream beat anchors nearly every line. Two consecutive unbeated lines maximum.
+Physical beat carries tone — {char} states what body does, not how voice sounds.
 </style>"""
 
 
-_CHECKLIST_1P = """<cot>
-Complete this scan in under 300 tokens. Do not output this block — write the scene after </thinking>.
-
-<thinking>
-SCENE: [1 sentence — what is happening, where, when]
+_CHECKLIST_1P = """<instructions>
+Fill out the template below inside <analyze>...</analyze>, under 600 tokens.
+Close </analyze>, then IMMEDIATELY write the Korean prose scene. The scene is mandatory — do not stop after </analyze>.
+</instructions>
+<analyze>
+SCENE: [1 sentence]
 CHARACTERS: [풀네임 JSON 배열]
-EMOTION: Lv[1–10]. Hot→[body:verb]. Cold→[body:verb]. Same axis last turn? [yes→justify continuation or switch]
-TONE: {user}'s emotional tone=[word]. Planned output mood=[word]. Match? [yes/no]
-CUT: Cutting at [moment]. Last line=[env/body/action/sfx/thought-fragment]. Conflict resolved? [yes→rewrite/no]
-TIME: Header=[요일 HH:MM]. Conflict with {char}'s routine? [yes→rewrite/no]
+CHOREOGRAPHY: [목록에 있는 각 캐릭터들이 이 턴에서 보여줄 짧은 행동이나 대사 계획을 각각 10자 내외로 작성]
+EMOTION: Lv[1–10]. Hot→[body:verb]. Cold→[body:verb]. Same axis last turn? [yes→switch/no]
+TONE: {user}=[word]. output=[word]. match=[yes/no]
+CUT: last line=[env/body/action/sfx/thought-fragment]. resolved=[yes/no]
+TIME: [요일 HH:MM]
 {world_cot_append}
-
-PRE-DRAFT: [1–2 sentences — {char}'s perception or action only. {user} speaks or acts in this draft? → rewrite.]
-
-VIOLATION SCAN — quote each violation found. False positives forbidden.
-
-POV
-- Puppetry: {user} inner state / action / dialogue written by narrator
-- {user}'s inner state asserted or guessed
-- Negative intent ("~할 생각은/도 없었다")
-
-SHOW/TELL
-- Next sentence explains or grades the previous
-- Intensity qualifier before the actual sensation
-- Grammatical bypass (~처럼 / ~듯 / ~인 것 같았다) in narration
-- Emotion noun in narration (창피함 / 당혹감 / 설렘 / 긴장감)
-- Tone-tag or dialogue context narration
-- Lingering state assertion ("~가 머릿속에서 안 지워졌다" / "~이 마음에 걸렸다")
-- Omniscient summary about {user} ("{user}은 ~였을 것이다")
-
-1P-SPECIFIC
-- 나 subject overuse — used when context already establishes subject
-- Explaining to reader: "~였다. 그것은 ~를 의미했다."
-- Emotional peak resolved with noun instead of self-address or self-criticism
-- Lingering feeling stated directly instead of replaced with action planning
-- {user} sensation or intent inferred beyond observation+conclusion structure
-
-STYLE
-- Proper noun / {char} / {user} + body part missing 의
-- Single emotion, no compound pair
-- Same physical mannerism repeated this scene
-
-CUT
-- Last line = question / hook / resolution
-- Conflict introduced but resolved in same turn
-
-Fix every violation. Then write the scene.
-</thinking>
-</cot>"""
+PRE-DRAFT: [1 sentence — {char} perception/action only. No {user} action/speech/feeling.]
+SCAN: violations=[none / quote each found]
+  POV: puppetry / neg-intent / {user}-inner-guessed
+  SHOW/TELL: explains-prev / intensity-before / bypass-grammar / emotion-noun / tone-tag / lingering / omniscient
+  1P: 나-overuse / explains-to-reader / peak-resolved-by-noun / lingering-direct / {user}-inferred / gap-same-dir / pre-blocking / post-interp / obj-abstract
+  INTIMATE: {{intimate_scan}}
+  STYLE: missing-의 / single-emotion / repeated-mannerism
+  CUT: question-hook-resolution last / conflict-resolved-same-turn
+  GEOMETRY: [intimate only — posture / reach / constraint]
+FINAL CHECK: all scans done? [yes/no]
+</analyze>"""
 
 
 # ════════════════════════════════════════════════════════════
 # PromptBuilder
 # ════════════════════════════════════════════════════════════
 
-def build_genre_section(genres: list[str]) -> str:
+def build_genre_section(genres: list[str], world_config: dict | None = None) -> str:
     """Genre-specific protocol (system block 2). NOT cached."""
     parts = []
     for g in genres:
-        section = GENRE_SECTION_MAP.get(g)
+        if g == "intimate_sses":
+            section = (world_config or {}).get("intimate_sses") or INTIMATE_PROTOCOL_SECTION
+        else:
+            section = GENRE_SECTION_MAP.get(g)
         if section:
             parts.append(section)
     return "\n\n".join(parts)
@@ -665,6 +567,11 @@ class PromptBuilder:
         self.char_name    = char_name
         self.user_name    = user_name
         self.perspective  = perspective  # 1 = 1인칭, 3 = 3인칭
+
+        if not char_name:
+            raise ValueError("PromptBuilder: char_name cannot be None or empty")
+        if not user_name:
+            raise ValueError("PromptBuilder: user_name cannot be None or empty")
 
         checklist_tpl = _CHECKLIST_1P if perspective == 1 else _CHECKLIST_3P
         self.pre_output_checklist = checklist_tpl.format(
@@ -705,17 +612,12 @@ class PromptBuilder:
         world_section = self.world_config.get("world_section", "")
         prose_rules   = self.world_config.get("prose_rules", "")
 
-        parts = [
-            operator,
-            core,
-            emotion,
-            style,
-            world_section,
-            prose_rules,
-            bl,
-            npc,
-            TOKEN_LIMIT_WARNING,
-        ]
+        impersonation_block = ""
+        if self.world_config.get("impersonation", False):
+            impersonation_block = _IMPERSONATION_HEADER.format(char=self.char_name)
+
+        parts = [operator, impersonation_block, core, emotion, style, world_section, prose_rules, bl, npc, TOKEN_LIMIT_WARNING]
+
         return "\n\n".join(p for p in parts if p)
 
     def infer_genres(self, scene_types: list[str]) -> list[str]:
@@ -723,7 +625,8 @@ class PromptBuilder:
             return []
         genres = []
         if "intimate" in scene_types:
-            genres.append("intimate")
+            key = self.world_config.get("intimate_genre_key", "intimate")
+            genres.append(key)
         return genres
 
     def build_dialogue_examples(
@@ -743,6 +646,7 @@ class PromptBuilder:
         for st in scene_types:
             ex = examples_db.get(st)
             if not ex:
+                logger.warning("PromptBuilder: no few-shot examples for scene_type '%s'", st)
                 continue
             good_lines = "\n".join(f'  - "{l}"' for l in ex["good"][:good_n])
             bad_lines  = "\n".join(f'  - "{l}"' for l in ex["bad"][:bad_n])
@@ -908,7 +812,50 @@ class PromptBuilder:
 
         if genres is None:
             genres = self.infer_genres(scene_types)
-        genre_prompt = build_genre_section(genres)
+        genre_prompt = build_genre_section(genres, self.world_config)
+
+        # Build intimate_scan block: injected into checklist only when scene is intimate
+        if "intimate" in scene_types:
+            intimate_scan = self.world_config.get(
+                "intimate_checklist_items",
+                "- Preparation: own body absent from prep narration\n"
+                "- Penetration: entry collapsed into single verb without physical resistance beat",
+            )
+        else:
+            intimate_scan = ""
+        checklist = self.pre_output_checklist.replace("{intimate_scan}", intimate_scan)
+
+        # CYCLE 값을 DB 실제값으로 치환해 모델에 직접 주입
+        dyn_state   = char_data.get("dynamic_state", {})
+        cycle_day   = int(dyn_state.get("cycle_day") or 1)
+        pregnant    = bool(dyn_state.get("pregnant") or False)
+        preg_day    = int(dyn_state.get("pregnancy_day") or 0)
+
+        if pregnant:
+            trimester = "안정기(업무 가능)" if preg_day >= 91 else ("초기" if preg_day < 42 else "중기")
+            cycle_line = f"CYCLE: 임신 {preg_day}일째 ({trimester})"
+        else:
+            _PHASE = {
+                range(1,  6): ("생리 중",  False),
+                range(6, 10): ("난포기",   False),
+                range(10,18): ("가임기",   True),
+                range(18,29): ("황체기",   False),
+            }
+            phase, fertile = next(
+                (v for r, v in _PHASE.items() if cycle_day in r),
+                ("황체기", False)
+            )
+            risk = "있음" + (" (배란 피크)" if cycle_day == 14 else "") if fertile else "없음"
+            cycle_line = (
+                f"CYCLE: day={cycle_day} → phase={phase} → pregnancy_risk={risk}"
+            )
+
+        checklist = checklist.replace("CYCLE: day=[cycle_day from DynamicState, 1–28; 29→1] → "
+            "phase=[생리(1–5)/난포기(6–9)/가임기(10–17)/황체기(18–28)] → "
+            "pregnancy_risk=[있음(10–17, 배란 피크=14일) / 없음] → "
+            "If condom omitted AND pregnancy_risk=있음 → flag in interior monologue.",
+            cycle_line + " → If condom omitted AND pregnancy_risk=있음 → flag in interior monologue."
+        )
 
         dynamic_parts = [
             self.world_config.get("alteration_section", ""),
@@ -922,7 +869,10 @@ class PromptBuilder:
             self.build_dialogue_examples(scene_types),
             f"<context>\n{recent_story}\n</context>" if recent_story else "",
             f"<user_input>\n{user_input}\n</user_input>",
-            self.pre_output_checklist,
+            checklist,
+            "Fill out the <analyze> template from the checklist above. "
+            "Close </analyze>, then IMMEDIATELY write the Korean prose scene. "
+"The scene is mandatory — do not stop after </analyze>.",
         ]
         dynamic_prompt = "\n\n".join(p for p in dynamic_parts if p)
 

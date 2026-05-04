@@ -28,7 +28,7 @@ import json
 from datetime import datetime, timedelta
 
 from src.utils.db_utils import async_driver
-from src.utils.llm_utils import async_llm_client, extract_json_from_llm
+from src.utils.llm_utils import get_model, extract_json_from_llm
 
 NARRATOR_MODEL      = os.getenv("MODEL_STATE_UPDATER", "claude-haiku-4-5-20251001")
 NEARBY_WINDOW_HOURS = 2    # 근처 활동 수집 창 (게임 내 시간)
@@ -152,9 +152,9 @@ async def _generate_sns_batch(candidates: list[dict]) -> list[str]:
         for c in candidates
     ]
 
-    prompt = f"""You are generating realistic Korean SNS (Instagram-style) posts for fictional characters in a slice-of-life roleplay.
+    system_instruction = "You are generating realistic Korean SNS posts for fictional characters in a slice-of-life roleplay."
 
-Each character just did something. Write a short post they might upload to their feed.
+    prompt = f"""Each character just did something. Write a short post they might upload to their feed.
 
 Rules:
 - 1–2 lines max, casual Korean
@@ -174,13 +174,15 @@ Return ONLY a JSON array. Each element:
 }}"""
 
     try:
-        resp = await async_llm_client.messages.create(
-            model=NARRATOR_MODEL,
-            max_tokens=512,
-            temperature=0.85,
-            messages=[{"role": "user", "content": prompt}],
+        model = get_model(NARRATOR_MODEL, system_prompt=system_instruction)
+        resp = await model.generate_content_async(
+            prompt,
+            generation_config={
+                "max_output_tokens": 512,
+                "temperature": 0.85
+            }
         )
-        parsed = extract_json_from_llm(resp.content[0].text)
+        parsed = extract_json_from_llm(resp.text)
         if not isinstance(parsed, list):
             return []
     except Exception as e:

@@ -66,4 +66,11 @@ def run_migration():
 
 
 if __name__ == "__main__":
-    run_migration()
+    # run_migration()
+    from google.cloud import aiplatform
+
+    aiplatform.init(project=os.getenv("GOOGLE_PROJECT_ID"), location="us-central1")
+
+    models = aiplatform.Model.list()
+    for m in models:
+        print(m)

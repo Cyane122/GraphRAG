@@ -18,6 +18,7 @@ import os
 from datetime import datetime, timedelta
 from typing import Optional
 
+from src.updater.expression_classifier import _sanitize_stress_level
 from src.utils.db_utils import async_driver, update_dynamic_state
 from src.needs.traits_initializer import ensure_traits
 from src.needs.action_resolver import resolve_action, SETTLE_LEVELS
@@ -217,15 +218,15 @@ def _calc_multiplier(
         m = 1.0
         m += t.get("trait_hedonism", 0) * 0.7
         m += t.get("trait_curiosity", 0) * 0.4
-        stress = needs.get("stress_level", 0)
-        if stress >= 7:
+        stress = _sanitize_stress_level(needs.get("stress_level", 0))
+        if stress and stress >= 7:
             m *= 0.5
         return max(0.2, m)
 
     elif need == "safety":
         m = 1.0
         m += t.get("trait_anxiety_prone", 0) * 0.5
-        mental = needs.get("mental_condition", "stable")
+        mental = int(needs.get("mental_condition", "stable"))
         if mental in ("stressed", "anxious"):
             m *= 1.3
         return max(0.5, m)
@@ -235,7 +236,7 @@ def _calc_multiplier(
         m += t.get("trait_libido_drive", 0) * 1.0
         m += t.get("trait_hedonism", 0) * 0.4
         m += t.get("trait_intimacy_drive", 0) * 0.3
-        cycle_day = needs.get("cycle_day", 0)
+        cycle_day = int(needs.get("cycle_day", 0))
         if 12 <= cycle_day <= 16:
             m *= 1.8
         physical = needs.get("physical_condition", "healthy")

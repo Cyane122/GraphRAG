@@ -21,7 +21,7 @@ import os
 from datetime import datetime
 
 from src.utils.db_utils import async_driver
-from src.utils.llm_utils import async_llm_client
+from src.utils.llm_utils import get_model
 from src.utils.embedder import embed_async
 
 DECAY_MODEL = os.getenv("MODEL_STATE_UPDATER", "claude-haiku-4-5-20251001")
@@ -190,6 +190,9 @@ async def _distort_memory(summary: str, traits: dict, char_id: str) -> str:
         return summary
 
     hint_str = "; ".join(trait_hints)
+
+    system_instruction = f"You are {char_id}'s inner subconscious. Rewrite memories from their subjective perspective."
+
     prompt = f"""Rewrite this memory summary from {char_id}'s subjective perspective.
 Apply subtle distortion based on their personality: {hint_str}
 
@@ -203,13 +206,13 @@ Original summary:
 {summary}"""
 
     try:
-        resp = await async_llm_client.messages.create(
-            model=DECAY_MODEL,
-            max_tokens=128,
-            temperature=0.5,
-            messages=[{"role": "user", "content": prompt}],
+        model = get_model(model_name=DECAY_MODEL, system_prompt=system_instruction)
+
+        resp = await model.generate_content_async(
+            prompt,
+            generation_config={"max_output_tokens": 128, "temperature": 0.7}
         )
-        return resp.content[0].text.strip()
+        return resp.text.strip()
     except Exception as e:
         print(f"[DecayManager] 왜곡 실패: {e}")
         return summary
@@ -217,6 +220,9 @@ Original summary:
 
 async def _compress_memory(summary: str, level: int) -> str:
     """기억을 level에 맞게 압축."""
+
+    system_instruction = "You are a memory compressor. Reduce information while keeping the emotional core."
+
     instruction = (
         "Compress to 1 short sentence. Keep the emotional core."
         if level == 1
@@ -230,13 +236,12 @@ Original:
 Return ONLY the compressed version. No explanation."""
 
     try:
-        resp = await async_llm_client.messages.create(
-            model=DECAY_MODEL,
-            max_tokens=64,
-            temperature=0.3,
-            messages=[{"role": "user", "content": prompt}],
+        model = get_model(DECAY_MODEL, system_prompt=system_instruction)
+        resp = await model.generate_content_async(
+            prompt,
+            generation_config={"max_output_tokens": 64, "temperature": 0.3}
         )
-        return resp.content[0].text.strip()
+        return resp.text.strip()
     except Exception as e:
         print(f"[DecayManager] 압축 실패: {e}")
         return summary

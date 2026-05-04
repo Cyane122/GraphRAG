@@ -1,8 +1,12 @@
-# src/agents/manager_agent.py
 """
 파이프라인 오케스트레이터.
+
 씬 타입 분류, 시간 계산, 프롬프트 조립을 담당.
 perspective 파라미터를 world.get_full_config()와 PromptBuilder에 전달.
+
+- CLASSIFIER_MODEL: .env의 MODEL_CLASSIFIER (기본값 gemini-3-flash-preview)
+- thinking_level LOW: 분류 태스크 최소 사고 토큰으로 속도·비용 최적화 (MINIMAL 미지원)
+- response_mime_type application/json: 구조화 JSON 출력 강제
 """
 
 import asyncio
@@ -14,14 +18,15 @@ from importlib import import_module
 from src.prompt.promptBuilder import PromptBuilder
 from src.graph.world.default import World
 from src.utils.db_utils import async_driver
-from src.utils.llm_utils import extract_json_from_llm, llm_client
+from src.utils.llm_utils import extract_json_from_llm, get_model
 from src.utils.embedder import embed_async
 from src.memory.decay_manager import run_decay
+from src.updater.pregnancy_manager import tick_cycle_day
 from src.updater.time_manager import apply_time_updates
 from src.needs.needs_manager import run_needs_update
 from src.world.world_narrator import build_world_context
 
-CLASSIFIER_MODEL = os.getenv("MODEL_CLASSIFIER", "claude-haiku-4-5-20251001")
+CLASSIFIER_MODEL = os.getenv("MODEL_CLASSIFIER", "gemini-3-flash-preview")
 
 REL_TO_KEY = {
     "HAS_PROFILE":           "static_profile",
@@ -77,8 +82,9 @@ async def _classify_and_parse_time(
     current_time    = datetime.fromisoformat(global_state["currentTime"])
     context_snippet = recent_story[-800:] if recent_story else ""
 
-    prompt = f"""You are a combined scene classifier and time parser for a Korean roleplay system.
-Analyze the user input and return a single JSON object. No explanation, no markdown.
+    system_instruction = "You are a combined scene classifier and time parser for a Korean roleplay system."
+
+    prompt = f"""Analyze the user input and return a single JSON object. No explanation, no markdown.
 Return ONLY valid JSON. No markdown fences. No ellipsis. No truncation.
 If a field is uncertain, use null — never use "...".
 
@@ -110,20 +116,22 @@ new_weather: from [Clear,Cloudy,Foggy,Drizzle,Rain,Heavy Rain,Thunderstorm,Snow,
   "new_weather": null,
   "new_location_id": null,
   "reason": "..."
-}}"""
+}}
+"""
 
     try:
-        resp = llm_client.messages.create(
-            model=CLASSIFIER_MODEL,
-            max_tokens=256,
-            temperature=0.0,
-            messages=[
-                {"role": "user",      "content": prompt},
-                {"role": "assistant", "content": "{"},
-            ],
+        model = get_model(model_name=CLASSIFIER_MODEL, system_prompt=system_instruction)
+
+        resp = model.generate_content(
+            prompt,
+            generation_config={
+                "max_output_tokens": 256,
+                "temperature": 0.0,
+                "thinking_config": {"thinking_level": "LOW"},
+            }
         )
-        raw    = "{" + resp.content[0].text
-        parsed = extract_json_from_llm(raw)
+        raw    = resp.text
+        parsed = extract_json_from_llm(raw, source="manager_agent")
         if not isinstance(parsed, dict) or "scene_types" not in parsed:
             raise ValueError("invalid structure")
         print(f"[Classify+Time / {CLASSIFIER_MODEL}] scene={parsed.get('scene_types')} elapsed={parsed.get('elapsed_minutes')}min")
@@ -324,7 +332,7 @@ async def run_manager(
     perspective:  int = 3,
 ) -> tuple[str, str, str, list[str]]:
 
-    world        = load_world_instance(world_id)
+    world       : World = load_world_instance(world_id)
     world_config = world.get_full_config(perspective)
     start_dt     = world_config.get("start_time")
 
@@ -369,6 +377,10 @@ async def run_manager(
             await run_decay(current_dt)
         except Exception as e:
             print(f"[Manager] decay 실패 (무시): {e}")
+        try:
+            await tick_cycle_day(npc_id, days_passed)
+        except Exception as e:
+            print(f"[Manager] cycle tick 실패 (무시): {e}")
 
     # ── 4. DB 병렬 조회 ─────────────────────────────────────
     char_data, user_data, relationship, recent_events = await asyncio.gather(

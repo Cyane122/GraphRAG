@@ -7,21 +7,27 @@
 
 import asyncio
 import os
+import torch
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
 _model = None  # 싱글톤
-MODEL_NAME = os.getenv("MODEL_EMBEDDER")
+MODEL_NAME    = os.getenv("MODEL_EMBEDDER")
 EMBEDDING_DIM = os.getenv("EMBEDDING_DIM")
+HF_TOKEN      = os.getenv("HF_TOKEN")
 
 def _get_model():
     global _model
     if _model is None:
         print(f"[Embedder] 모델 로드 중: {MODEL_NAME} ...")
         from sentence_transformers import SentenceTransformer
-        _model = SentenceTransformer(MODEL_NAME)
+        _model = SentenceTransformer(
+            MODEL_NAME,
+            device=("cuda" if torch.cuda.is_available() else "cpu"),
+            token=HF_TOKEN,
+        )
         print("[Embedder] 모델 로드 완료.")
     return _model
 
@@ -38,5 +44,3 @@ async def embed_async(text: str) -> list[float]:
     """
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, embed_sync, text)
-
-

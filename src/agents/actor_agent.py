@@ -1,16 +1,24 @@
-# src/agents/actor_agent.py
+"""
+액터 에이전트.
+
+PromptBuilder가 조립한 3-파트 프롬프트(fixed / genre / dynamic)를
+Gemini 모델에 전달해 롤플레이 응답 텍스트를 생성한다.
+
+- MODEL_ACTOR: .env의 MODEL_ACTOR (기본값 gemini-3-flash-preview)
+- thinking_level MEDIUM: 창작 품질과 속도의 균형점
+- Implicit Caching: 동일 system prompt 반복 시 Gemini가 자동 캐시 적용
+"""
 
 import os
 from dotenv import load_dotenv
 from pathlib import Path
 
-from src.utils.llm_utils import llm_client
+from src.utils.llm_utils import get_model, get_response_text
 
 load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
-ACTOR_MODEL = os.getenv("MODEL_ACTOR", "claude-haiku-4-5-20251001")
-MAX_TOKENS     = int(os.getenv("MAX_TOKEN", 4096))
-TEMPERATURE    = 1.0   # extended thinking 없이 top-p 조절은 temperature=1 권장
+ACTOR_MODEL = os.getenv("MODEL_ACTOR", "gemini-3-flash-preview")
+MAX_TOKENS  = round(int(os.getenv("MAX_TOKEN", 4096)) * 0.65 / 100) * 100
 
 
 def run_actor(
@@ -20,58 +28,55 @@ def run_actor(
     conversation_history: list[dict] | None = None,
 ) -> str:
     """
-    Prompt Caching 적용:
-      - fixed_prompt (system) → cache_control: ephemeral  (최대 5000토큰, 5분 TTL)
-      - dynamic_prompt는 매 턴 교체되므로 캐싱 대상 아님
-
     Args:
         fixed_prompt:          고정 섹션 (operator_policy / rules / world / ...)
-        genre_prompt:          각 상황마다 적용되는 묘사 규정
+        genre_prompt:          씬별 묘사 규정
         dynamic_prompt:        매 턴 동적 섹션 (헤더 + character + context + user_input)
         conversation_history:  이전 대화 [{role, content}, ...] — Chainlit에서 관리
     Returns:
         응답 텍스트
     """
 
-    # ── 시스템 프롬프트 (캐시 마킹) ───────────────────────
     system_text = f"{fixed_prompt}\n\n{genre_prompt}"
+    model = get_model(model_name=ACTOR_MODEL, system_prompt=system_text)
 
-    system = [
-        {
-            "type": "text",
-            "text": system_text,
-            "cache_control": {"type": "ephemeral"},   # ← Prompt Cache 핵심
-        }
-    ]
-
-    # ── 메시지 조립 ────────────────────────────────────────
-    messages: list[dict] = []
+    gemini_msgs = []
 
     if conversation_history:
-        messages.extend(conversation_history)
+        for msg in conversation_history:
+            role = "model" if msg["role"] == "assistant" else "user"
+            gemini_msgs.append({
+                "role": role,
+                "parts": [{"text": msg["content"]}],
+            })
 
-    messages.append({"role": "user", "content": dynamic_prompt})
+    gemini_msgs.append({
+        "role": "user",
+        "parts": [{"text": dynamic_prompt}],
+    })
 
-    # ── API 호출 ──────────────────────────────────────────
-    response = llm_client.messages.create(
-        model=ACTOR_MODEL,
-        max_tokens=MAX_TOKENS,
-        temperature=TEMPERATURE,
-        system=system,
-        messages=messages,
+    response = model.generate_content(
+        gemini_msgs,
+        generation_config={
+            "max_output_tokens": MAX_TOKENS,
+            "temperature": 1.0,
+            "thinking_config": {"thinking_level": "MEDIUM"},
+        }
     )
 
-    # 캐시 히트 현황 로깅 (개발용)
-    usage = response.usage
-    cache_read    = getattr(usage, "cache_read_input_tokens",    0)
-    cache_created = getattr(usage, "cache_creation_input_tokens", 0)
+    usage = response.usage_metadata
+    prompt_tokens    = usage.prompt_token_count
+    candidate_tokens = usage.candidates_token_count
+    cached_tokens    = getattr(usage, "cached_content_token_count", 0)
+
     print(
-        f"[{ACTOR_MODEL}] in={usage.input_tokens} | "
-        f"cache_created={cache_created} | cache_read={cache_read} | "
-        f"out={usage.output_tokens}"
+        f"[{ACTOR_MODEL}] in={prompt_tokens} | "
+        f"cached={cached_tokens} | "
+        f"out={candidate_tokens} | "
+        f"total={usage.total_token_count}"
     )
 
-    return response.content[0].text
+    return get_response_text(response)
 
 
 # ── 단독 테스트 ───────────────────────────────────────────

@@ -1,6 +1,11 @@
 """
 OOC (Out of Character) parser.
 Detects *...* markers and extracts world-state changes via LLM.
+
+- vertexai.generative_models.GenerationConfig import 제거
+- generate_content_async generation_config를 dict 형태로 통일
+- response.text → get_response_text() 교체 (thinking 모드 None 대응)
+- {locations+_str} 오타 → {locations_str} 수정
 """
 
 import re
@@ -9,11 +14,11 @@ from dotenv import load_dotenv
 from pathlib import Path
 
 from src.utils.db_utils import update_dynamic_state, move_location, async_driver
-from src.utils.llm_utils import extract_json_from_llm, llm_client
+from src.utils.llm_utils import extract_json_from_llm, get_model, get_response_text
 
 load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
-OOC_MODEL = os.getenv("MODEL_STATE_UPDATER", "claude-haiku-4-5-20251001")
+OOC_MODEL = os.getenv("MODEL_STATE_UPDATER", "gemini-3-flash-preview")
 
 _BOLD_RE = re.compile(r'\*\*.*?\*\*', re.DOTALL)
 
@@ -24,15 +29,6 @@ Extract world-state changes from the OOC text.
 
 ## Available Location IDs
 {locations_str}
-
-## Output — return ONLY this JSON, no explanation, no markdown
-{
-  "time_delta_minutes": 0,
-  "time_set": null,
-  "location_id": null,
-  "state_changes": {},
-  "summary": "no change"
-}
 
 ## Field Rules
 
@@ -65,12 +61,22 @@ state_changes — DynamicState fields to update
   "*{npc_name}가 열이 난다.*" → {"physical_condition": "ill"}
 
 summary — one-line Korean description of what changed. "변경 없음" if nothing changed.
+
+## Output — return ONLY this JSON, no explanation, no markdown
+{
+  "time_delta_minutes": 0,
+  "time_set": null,
+  "location_id": null,
+  "state_changes": {},
+  "summary": "no change"
+}
 """
 
 
 def is_ooc(text: str) -> bool:
     stripped = _BOLD_RE.sub('', text)
     return '*' in stripped
+
 
 async def _get_allowed_locations() -> str:
     async with async_driver.session() as session:
@@ -85,35 +91,30 @@ async def parse_ooc(text: str, npc_id: str, npc_name: str) -> dict:
 
     locations = await _get_allowed_locations()
     system_prompt = _SYSTEM_PROMPT \
-        .replace("{locations+_str}", locations) \
-        .replace("{npc}", npc_name)
-    # 1. LLM API 호출
-    response = llm_client.messages.create(
-        model=OOC_MODEL,
-        max_tokens=256,
-        temperature=0.0,
-        system=system_prompt,
-        messages=[{"role": "user", "content": text}],
+        .replace("{locations_str}", locations) \
+        .replace("{npc_name}", npc_name)
+
+    model = get_model(model_name=OOC_MODEL, system_prompt=system_prompt)
+
+    response = await model.generate_content_async(
+        text,
+        generation_config={"max_output_tokens": 1024, "temperature": 0.0, "thinking_config": {"thinking_level": "LOW"}}
     )
 
-    # 2. 공통 유틸리티로 안전하게 JSON 파싱
-    plan = extract_json_from_llm(response.content[0].text)
+    plan = extract_json_from_llm(get_response_text(response), source="ooc_parser")
     if not plan:
         plan = {"state_changes": {}, "summary": "parse failed"}
 
-    # 3. 상태 변화(DynamicState) DB 반영
     state_changes = plan.get("state_changes", {})
     if state_changes:
         await update_dynamic_state(npc_id, state_changes)
 
-    # 4. 장소 이동(Location) DB 반영 (기존에 프롬프트엔 있었으나 누락되었던 로직 추가)
     new_location = plan.get("location_id")
     if new_location:
         await move_location(npc_id, new_location)
 
     summary = plan.get("summary", "상태 변경 없음")
 
-    # 상태나 장소 변화가 있었을 때만 콘솔에 로깅
     if state_changes or new_location:
         print(f"[OOC / {OOC_MODEL}] {summary}")
 

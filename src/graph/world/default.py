@@ -136,3 +136,5 @@ class World:
                     gs.weather           = 'Clear'
             """)
             print(f"[{self.WORLD_ID}] GlobalState 생성 완료.")
+
+            session.run("CALL db.awaitIndexes()")
