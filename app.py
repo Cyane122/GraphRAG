@@ -30,17 +30,16 @@ from google.genai import types
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
-logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
+logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)  # neo4j 제거 시 삭제
 
 import chainlit as cl
 
-from src.agents.manager_agent import run_manager, load_world_instance
-from src.ooc.ooc_parser import is_ooc, parse_ooc
-from src.updater.state_updater import process_actor_response
-from src.updater.complex_updater import delegate_complex_update
-from src.utils.conversation_logger import append_turn, parse_log_file
-from src.utils.db_utils import async_driver
-from src.utils.llm_utils import get_client
+from src.agents.manager import run_manager, load_world_instance
+from src.agents.prompt_factory.ooc_handler import is_ooc, parse_ooc
+from src.simulation.state.updater import process_actor_response, delegate_complex_update
+from src.core.logging.conversation_logger import append_turn, parse_log_file
+from src.core.database.driver import async_driver
+from src.core.llm.client import get_client
 
 load_dotenv()
 
@@ -81,7 +80,7 @@ NPC_ID       = world_config["npc_id"]
 NPC_NAME_KOR = world_config["npc_name_kor"]
 
 if WORLD_ID == "sses":
-    from src.graph.world.sses_schedule_generator import (
+    from src.assets.worlds.sses.schedule_generator import (
         check_and_trigger_schedule,
         advance_slot,
     )

@@ -1,1 +1,14 @@
-src/graph/world/babe_univ_altered.py
+.env
+
+src/assets/worlds/*/
+!src/assets/worlds/default/
+logs/
+graph/
+data/
+
+.chainlit/
+.claude/
+.files/
+.venv/
+
+project-91a38c19-e955-4824-804-cdfb18ab5045.json

@@ -25,7 +25,7 @@ def count(*, system: str = "", user: str = "") -> int:
 
 
 if __name__ == "__main__":
-    from src.agents.manager_agent import run_manager
+    from src.agents.manager import run_manager
 
     fixed, dynamic, scene_types = run_manager(
         user_input="(소파에 앉아서 은서를 바라본다)",
@@ -34,8 +34,8 @@ if __name__ == "__main__":
         recent_story="은서가 퇴근 후 막 집에 들어왔다.",
     )
 
-    from src.ooc.ooc_parser import _SYSTEM_PROMPT, LOCATIONS
-    from src.updater.expression_classifier import CLASSIFIER_MODEL
+    from src.agents.prompt_factory.ooc_handler import _SYSTEM_PROMPT, LOCATIONS
+    from src.simulation.state.classifier import CLASSIFIER_MODEL
 
     sections = {
         "fixed_prompt (캐싱 대상)":    count(system=fixed),

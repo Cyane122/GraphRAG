@@ -98,5 +98,15 @@
 
 ## 2026-05-03
 - [변경] LLM 모델 Gemini 3.1 Pro, Gemini 3.0 Flash로 변경
-- [추가] Hugging Face Token 추가
-- [추가] `pregenancy_manager.py` 추가.
+- [신규] Hugging Face Token 추가
+- [신규] `pregenancy_manager.py` 추가.
+
+## 2026-05-05
+- [리팩토링] 전면 리팩토링.
+- [변경] Graph 아키텍처 `neo4j` -> `kuzu`로 변경.
+- [변경] Graph DB 저장 경로 변경: `data/{world_id}.kuzu` → `graph/{world_id}`
+  - `src/core/database/driver.py`, `src/core/database/schema_builder.py` 수정
+- [신규] `src/core/database/helpers.py`: `load_graph_info()` 함수 추가
+  - `.env`의 `WORLD_ID`를 자동으로 읽어 해당 그래프의 전역 상태·캐릭터·장소·관계를 dict로 반환
+- [정리] `.gitignore`에 명시된 파일들을 git tracking에서 제거
+  - `.chainlit/`, `.claude/`, `logs/`, `graph/sses.backup`, `project-*.json` (총 36개)
