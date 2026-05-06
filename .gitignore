@@ -12,4 +12,7 @@ scripts/
 .files/
 .venv/
 
+*.zip
+*.json
+
 project-91a38c19-e955-4824-804-cdfb18ab5045.json

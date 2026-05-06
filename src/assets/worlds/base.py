@@ -7,6 +7,9 @@
 #
 # Classes
 #   - World : 세계 구현체 베이스 클래스
+#             SCENE_TYPES: dict[str, str] — 씬 타입 이름 → 영문 설명 (classifier 프롬프트에 주입)
+#             get_scene_types() -> list[str]       : 타입 이름 목록 (내부 키 조회용)
+#             get_scene_descriptions() -> dict[str, str] : 전체 dict (classifier 주입용)
 # ================================
 
 import json
@@ -46,6 +49,28 @@ def insert_static_inline(conn: kuzu.Connection, char_id: str, rel: str, label: s
 
 class World:
     WORLD_ID = "default"
+
+    # classifier LLM에 주입할 씬 타입 정의. name → description(English).
+    # 설명은 classifier 프롬프트에 직접 주입되므로 LLM이 타입을 정확히 구분할 수 있다.
+    SCENE_TYPES: dict[str, str] = {
+        "daily":       "Everyday life with no significant conflict (meals, casual movement, small talk)",
+        "bonding":     "Emotional intimacy between romantic partners; warmth, vulnerability, closeness",
+        "intimate":    "Romantic/sexual intercourse between lovers; emotionally connected",
+        "formal":      "Meetings, negotiations, or situations requiring decorum and social performance",
+        "tense":       "Pre-conflict chill; unspoken hostility or the moment before something breaks",
+        "vulnerable":  "A character's weakness is exposed — emotional breakdown, exhaustion, confession",
+        "aggressive":  "Verbal confrontation: arguments, threats, power struggles, psychological pressure",
+        "physical":    "Combat, chase, training, or any scene driven by bodily exertion and kinetic energy",
+        "atmospheric": "Environment or mood takes center stage; setting description, sensory immersion",
+    }
+
+    def get_scene_types(self) -> list[str]:
+        """씬 타입 이름 목록만 반환합니다 (SCENE_REL_MAP 조회·퓨샷 키 매핑 등 내부 용도)."""
+        return list(self.SCENE_TYPES.keys())
+
+    def get_scene_descriptions(self) -> dict[str, str]:
+        """씬 타입 이름 → 설명 매핑을 반환합니다 (classifier 프롬프트 주입용)."""
+        return self.SCENE_TYPES
 
     def get_default_time(self) -> datetime:
         """기본 시작 시각을 반환합니다."""

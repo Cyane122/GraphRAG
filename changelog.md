@@ -176,3 +176,20 @@
     - `_distort_memories_batch()`: 동일 캐릭터의 왜곡 대상 전체를 JSON 배열 1회 호출로 처리
     - `_compress_memories_batch()`: 압축 대상 전체를 레벨별 1회 호출로 처리
     - `run_decay()`: 버킷 분류(삭제/압축L2/압축L1/왜곡) 후 버킷당 1회 배치 처리로 재구조화
+- [신규] **관계에 깊이 더하기** (TODO 4)
+  - `src/simulation/systems/reputation.py` 신규: 사회적 평판과 소문 전파 시스템
+    - 중요도 ≥ 5 + |affinity delta| ≥ 3인 이벤트 발생 시 source NPC 지인에게 소문 확산
+    - 배치 LLM 호출로 NPC별 소문 내용·호감도 변화 생성 (원본 delta의 35% 강도)
+    - 수신 NPC에게 gossip Memory 노드 생성 → 이후 프롬프트 벡터 검색에 반영됨
+  - `src/simulation/systems/memory.py` 강화: 호감도 급변 즉시 기억 왜곡
+    - `distort_on_affinity_change()` 추가: |delta| ≥ 10 시 공유 기억 최대 3개 즉시 재해석
+    - 부정 방향 → "미처 못 봤던 경고 신호 회상 / 평범한 순간에 불안감"
+    - 긍정 방향 → "따뜻한 면 부각 / 애매한 순간 호의적으로 재해석"
+    - `_build_trait_hints()` / `_distort_memories_with_hints()` 분리로 힌트 로직 재사용 가능
+  - `src/simulation/systems/personality.py` 신규: 성격 변화 시스템
+    - micro-drift: affinity ≥ 65 + delta > 0 + 30일 쿨다운 → 성격 1~2가지 미세 조정
+    - macro-drift: importance ≥ 9 이벤트 → Personality.props 전면 재작성
+    - `last_drifted_at` / `macro_drift_count`를 props JSON에 내장해 상태 추적
+  - `src/simulation/state/updater.py`: 관계 깊이 파이프라인 블록 추가
+    - `process_actor_response()` 내 소셜 리졸버 직후, 임신 체크 직전에 3개 기능 순차 실행
+    - game time DB 조회 1회로 공유 후 각 기능에 전달 (불필요한 중복 조회 방지)

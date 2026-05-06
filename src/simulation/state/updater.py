@@ -8,6 +8,11 @@
 #   - process_actor_response(actor_response, npc_id, pc_id, scene_types, scene_chars, world_config) -> str | None : Actor 응답 분석 후 상태 업데이트. 임신 OOC 메시지 반환.
 #   - apply_time_updates(plan, base_time, pc_id, npc_id) -> datetime : 시간 계획을 DB에 반영
 #   - delegate_complex_update(actor_response, npc_id, pc_id, initial_changes, event_only, world_config, scene_chars) -> str | None : event_only 경로 전용 복합 업데이트
+#
+# 관계 깊이 파이프라인 (process_actor_response 내부에서 호출):
+#   - reputation.propagate_gossip : 중요 이벤트 후 주변 NPC에게 소문 전파
+#   - memory.distort_on_affinity_change : 호감도 급변 시 공유 기억 즉시 재해석
+#   - personality.check_personality_drift : micro / macro 성격 변화 체크
 # ================================
 
 import json
@@ -270,9 +275,11 @@ async def process_actor_response(
             print(f"[WorldBuilder] resolve 실패 (무시): {e}")
 
     # ── 관계 깊이 파이프라인 ─────────────────────────────────
-    # 소문 전파 / 호감도 급변 왜곡 / 성격 변화를 단일 블록으로 처리
-    _d   = int(delta or 0)
-    _imp = new_event.get("importance", 0) if new_event else 0
+    # 소문 전파 / 호감도 급변 왜곡 / 성격 변화. 시간은 한 번만 조회.
+    _d        = int(delta or 0)
+    _imp      = new_event.get("importance", 0) if new_event else 0
+    _depth_ts = await _get_current_iso_time()
+    _depth_dt = datetime.fromisoformat(_depth_ts)
 
     # 소문 전파: 중요 이벤트 + 유의미한 호감도 변화가 있을 때
     if new_event and _imp >= 5 and abs(_d) >= 3:
@@ -284,7 +291,7 @@ async def process_actor_response(
                 relationship_delta = _d,
                 source_npc_id      = npc_id,
                 pc_id              = pc_id,
-                timestamp_iso      = await _get_current_iso_time(),
+                timestamp_iso      = _depth_ts,
             )
         except Exception as e:
             print(f"[Updater] 소문 전파 실패 (무시): {e}")
@@ -293,23 +300,19 @@ async def process_actor_response(
     if abs(_d) >= 10:
         try:
             from src.simulation.systems.memory import distort_on_affinity_change
-            _ts       = await _get_current_iso_time()
-            _gametime = datetime.fromisoformat(_ts)
-            await distort_on_affinity_change(npc_id, pc_id, _d, _gametime)
+            await distort_on_affinity_change(npc_id, pc_id, _d, _depth_dt)
         except Exception as e:
             print(f"[Updater] 기억 왜곡 실패 (무시): {e}")
 
     # 성격 변화 체크 (micro / macro)
     try:
         from src.simulation.systems.personality import check_personality_drift
-        _ts       = await _get_current_iso_time()
-        _gametime = datetime.fromisoformat(_ts)
         await check_personality_drift(
             npc_id             = npc_id,
             pc_id              = pc_id,
             relationship_delta = _d,
             event_importance   = _imp,
-            current_game_time  = _gametime,
+            current_game_time  = _depth_dt,
         )
     except Exception as e:
         print(f"[Updater] 성격 변화 실패 (무시): {e}")

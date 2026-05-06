@@ -6,6 +6,7 @@
 # Functions
 #   - load_world_instance(world_id: str) -> World : world_id에 해당하는 World 인스턴스 로드
 #   - run_manager(user_input, pc_id, npc_id, recent_story, world_id, perspective) -> tuple[str, str, str, list[str]] : 전체 파이프라인 실행 후 (fixed, genre, dynamic, scene_types) 반환
+#   - _classify_and_parse_time(user_input, recent_story, global_state, allowed_locs, scene_descriptions) -> dict : 씬 분류 + 시간 파싱 (scene_descriptions는 세계관별 타입명→설명 dict)
 # ================================
 
 import asyncio
@@ -72,13 +73,16 @@ def _try_rule_based(user_input: str) -> dict | None:
 
 
 async def _classify_and_parse_time(
-    user_input:   str,
-    recent_story: str,
-    global_state: dict,
-    allowed_locs: str,
+    user_input:        str,
+    recent_story:      str,
+    global_state:      dict,
+    allowed_locs:      str,
+    scene_descriptions: dict[str, str] | None = None,
 ) -> dict:
     current_time    = datetime.fromisoformat(global_state["currentTime"])
     context_snippet = recent_story[-800:] if recent_story else ""
+    _scenes = scene_descriptions or {"daily": "Everyday life with no significant conflict"}
+    scene_types_block = "\n".join(f"  - {name}: {desc}" for name, desc in _scenes.items())
 
     system_instruction = "You are a combined scene classifier and time parser for a Korean roleplay system."
 
@@ -99,7 +103,8 @@ Time: {current_time.strftime("%Y-%m-%d %H:%M")} | Weather: {global_state["weathe
 {user_input}
 
 [Rules]
-scene_types: array of ["daily","emotional","physical","intimate","workplace","aegyo"] (1+ required)
+scene_types: pick 1+ from the list below (use exact keys):
+{scene_types_block}
 action_type: "dialogue"(3min) | "action"(10min) | "movement"(25min) | "ooc_jump"(null min, use target_hour)
 target_hour: int (0-23) only for ooc_jump. Map: 새벽→3, 아침→8, 점심→12, 오후→15, 저녁→19, 밤→23
 new_location_id: existing ID from Allowed Locations ONLY, else null
@@ -351,7 +356,8 @@ async def run_manager(
     else:
         allowed_locs = await _get_allowed_locations()
         parse_result = await _classify_and_parse_time(
-            user_input, recent_story, global_state, allowed_locs
+            user_input, recent_story, global_state, allowed_locs,
+            scene_descriptions=world.get_scene_descriptions(),
         )
         scene_types = parse_result.get("scene_types") or ["daily"]
 
