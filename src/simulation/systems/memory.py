@@ -122,6 +122,12 @@ async def run_decay(current_game_time: datetime) -> None:
         """)
         memories = await rec.data()
 
+    for m in memories:
+        if isinstance(m.get("mid"), list):
+            m["mid"] = m["mid"][0] if m["mid"] else ""
+        if isinstance(m.get("char_id"), list):
+            m["char_id"] = m["char_id"][0] if m["char_id"] else ""
+
     to_delete:                    list[str]         = []
     to_compress_l2:               list[dict]        = []
     to_compress_l1:               list[dict]        = []
@@ -181,11 +187,17 @@ async def run_decay(current_game_time: datetime) -> None:
         traits  = await _fetch_char_traits(char_id)
         results = await _distort_memories_batch(char_memories, char_id, traits)
         for m in char_memories:
-            new_summary = results.get(m["mid"])
-            if new_summary and new_summary != m["summary"]:
+            mid = m["mid"]
+            if isinstance(mid, list):
+                mid = mid[0] if mid else ""
+            mid = str(mid)
+            if mid not in results:
+                continue
+            new_summary = results[mid]
+            if new_summary != m["summary"]:
                 distortion = float(m["distortion"] or 0)
                 await _update_memory(
-                    m["mid"], new_summary, None,
+                    mid, new_summary, None,
                     int(m["level"]), min(1.0, distortion + 0.25),
                     current_game_time,
                 )

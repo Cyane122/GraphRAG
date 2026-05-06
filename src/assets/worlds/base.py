@@ -61,7 +61,7 @@ class World:
         "vulnerable":  "A character's weakness is exposed — emotional breakdown, exhaustion, confession",
         "aggressive":  "Verbal confrontation: arguments, threats, power struggles, psychological pressure",
         "physical":    "Combat, chase, training, or any scene driven by bodily exertion and kinetic energy",
-        "atmospheric": "Environment or mood takes center stage; setting description, sensory immersion",
+        "atmospheric.md": "Environment or mood takes center stage; setting description, sensory immersion",
     }
 
     def get_scene_types(self) -> list[str]:
