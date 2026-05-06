@@ -1,19 +1,17 @@
-"""
-욕구 1회 초과 시 Haiku가 NPC가 뭘 했을지 결정.
-→ Event 노드 생성 + 욕구 수치 감소 반영.
+# ================================
+# src/agents/resolver.py
+#
+# 욕구(Needs) 초과 시 NPC 자율 행동을 결정하고 Event + 욕구 감소를 반영합니다.
+#
+# Functions
+#   - resolve_action(npc_id, need_name, overflow_time, location_id, personality, traits) -> dict | None : 욕구 초과 NPC 행동 결정 및 이벤트 생성
+# ================================
 
-Libido / Safety는 이 파일에서 처리하지 않음.
-  - Libido: needs_manager가 hint만 반환
-  - Safety: complex_updater의 Event 연동으로 관리
-"""
-
-import os
 from datetime import datetime
 
+from src.config import MODEL_STATE_UPDATER as ACTION_MODEL
 from src.core.database import async_driver, update_dynamic_state
 from src.core.llm.client import get_model, extract_json_from_llm
-
-ACTION_MODEL = os.getenv("MODEL_STATE_UPDATER", "claude-haiku-4-5-20251001")
 
 # 해소 후 안착 수치
 SETTLE_LEVELS = {
@@ -30,6 +28,14 @@ NEED_ACTION_HINTS = {
     "social": "contacting someone / meeting a friend / texting",
     "fun":    "watching a video / gaming / doing something enjoyable",
 }
+
+
+async def _fetch_valid_locations() -> list[tuple[str, str]]:
+    """DB에서 유효한 Location ID + 이름 목록 반환."""
+    async with async_driver.session() as session:
+        rec = await session.run("MATCH (l:Location) RETURN l.id AS id, l.name AS name")
+        rows = await rec.fetch_all()
+    return [(r["id"], r["name"]) for r in rows]
 
 
 async def resolve_action(
@@ -49,16 +55,20 @@ async def resolve_action(
     if need_name not in SETTLE_LEVELS:
         return None
 
+    valid_locations = await _fetch_valid_locations()
     hint   = NEED_ACTION_HINTS.get(need_name, "doing something to address their needs")
     action = await _decide_action(
-        npc_id, need_name, hint, overflow_time, location_id, personality, traits
+        npc_id, need_name, hint, overflow_time, location_id, personality, traits,
+        valid_locations=valid_locations,
     )
     if not action:
         return None
 
+    valid_loc_ids = {loc_id for loc_id, _ in valid_locations}
     event_id = await _create_event(
         npc_id, action, overflow_time, location_id,
         need_name=need_name,
+        valid_loc_ids=valid_loc_ids,
     )
     await _settle_need(npc_id, need_name)
 
@@ -70,13 +80,14 @@ async def resolve_action(
 # ════════════════════════════════════════════════════════════
 
 async def _decide_action(
-    npc_id:        str,
-    need_name:     str,
-    hint:          str,
-    overflow_time: datetime,
-    location_id:   str,
-    personality:   str,
-    traits:        dict,
+    npc_id:          str,
+    need_name:       str,
+    hint:            str,
+    overflow_time:   datetime,
+    location_id:     str,
+    personality:     str,
+    traits:          dict,
+    valid_locations: list[tuple[str, str]] | None = None,
 ) -> dict | None:
     trait_summary = ", ".join(
         f"{k.replace('trait_', '')}={v:+.1f}"
@@ -84,6 +95,10 @@ async def _decide_action(
         if abs(v) >= 0.4
     )
     time_str = overflow_time.strftime("%Y-%m-%d %H:%M")
+
+    loc_list = "\n".join(f'  - "{lid}" ({name})' for lid, name in (valid_locations or []))
+    if not loc_list:
+        loc_list = f'  - "{location_id}" (current location)'
 
     system_instruction = "You are an NPC behavior engine for a Korean slice-of-life roleplay."
 
@@ -95,13 +110,16 @@ Overflowing need: {need_name} (level reached 0.8)
 Time of overflow: {time_str}
 Likely behavior category: {hint}
 
+Valid location IDs (use EXACTLY one of these):
+{loc_list}
+
 Decide exactly what this NPC did to address their need.
 Be specific but brief. Match the personality. Keep it mundane and realistic.
 
 Return ONLY valid JSON. Never use "..." as a value — always write the complete string:
 {{
   "action_summary": "편의점에서 컵라면을 먹었다",  // 1 sentence, Korean, complete
-  "target_location_id": "loc_id_here", // where they went (use existing loc id or same location)
+  "target_location_id": "exact_id_from_list_above", // MUST be one of the valid IDs above
   "duration_minutes": 20,      // how long it took (int)
   "importance": 1              // always 1 for autonomous daily needs
 }}"""
@@ -125,16 +143,19 @@ Return ONLY valid JSON. Never use "..." as a value — always write the complete
 
 
 async def _create_event(
-    npc_id:        str,
-    action:        dict,
-    overflow_time: datetime,
-    origin_loc_id: str,
-    need_name:     str = "",
+    npc_id:         str,
+    action:         dict,
+    overflow_time:  datetime,
+    origin_loc_id:  str,
+    need_name:      str = "",
+    valid_loc_ids:  set[str] | None = None,
 ) -> str:
     ts         = overflow_time.strftime("%Y%m%d_%H%M")
     event_id   = f"{origin_loc_id}_{npc_id}_auto_{ts}"
     summary    = action.get("action_summary", "")
-    target_loc = action.get("target_location_id", origin_loc_id)
+    target_loc = action.get("target_location_id", "") or origin_loc_id
+    if valid_loc_ids and target_loc not in valid_loc_ids:
+        target_loc = origin_loc_id
     importance = int(action.get("importance", 1))
 
     async with async_driver.session() as session:

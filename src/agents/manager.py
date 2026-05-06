@@ -1,20 +1,19 @@
-"""
-파이프라인 오케스트레이터.
-
-씬 타입 분류, 시간 계산, 프롬프트 조립을 담당.
-perspective 파라미터를 world.get_full_config()와 PromptBuilder에 전달.
-
-- CLASSIFIER_MODEL: .env의 MODEL_CLASSIFIER (기본값 gemini-3-flash-preview)
-- thinking_level LOW: 분류 태스크 최소 사고 토큰으로 속도·비용 최적화 (MINIMAL 미지원)
-- response_mime_type application/json: 구조화 JSON 출력 강제
-"""
+# ================================
+# src/agents/manager.py
+#
+# 씬 분류, 시간 계산, 프롬프트 조립을 오케스트레이션합니다.
+#
+# Functions
+#   - load_world_instance(world_id: str) -> World : world_id에 해당하는 World 인스턴스 로드
+#   - run_manager(user_input, pc_id, npc_id, recent_story, world_id, perspective) -> tuple[str, str, str, list[str]] : 전체 파이프라인 실행 후 (fixed, genre, dynamic, scene_types) 반환
+# ================================
 
 import asyncio
-import os
 import re
 from datetime import datetime
 from importlib import import_module
 
+from src.config import MODEL_CLASSIFIER as CLASSIFIER_MODEL
 from src.agents.prompt_factory.builder import PromptBuilder
 from src.assets.worlds.base import World
 from src.core.database.driver import async_driver
@@ -25,8 +24,7 @@ from src.simulation.systems.organic import tick_cycle_day
 from src.simulation.state.updater import apply_time_updates
 from src.simulation.systems.needs import run_needs_update
 from src.simulation.systems.social import build_world_context
-
-CLASSIFIER_MODEL = os.getenv("MODEL_CLASSIFIER", "gemini-3-flash-preview")
+from src.simulation.events import evaluate_all as evaluate_static_events
 
 REL_TO_KEY = {
     "HAS_PROFILE":           "static_profile",
@@ -206,15 +204,21 @@ async def fetch_relationship_data(char_a: str, char_b: str) -> dict:
         return row["props"] if row else {}
 
 
-async def fetch_recent_events(char_id: str, limit: int = 3) -> list[dict]:
+async def fetch_recent_events(npc_id: str, pc_id: str, limit: int = 3) -> list[dict]:
     async with async_driver.session() as session:
         records = await session.run("""
-            MATCH (c:Character {id: $char_id})-[:INVOLVED_IN]->(e:Event)
-            RETURN e.id AS id, e.summary AS summary,
-                   e.timestamp AS timestamp, e.impact AS impact
+            MATCH (npc:Character {id: $npc_id})-[:INVOLVED_IN]->(e:Event)
+            OPTIONAL MATCH (npc)-[:REMEMBERS]->(m_npc:Memory)-[:OF_EVENT]->(e)
+            OPTIONAL MATCH (pc:Character {id: $pc_id})-[:REMEMBERS]->(m_pc:Memory)-[:OF_EVENT]->(e)
+            RETURN e.id           AS id,
+                   e.summary      AS summary,
+                   e.timestamp    AS timestamp,
+                   e.impact       AS impact,
+                   m_npc.summary  AS npc_memory,
+                   m_pc.summary   AS pc_memory
             ORDER BY e.timestamp DESC
             LIMIT $limit
-        """, char_id=char_id, limit=limit)
+        """, npc_id=npc_id, pc_id=pc_id, limit=limit)
         rows = await records.data()
         return [dict(r) for r in rows]
 
@@ -387,7 +391,7 @@ async def run_manager(
         fetch_character_data(npc_id, scene_types),
         fetch_character_data(pc_id,  scene_types),
         fetch_relationship_data(pc_id, npc_id),
-        fetch_recent_events(npc_id, limit=3),
+        fetch_recent_events(npc_id, pc_id, limit=3),
     )
 
     # ── 5. Vector 유사 검색 (recall_events) — Memory 기반 ────
@@ -457,6 +461,14 @@ async def run_manager(
     except Exception as e:
         print(f"[WorldNarrator] 컨텍스트 수집 실패 (무시): {e}")
 
+    # ── 7.6. StaticEvent 평가 ────────────────────────────────
+    try:
+        static_hints = await evaluate_static_events(current_dt)
+        if static_hints:
+            world_context["static_events"] = static_hints
+    except Exception as e:
+        print(f"[StaticEvent] 평가 실패 (무시): {e}")
+
     if hasattr(world, "get_full_config_async"):
         world_config = await world.get_full_config_async([npc_id, pc_id], async_driver)
     else:
@@ -474,10 +486,7 @@ async def run_manager(
         scene_types      = scene_types,
         char_data        = char_data,
         relationship     = relationship,
-        events           = [
-            {"timestamp": e["timestamp"], "summary": e["summary"]}
-            for e in recent_events
-        ],
+        events           = recent_events,
         recall_events    = [
             {
                 "summary":  e["summary"],

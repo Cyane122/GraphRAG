@@ -9,11 +9,8 @@
 #   - _sanitize_stress_level(value) -> int | None : stress_level 다양한 입력값을 정수로 변환
 # ================================
 
-import os
-
+from src.config import MODEL_STATE_UPDATER as CLASSIFIER_MODEL
 from src.core.llm.client import get_model, extract_json_from_llm
-
-CLASSIFIER_MODEL = os.getenv("MODEL_STATE_UPDATER", "gemini-3-flash-preview")
 
 SAFE_FIELDS = {
     "mood", "mental_condition", "stress_level",

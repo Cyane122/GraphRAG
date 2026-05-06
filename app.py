@@ -1,31 +1,19 @@
-"""
-Chainlit 메인 앱.
-세션 초기화, 메시지 루프, OOC 분기, Manager 파이프라인,
-Actor 스트리밍, 지연 확정(Deferred Commit), 리롤/수정 처리.
-_stream_actor에서 인게임 시각을 파싱해 TimeTheme 엘리먼트로 배경 갱신.
-PERSPECTIVE 환경변수(1/3)로 1인칭/3인칭 전환.
-sses 세계: opening_scene 주입, 인게임 18:00 일정 자동 생성.
-
-- anthropic 의존 완전 제거
-- _stream_actor: genai.Client.aio.models.generate_content_stream 기반으로 전환
-  * Gemini thinking 파트(thought=True)를 별도 수집 → CHARACTERS 추출에 사용
-  * 실제 텍스트 파트는 청크 단위로 UI에 실시간 스트리밍
-  * thinking_level=LOW 고정으로 과도한 사고 후 무출력 방지
-- 리롤: GlobalState.currentTime 복원(시간 이중진행 방지) + 이전 메시지 삭제.
-- 수정(✏️): EditableMessage CustomElement로 메시지 인라인 편집.
-"""
+# ================================
+# app.py
+#
+# Chainlit 메인 앱. 세션 초기화, 메시지 루프, OOC 분기, Manager 파이프라인,
+# Actor 스트리밍, 지연 확정(Deferred Commit), 리롤/수정을 처리합니다.
+# ================================
 
 import asyncio
 import json
 import logging
-import os
 import re
 import random
 import pathlib
 from datetime import datetime
 from pathlib import Path
 
-from dotenv import load_dotenv
 from google.genai import types
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -34,16 +22,13 @@ logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)  # neo4j 제거
 
 import chainlit as cl
 
+from src.config import PERSPECTIVE, WORLD_ID, MODEL_ACTOR, MAX_TOKEN
 from src.agents.manager import run_manager, load_world_instance
 from src.agents.prompt_factory.ooc_handler import is_ooc, parse_ooc
 from src.simulation.state.updater import process_actor_response, delegate_complex_update
 from src.core.logging.conversation_logger import append_turn, parse_log_file
 from src.core.database.driver import async_driver
 from src.core.llm.client import get_client
-
-load_dotenv()
-
-PERSPECTIVE = int(os.getenv("PERSPECTIVE", 3))
 
 UPDATING_MSGS = [
     "흘러간 시간과, 머물다 간 감정들을 기록하고 있습니다...",
@@ -72,7 +57,6 @@ RECENT_STORY_TURNS = 3
 
 _genai_client = get_client()
 
-WORLD_ID     = os.getenv("WORLD_ID", "babe_univ")
 world        = load_world_instance(WORLD_ID)
 world_config = world.get_full_config(PERSPECTIVE)
 PC_ID        = world_config["pc_id"]
@@ -181,9 +165,9 @@ async def _stream_actor(
     - text 파트: raw에 누적 + UI 실시간 스트리밍
     - thinking_level=LOW: 과도한 사고로 인한 무출력 방지
     """
-    model_name   = os.getenv("MODEL_ACTOR", "gemini-3-flash-preview")
+    model_name   = MODEL_ACTOR
     system_text  = f"{fixed_prompt}\n\n{genre_prompt}" if genre_prompt else fixed_prompt
-    max_tokens   = int(os.getenv("MAX_TOKEN", 4096))  # actor: analyze+prose 합산 → 65% 제한 미적용
+    max_tokens   = MAX_TOKEN  # actor: analyze+prose 합산 → 65% 제한 미적용
 
     # history 포맷 변환 (Anthropic → Gemini)
     gemini_msgs = []

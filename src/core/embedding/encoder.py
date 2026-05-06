@@ -11,17 +11,11 @@
 # ================================
 
 import asyncio
-import os
 import torch
 
-from dotenv import load_dotenv
-
-load_dotenv()
+from src.config import MODEL_EMBEDDER as MODEL_NAME, EMBEDDING_DIM, HF_TOKEN
 
 _model = None  # 싱글톤
-MODEL_NAME    = os.getenv("MODEL_EMBEDDER")
-EMBEDDING_DIM = os.getenv("EMBEDDING_DIM")
-HF_TOKEN      = os.getenv("HF_TOKEN")
 
 
 def _get_model():

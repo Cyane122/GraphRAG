@@ -16,12 +16,12 @@ from pathlib import Path
 import kuzu
 
 from src.assets.worlds.base import World
-
+from src.config import WORLD_ID
 
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--world_id", type=str, default="default", help="초기화할 세계 ID")
+    parser.add_argument("--world_id", type=str, default=WORLD_ID, help="초기화할 세계 ID")
     args = parser.parse_args()
 
     world_id = args.world_id
@@ -31,13 +31,17 @@ if __name__ == "__main__":
     except (ModuleNotFoundError, AttributeError):
         world = World()
 
-    # Kuzu DB는 디렉토리 형태 — 완전히 삭제 후 재생성
+    # Kuzu DB 삭제 (파일 단독 형식 또는 디렉토리 형식 모두 처리)
     db_path = Path("graph") / world_id
-    if db_path.exists():
-        shutil.rmtree(db_path)
-        print(f"[{world_id}] 기존 DB 삭제 완료: {db_path}")
+    for p in [db_path, db_path.with_suffix(".kuzu"), db_path.with_suffix(".wal")]:
+        if p.is_dir():
+            shutil.rmtree(p)
+            print(f"[{world_id}] 기존 DB 삭제 완료 (dir): {p}")
+        elif p.is_file():
+            p.unlink()
+            print(f"[{world_id}] 기존 DB 삭제 완료 (file): {p}")
 
-    db_path.mkdir(parents=True, exist_ok=True)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
     db   = kuzu.Database(str(db_path))
     conn = kuzu.Connection(db)
 

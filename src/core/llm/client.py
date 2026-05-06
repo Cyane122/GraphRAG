@@ -15,16 +15,12 @@
 # ================================
 
 import json
-import os
 import re
 
 from google import genai
 from google.genai import types
-from dotenv import load_dotenv
 
-load_dotenv()
-
-PROJECT_ID = os.getenv("GOOGLE_PROJECT_ID")
+from src.config import GOOGLE_PROJECT_ID as PROJECT_ID
 
 _client = genai.Client(
     vertexai=True,

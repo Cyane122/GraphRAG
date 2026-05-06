@@ -1,31 +1,22 @@
+# ================================
 # src/agents/prompt_factory/builder.py
-"""
-3-파트 프롬프트 조립기.
-  [fixed]   operator_policy + rules + world + character (캐시 대상)
-  [genre]   씬 타입별 묘사 규칙 + 퓨샷 예시
-  [dynamic] 현재 헤더(시간·날씨·장소) + Neo4j 컨텍스트 + 유저 입력
-
-perspective=3 (기본): 3인칭 한정 시점, IM 규정 포함
-perspective=1       : 1인칭 화자, thought-stream 방식, IM 규정 제거
-
-BLACKLIST: narrator pre-blocking / 사물 추상화 패턴 추가.
-           세계관 전용 항목은 world_config["additional_blacklist"]로 분리.
-_CHECKLIST_1P / _CHECKLIST_3P: 토큰 예산 700으로 상향.
-    ~처럼/~듯/~인 것 같았다 항목 → "without physical or auditory anchor"로 수정.
-_CHECKLIST_1P: 친밀 씬 전용 3개 항목 제거 → {{intimate_scan}} 플레이스홀더로 분리.
-    build()에서 scene_types 기반 조건부 치환.
-    world_config["intimate_checklist_items"]로 세계관별 커스터마이징 지원.
-_CORE_1P: thought-stream에 관찰→추론→자기폐기 / 무의식적 경계 패턴 포함.
-"""
+#
+# 3-파트 프롬프트(Fixed / Genre / Dynamic)를 조립하는 모듈입니다.
+#
+# Classes
+#   - PromptBuilder : Fixed / Genre / Dynamic 섹션을 조립하는 빌더
+#
+# Functions
+#   - build_genre_section(genres: list[str], world_config: dict | None) -> str : 씬 타입별 Genre 섹션 조립
+#   - _render_state_line(dyn_state: dict, world_config: dict | None) -> str : DynamicState → STATE 한 줄 문자열
+# ================================
 
 from datetime import datetime
 from typing import Optional
 import json
 import logging
-import os
-from dotenv import load_dotenv
 
-load_dotenv()
+from src.config import MAX_TOKEN
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +141,7 @@ Anti-Convergence (multi-NPC): each NPC in own register. Two NPCs would say same 
 
 
 TOKEN_LIMIT_WARNING = f"""<token_limit_constraint>
-Max output = {round(int(os.getenv("MAX_TOKEN", 4096)) * 0.65 / 100) * 100} tokens. Deliver a complete response within budget.
+Max output = {round(MAX_TOKEN * 0.65 / 100) * 100} tokens. Deliver a complete response within budget.
 <analyze> block must be concise.
 </token_limit_constraint>"""
 
@@ -340,6 +331,7 @@ Close </analyze>, then IMMEDIATELY write the Korean prose scene. The scene is ma
 <analyze>
 SCENE: [1 sentence]
 CHARACTERS: [풀네임 JSON 배열]
+STATE: {{state_line}}
 EMOTION: Lv[1–10]. Hot→[body:verb]. Cold→[body:verb]. Same axis last turn? [yes→switch/no]
 TONE: {user}=[word]. output=[word]. match=[yes/no]
 CUT: last line=[env/body/action/sfx]. resolved=[yes/no]
@@ -519,6 +511,7 @@ Close </analyze>, then IMMEDIATELY write the Korean prose scene. The scene is ma
 SCENE: [1 sentence]
 CHARACTERS: [풀네임 JSON 배열]
 CHOREOGRAPHY: [목록에 있는 각 캐릭터들이 이 턴에서 보여줄 짧은 행동이나 대사 계획을 각각 10자 내외로 작성]
+STATE: {{state_line}}
 EMOTION: Lv[1–10]. Hot→[body:verb]. Cold→[body:verb]. Same axis last turn? [yes→switch/no]
 TONE: {user}=[word]. output=[word]. match=[yes/no]
 CUT: last line=[env/body/action/sfx/thought-fragment]. resolved=[yes/no]
@@ -552,6 +545,50 @@ def build_genre_section(genres: list[str], world_config: dict | None = None) -> 
         if section:
             parts.append(section)
     return "\n\n".join(parts)
+
+
+# ════════════════════════════════════════════════════════════
+# DynamicState → Checklist STATE 라인 렌더링
+# ════════════════════════════════════════════════════════════
+
+# (field_key, display_label, skip_values)
+# skip_values: 이 값이면 STATE 라인에서 제외 (기본값·미설정 필드 숨김).
+# world_config["extra_state_fields"]로 세계별 필드를 추가할 수 있다.
+_DEFAULT_STATE_FIELDS: list[tuple[str, str, frozenset]] = [
+    ("mood",               "mood",     frozenset()),
+    ("physical_condition", "physical", frozenset()),
+    ("mental_condition",   "mental",   frozenset()),
+    ("stress_level",       "stress",   frozenset({None})),
+    ("outfit",             "outfit",   frozenset({"", None})),
+    ("injury_marks",       "injury",   frozenset({"없음", "", None})),
+]
+
+
+def _render_state_line(
+    dyn_state:    dict,
+    world_config: dict | None = None,
+) -> str:
+    """
+    DynamicState dict → STATE 체크리스트 한 줄 문자열.
+
+    확장:
+      world_config["extra_state_fields"] = [
+          ("knee_condition",         "knee",     frozenset({"없음", "", None})),
+          ("workplace_stress_level", "wk_stress", frozenset({None, 0})),
+      ]
+    처럼 세계별 커스텀 필드를 추가하면 STATE 라인에 자동 포함된다.
+    """
+    fields = list(_DEFAULT_STATE_FIELDS)
+    fields.extend((world_config or {}).get("extra_state_fields", []))
+
+    parts = []
+    for key, label, skip_if in fields:
+        val = dyn_state.get(key)
+        if val is None or val in skip_if:
+            continue
+        parts.append(f"{label}={val}")
+
+    return " | ".join(parts) if parts else "—"
 
 
 class PromptBuilder:
@@ -720,16 +757,21 @@ class PromptBuilder:
             + "\n</relationship>"
         )
 
-    @staticmethod
-    def build_events_section(events: list[dict]) -> str:
-        """최신 N개 이벤트 (recency 기반)."""
+    def build_events_section(self, events: list[dict]) -> str:
+        """최신 N개 이벤트 (recency 기반) + 등장인물별 Memory."""
         if not events:
             return "<recent_events>없음</recent_events>"
-        lines = "\n".join(
-            f"- [{e.get('timestamp', '?')}] {e.get('summary', '')}"
-            for e in events
-        )
-        return f"<recent_events>\n{lines}\n</recent_events>"
+        lines = []
+        for e in events:
+            line = f"- [{e.get('timestamp', '?')}] {e.get('summary', '')}"
+            npc_mem = e.get("npc_memory")
+            pc_mem  = e.get("pc_memory")
+            if npc_mem:
+                line += f"\n  └ {self.char_name}의 기억: {npc_mem}"
+            if pc_mem:
+                line += f"\n  └ {self.user_name}의 기억: {pc_mem}"
+            lines.append(line)
+        return "<recent_events>\n" + "\n".join(lines) + "\n</recent_events>"
 
     @staticmethod
     def build_recall_events_section(
@@ -758,19 +800,30 @@ class PromptBuilder:
     @staticmethod
     def build_world_section(world_context: dict) -> str:
         """
-        세상은 움직인다 + SNS 피드를 dynamic_prompt에 주입.
-        둘 다 비어 있으면 빈 문자열 반환.
+        StaticEvent 힌트 + 세상은 움직인다 + SNS 피드를 dynamic_prompt에 주입.
+        모두 비어 있으면 빈 문자열 반환.
         """
-        nearby = world_context.get("nearby_activity", [])
-        sns    = world_context.get("sns_posts", [])
+        static_events = world_context.get("static_events", [])
+        nearby        = world_context.get("nearby_activity", [])
+        sns           = world_context.get("sns_posts", [])
 
-        if not nearby and not sns:
+        if not static_events and not nearby and not sns:
             return ""
 
         parts: list[str] = []
+
+        if static_events:
+            lines = []
+            for e in static_events:
+                # active = 오늘 발생, foreshadowing = 예정 이벤트 복선
+                label = "오늘" if e["status"] == "active" else "예정"
+                lines.append(f"- [{label}] {e['hint']}")
+            parts.append("[Upcoming Events]\n" + "\n".join(lines))
+
         if nearby:
             lines = "\n".join(f"- {a['name']}: {a['summary']}" for a in nearby)
             parts.append(f"[Nearby Activity]\n{lines}")
+
         if sns:
             lines = "\n".join(f"- {p}" for p in sns)
             parts.append(f"[SNS Feed]\n{lines}")
@@ -856,6 +909,9 @@ class PromptBuilder:
             "If condom omitted AND pregnancy_risk=있음 → flag in interior monologue.",
             cycle_line + " → If condom omitted AND pregnancy_risk=있음 → flag in interior monologue."
         )
+
+        state_line = _render_state_line(dyn_state, self.world_config)
+        checklist = checklist.replace("{state_line}", state_line)
 
         dynamic_parts = [
             self.world_config.get("alteration_section", ""),

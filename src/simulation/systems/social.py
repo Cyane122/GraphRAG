@@ -8,17 +8,17 @@
 #   - resolve_and_update(char_names, main_npc_id, pc_id, world_config, event_id, event_importance) -> list[str] : 등장인물 이름 처리 및 그래프 갱신
 # ================================
 
-import os
 import json
 import re
 from datetime import datetime, timedelta
 
+from src.config import MODEL_STATE_UPDATER
 from src.core.database.driver import async_driver
 from src.core.llm.client import get_model, extract_json_from_llm
 from src.simulation.systems.needs import ensure_traits
 
-NARRATOR_MODEL      = os.getenv("MODEL_STATE_UPDATER", "claude-haiku-4-5-20251001")
-BUILDER_MODEL       = os.getenv("MODEL_STATE_UPDATER", "claude-haiku-4-5-20251001")
+NARRATOR_MODEL = MODEL_STATE_UPDATER
+BUILDER_MODEL  = MODEL_STATE_UPDATER
 NEARBY_WINDOW_HOURS = 2
 WORLD_WINDOW_HOURS  = 8
 MAX_SNS_POSTS       = 2
@@ -107,13 +107,23 @@ async def _fetch_recent_auto_events(
                    e.timestamp   AS timestamp,
                    e.location_id AS location_id,
                    e.need_name   AS need_name,
-                   sp.sns_handle AS sns_handle
+                   sp.props      AS profile_props
             ORDER BY e.timestamp DESC
             LIMIT 15
         """, npc_id=npc_id, pc_id=pc_id, cutoff=cutoff)
         rows = await rec.data()
 
-    return [dict(r) for r in rows]
+    result = []
+    for r in rows:
+        row = dict(r)
+        profile_props = row.pop("profile_props", None) or "{}"
+        try:
+            profile = json.loads(profile_props) if isinstance(profile_props, str) else (profile_props or {})
+            row["sns_handle"] = profile.get("sns_handle")
+        except Exception:
+            row["sns_handle"] = None
+        result.append(row)
+    return result
 
 
 async def _generate_sns_batch(candidates: list[dict]) -> list[str]:

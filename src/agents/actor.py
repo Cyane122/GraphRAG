@@ -1,24 +1,16 @@
-"""
-액터 에이전트.
+# ================================
+# src/agents/actor.py
+#
+# PromptBuilder가 조립한 3-파트 프롬프트를 Gemini Actor 모델에 전달합니다.
+#
+# Functions
+#   - run_actor(fixed_prompt: str, genre_prompt: str, dynamic_prompt: str, conversation_history: list[dict] | None) -> str : Gemini에 프롬프트 전달 후 응답 텍스트 반환
+# ================================
 
-PromptBuilder가 조립한 3-파트 프롬프트(fixed / genre / dynamic)를
-Gemini 모델에 전달해 롤플레이 응답 텍스트를 생성한다.
-
-- MODEL_ACTOR: .env의 MODEL_ACTOR (기본값 gemini-3.1-pro-preview)
-- thinking_level MEDIUM: 창작 품질과 속도의 균형점
-- Implicit Caching: 동일 system prompt 반복 시 Gemini가 자동 캐시 적용
-"""
-
-import os
-from dotenv import load_dotenv
-from pathlib import Path
-
+from src.config import MODEL_ACTOR as ACTOR_MODEL, MAX_TOKEN
 from src.core.llm.client import get_model, get_response_text
 
-load_dotenv(Path(__file__).parent.parent.parent / ".env")
-
-ACTOR_MODEL = os.getenv("MODEL_ACTOR", "gemini-3.1-pro-preview")
-MAX_TOKENS  = round(int(os.getenv("MAX_TOKEN", 4096)) * 0.65 / 100) * 100
+MAX_TOKENS = round(MAX_TOKEN * 0.65 / 100) * 100
 
 
 def run_actor(

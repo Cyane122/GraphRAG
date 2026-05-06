@@ -12,18 +12,16 @@
 #   - KuzuAsyncDriver : session() 팩토리 및 동기 execute_sync() 제공
 #
 # (module-level)
-#   - async_driver : WORLD_ID 기반 Kuzu DB를 가리키는 KuzuAsyncDriver 싱글톤
+#   - async_driver : src.config.WORLD_ID 기반 Kuzu DB를 가리키는 KuzuAsyncDriver 싱글톤
 # ================================
 
 import asyncio
-import os
 from pathlib import Path
 
 import kuzu
-from dotenv import load_dotenv
 from kuzu import QueryResult
 
-load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
+from src.config import WORLD_ID
 
 
 class KuzuRecord:
@@ -61,6 +59,13 @@ class KuzuResult:
         records = []
         while self._qr and self._qr.has_next():
             records.append(KuzuRecord(self._col_names, self._qr.get_next()))
+        return records
+
+    async def data(self) -> list[dict]:
+        """모든 행을 dict 리스트로 반환합니다. Neo4j AsyncResult.data()와 호환."""
+        records = []
+        while self._qr and self._qr.has_next():
+            records.append(dict(zip(self._col_names, self._qr.get_next())))
         return records
 
 
@@ -125,7 +130,6 @@ class KuzuAsyncDriver:
         pass
 
 
-_world_id = os.getenv("WORLD_ID", "default")
-_db_path  = str(Path("graph") / _world_id)
+_db_path  = str(Path("graph") / WORLD_ID)
 
 async_driver = KuzuAsyncDriver(_db_path)

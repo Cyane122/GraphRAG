@@ -110,3 +110,69 @@
   - `.env`의 `WORLD_ID`를 자동으로 읽어 해당 그래프의 전역 상태·캐릭터·장소·관계를 dict로 반환
 - [정리] `.gitignore`에 명시된 파일들을 git tracking에서 제거
   - `.chainlit/`, `.claude/`, `logs/`, `graph/sses.backup`, `project-*.json` (총 36개)
+
+## 2026-05-06
+- `src/assets/worlds/base.py`
+  - 이제 `Memory` 노드 스키마가 실제 코드와 일치함
+  - `REMEMBERS` 노드 스키마가 실제 코드와 일치하도록 변경
+  - 통일되어 있지 않았던 벡터 인덱스 이름이 통일되도록 변경
+  - `Event` 노드의 필드명을 `timestamp`로 변경.
+- `src/simulation/systems/memory.py`
+  - [추가] `ensure_memories_for_event()`: Memory 노드 생성 후 `OF_EVENT` 엣지 추가.
+- `src/simulation/state/updater.py`
+  - `_create_event()`: 이제 `embedding` 필드도 추가함.
+  - 스키마에 필요없는 필드 3개 제거.
+- `src/core/database/schema_builder.py`
+  - 이제 DB 삭제 로직을 파일과 폴더 양쪽에서 처리함
+- `src/assets/worlds/.../schema.py`
+  - Location 노드 CREATE 쿼리에서 `$desc` 파라미터가 Kuzu 파서 오류를 일으키던 문제 수정
+- `src/agents/manager.py`
+  - `fetch_recent_events()`: 이제 `pc_id`도 받아 NPC·PC 양쪽의 Memory를 함께 조회함
+  - `builder.build()` 호출부: `events`에 `npc_memory`, `pc_memory` 포함한 전체 dict 전달
+- `src/agents/prompt_factory/builder.py`
+  - `build_events_section()`: `@staticmethod` → 인스턴스 메서드로 전환
+  - 이제 각 Event 아래에 NPC·PC의 주관적 기억(`Memory.summary`)을 함께 렌더링함
+  - 출력 형식: `└ {캐릭터명}의 기억: {memory_summary}` (Memory가 없으면 생략)
+  - [신규] `_DEFAULT_STATE_FIELDS`, `_render_state_line()`: DynamicState 핵심 필드를 `<analyze>` 체크리스트의 `STATE:` 라인으로 렌더링하는 레지스트리 기반 시스템 추가
+    - 기본 필드: `mood`, `physical_condition`, `mental_condition`, `stress_level`, `outfit`, `injury_marks`
+    - `injury_marks`가 `"없음"`이거나 `outfit`이 미설정이면 자동 생략
+    - `world_config["extra_state_fields"]`에 `(key, label, frozenset(skip_values))` 목록을 추가하면 세계별 커스텀 필드가 STATE 라인에 자동 포함됨 (코드 수정 불필요)
+  - `_CHECKLIST_3P`, `_CHECKLIST_1P`: `STATE: {state_line}` 라인 추가. LLM이 씬 생성 전 현재 의상·컨디션·부상 상태를 명시적으로 인식하도록 강제함
+- [정리] `scripts/`를 git tracking에서 제거 (로컬 파일은 유지, `.gitignore` 이미 설정되어 있었음)
+- [리팩토링] 환경변수 참조 `src/config.py`로 중앙화
+  - [신규] `src/config.py`: 모든 `.env` 환경변수를 한 곳에서 읽어 타입 변환 후 상수로 제공
+  - 19개 파일에서 `os.getenv` / `load_dotenv` 직접 호출 제거, `from src.config import ...`로 교체
+    - `src/core/database/driver.py`, `src/core/database/schema_builder.py`
+    - `src/core/llm/client.py`, `src/core/embedding/encoder.py`
+    - `src/agents/actor.py`, `src/agents/manager.py`, `src/agents/resolver.py`
+    - `src/agents/prompt_factory/builder.py`, `src/agents/prompt_factory/ooc_handler.py`
+    - `src/simulation/state/updater.py`, `src/simulation/state/classifier.py`
+    - `src/simulation/systems/memory.py`, `src/simulation/systems/needs.py`, `src/simulation/systems/social.py`
+    - `src/assets/worlds/babe_univ_altered/schema.py`, `src/assets/worlds/rofan/schema.py`, `src/assets/worlds/sses/schema.py`
+    - `app.py`
+  - `MODEL_STATE_UPDATER` 기본값 파일 간 불일치 해소 (→ `gemini-3-flash-preview`로 통일)
+- [신규] `src/simulation/events/` 패키지 추가 — 조건 기반 이벤트(StaticEvent) 시스템
+  - `evaluator.py`: `time` / `stat` / `flag` 세 가지 조건 타입 평가 (time은 MM-DD 정수 비교, stat은 RELATIONSHIP 쿼리, flag는 GlobalState.flags JSON 조회)
+  - `manager.py`: `evaluate_all()` — 매 턴 모든 StaticEvent 상태를 갱신하고 foreshadowing/active 힌트 목록 반환. `set_flag()` — Complex Updater 등에서 서사적 조건 충족 시 호출
+  - `__init__.py`: `evaluate_all`, `set_flag` 노출
+  - StaticEvent 상태: `dormant` → `foreshadowing` → `active` → `done`
+  - foreshadow_conditions / trigger_conditions 두 단계 분리로 복선과 발화를 구분함
+- [변경] `src/assets/worlds/base.py`
+  - `StaticEvent` 노드 테이블 추가 (`foreshadow_conditions`, `foreshadow_hint`, `trigger_conditions`, `status`)
+  - `EVENT_INVOLVES` 관계 테이블 추가 (StaticEvent → Character)
+  - `GlobalState`에 `flags STRING` 컬럼 추가 (flag 타입 조건 저장용)
+- [변경] `src/agents/prompt_factory/builder.py`
+  - `build_world_section()`: `static_events` 키 지원 추가. foreshadowing 이벤트는 `[예정]`, active는 `[오늘]` 레이블로 `<world_context>` 블록에 렌더링
+- [변경] `src/agents/manager.py`
+  - step 7.6 추가: 매 턴 `evaluate_static_events()` 호출 → 활성 힌트를 `world_context["static_events"]`에 주입
+- [최적화] LLM 호출 횟수 축소
+  - `src/simulation/state/updater.py`: Classifier + Complex Updater + Relationship Status 재작성을 `_run_combined_update()` 단일 호출로 통합
+    - 복합 턴 기준 최대 3회 → 1회로 축소
+    - `_evolve_relationship_status()` 제거 — LLM 출력 JSON의 `new_event.new_relationship_status` 필드로 통합
+    - `delegate_complex_update()`: event_only 경로 전용으로 단순화. `_generate_event_plan()` 사용
+    - `process_actor_response()` 반환형 `dict` → `str | None` (임신 OOC 메시지 직접 반환, 기존 버그 수정)
+  - `src/simulation/systems/memory.py`: 기억 왜곡·압축을 개별 호출 → 배치 호출로 전환
+    - `_distort_memory()`, `_compress_memory()` 제거
+    - `_distort_memories_batch()`: 동일 캐릭터의 왜곡 대상 전체를 JSON 배열 1회 호출로 처리
+    - `_compress_memories_batch()`: 압축 대상 전체를 레벨별 1회 호출로 처리
+    - `run_decay()`: 버킷 분류(삭제/압축L2/압축L1/왜곡) 후 버킷당 1회 배치 처리로 재구조화

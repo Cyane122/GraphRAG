@@ -9,10 +9,10 @@
 # ================================
 
 import asyncio
-import os
 from datetime import datetime, timedelta
 from typing import Optional
 
+from src.config import MODEL_STATE_UPDATER as TRAITS_MODEL
 from src.core.database import async_driver, update_dynamic_state
 from src.core.llm.client import get_model, extract_json_from_llm
 from src.simulation.state.classifier import _sanitize_stress_level
@@ -21,8 +21,6 @@ from src.agents.resolver import resolve_action, SETTLE_LEVELS
 # ════════════════════════════════════════════════════════════
 # 트레이트 상수
 # ════════════════════════════════════════════════════════════
-
-TRAITS_MODEL = os.getenv("MODEL_STATE_UPDATER", "claude-haiku-4-5-20251001")
 
 ALL_TRAIT_KEYS = [
     "trait_laziness", "trait_vitality", "trait_gluttony", "trait_light_sleeper",

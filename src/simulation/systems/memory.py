@@ -2,20 +2,20 @@
 # src/simulation/systems/memory.py
 #
 # 캐릭터별 기억(Memory) 노드 생성 및 시간 기반 풍화/왜곡/삭제를 담당합니다.
+# 왜곡과 압축은 배치 처리로 LLM 호출 횟수를 최소화합니다.
 #
 # Functions
 #   - ensure_memories_for_event(event_id, summary, importance, char_ids, timestamp, embedding) -> None : Event에 관련된 캐릭터별 Memory 노드 생성
 #   - run_decay(current_game_time: datetime) -> None : 게임 내 시간 경과에 따라 기억 풍화·왜곡·삭제
+#   - distort_on_affinity_change(char_id, pc_id, affinity_delta, current_game_time) -> None : 호감도 급변 시 관련 기억을 즉시 재해석
 # ================================
 
-import os
 from datetime import datetime
 
+from src.config import MODEL_STATE_UPDATER as DECAY_MODEL
 from src.core.database.driver import async_driver
-from src.core.llm.client import get_model
+from src.core.llm.client import get_model, extract_json_from_llm
 from src.core.embedding.encoder import embed_async
-
-DECAY_MODEL = os.getenv("MODEL_STATE_UPDATER", "claude-haiku-4-5-20251001")
 
 _DECAY_TABLE = {
     (3, 5):  {"distort": 30,  "level1": 60,  "level2": 120, "delete": 240},
@@ -91,17 +91,23 @@ async def ensure_memories_for_event(
                 CREATE (c)-[:REMEMBERS]->(m)
             """, cid=char_id, mid=mem_id)
 
+            await session.run("""
+                MATCH (m:Memory {id: $mid}), (e:Event {id: $eid})
+                CREATE (m)-[:OF_EVENT]->(e)
+            """, mid=mem_id, eid=event_id)
+
     print(f"[DecayManager] Memory 생성: {event_id} → {char_ids}")
 
 
 # ════════════════════════════════════════════════════════════
-# 2. 풍화 루프
+# 2. 풍화 루프 (배치 처리)
 # ════════════════════════════════════════════════════════════
 
 async def run_decay(current_game_time: datetime) -> None:
     """
-    manager_agent에서 days_passed > 0 일 때 호출.
-    current_game_time: naive datetime (GlobalState 기준).
+    days_passed > 0 일 때 호출.
+    풍화 대상 기억을 삭제/압축/왜곡 버킷으로 분류한 뒤
+    압축·왜곡은 배치 LLM 호출로 처리해 호출 횟수를 최소화한다.
     """
     async with async_driver.session() as session:
         rec = await session.run("""
@@ -116,6 +122,11 @@ async def run_decay(current_game_time: datetime) -> None:
         """)
         memories = await rec.data()
 
+    to_delete:                    list[str]         = []
+    to_compress_l2:               list[dict]        = []
+    to_compress_l1:               list[dict]        = []
+    to_distort_by_char: dict[str, list[dict]]       = {}
+
     for m in memories:
         importance = int(m["importance"] or 3)
         rule       = _get_decay_rule(importance)
@@ -123,118 +134,276 @@ async def run_decay(current_game_time: datetime) -> None:
         days_since = (current_game_time - created).days
 
         if rule["delete"] and days_since >= rule["delete"] and m["level"] >= 2:
-            await _delete_memory(m["mid"])
+            to_delete.append(m["mid"])
             continue
 
         if rule["level2"] and days_since >= rule["level2"] and m["level"] < 2:
-            new_summary = await _compress_memory(m["summary"], level=2)
-            await _update_memory(
-                m["mid"], new_summary, old_embedding=None,
-                summary_level=2, distortion=float(m["distortion"] or 0),
-                game_time=current_game_time,
-            )
+            to_compress_l2.append(m)
             continue
 
         if rule["level1"] and days_since >= rule["level1"] and m["level"] < 1:
-            new_summary = await _compress_memory(m["summary"], level=1)
-            await _update_memory(
-                m["mid"], new_summary, old_embedding=None,
-                summary_level=1, distortion=float(m["distortion"] or 0),
-                game_time=current_game_time,
-            )
+            to_compress_l1.append(m)
             continue
 
         distortion = float(m["distortion"] or 0)
         if rule["distort"] and days_since >= rule["distort"] and distortion < 0.5:
-            traits      = await _fetch_char_traits(m["char_id"])
-            new_summary = await _distort_memory(m["summary"], traits, m["char_id"])
-            if new_summary and new_summary != m["summary"]:
+            char_id = m["char_id"]
+            to_distort_by_char.setdefault(char_id, []).append(m)
+
+    # ── 삭제 ─────────────────────────────────────────────────
+    for mid in to_delete:
+        await _delete_memory(mid)
+
+    # ── Level 2 압축 (배치) ──────────────────────────────────
+    if to_compress_l2:
+        results = await _compress_memories_batch(to_compress_l2, level=2)
+        for m in to_compress_l2:
+            new_summary = results.get(m["mid"])
+            if new_summary:
                 await _update_memory(
-                    m["mid"], new_summary, old_embedding=None,
-                    summary_level=m["level"],
-                    distortion=min(1.0, distortion + 0.25),
-                    game_time=current_game_time,
+                    m["mid"], new_summary, None,
+                    2, float(m["distortion"] or 0), current_game_time,
                 )
+
+    # ── Level 1 압축 (배치) ──────────────────────────────────
+    if to_compress_l1:
+        results = await _compress_memories_batch(to_compress_l1, level=1)
+        for m in to_compress_l1:
+            new_summary = results.get(m["mid"])
+            if new_summary:
+                await _update_memory(
+                    m["mid"], new_summary, None,
+                    1, float(m["distortion"] or 0), current_game_time,
+                )
+
+    # ── 왜곡 (char_id별 배치) ───────────────────────────────
+    for char_id, char_memories in to_distort_by_char.items():
+        traits  = await _fetch_char_traits(char_id)
+        results = await _distort_memories_batch(char_memories, char_id, traits)
+        for m in char_memories:
+            new_summary = results.get(m["mid"])
+            if new_summary and new_summary != m["summary"]:
+                distortion = float(m["distortion"] or 0)
+                await _update_memory(
+                    m["mid"], new_summary, None,
+                    int(m["level"]), min(1.0, distortion + 0.25),
+                    current_game_time,
+                )
+
+
+# ════════════════════════════════════════════════════════════
+# 배치 LLM 호출
+# ════════════════════════════════════════════════════════════
+
+async def _compress_memories_batch(memories: list[dict], level: int) -> dict[str, str]:
+    """
+    여러 Memory를 한 번에 압축한다.
+    Returns: {mid: new_summary} — 실패한 항목은 포함되지 않음.
+    """
+    instruction = (
+        "Compress each memory to 1 short sentence. Keep the emotional core."
+        if level == 1
+        else "Reduce each memory to a single fragment: just a feeling or vague impression. Korean OK."
+    )
+    items = "\n".join(
+        f'{i + 1}. [id:{m["mid"]}] {m["summary"]}'
+        for i, m in enumerate(memories)
+    )
+
+    prompt = f"""{instruction}
+
+Memories:
+{items}
+
+Return ONLY a JSON array:
+[{{"id": "<mid>", "summary": "<compressed>"}}, ...]"""
+
+    try:
+        model = get_model(DECAY_MODEL, system_prompt="You are a memory compressor. Reduce information while keeping the emotional core.")
+        resp  = await model.generate_content_async(
+            prompt,
+            generation_config={
+                "max_output_tokens": 64 * len(memories) + 128,
+                "temperature": 0.3,
+                "response_mime_type": "application/json",
+            },
+        )
+        results = extract_json_from_llm(resp.text, source="memory_compress_batch")
+        if isinstance(results, list):
+            return {
+                item["id"]: item["summary"]
+                for item in results
+                if isinstance(item, dict) and "id" in item and "summary" in item
+            }
+    except Exception as e:
+        print(f"[DecayManager] 배치 압축 실패 (level={level}): {e}")
+    return {}
+
+
+def _build_trait_hints(traits: dict) -> list[str]:
+    """trait 딕셔너리에서 기억 왜곡 방향 힌트를 생성한다."""
+    hints: list[str] = []
+    if traits.get("trait_self_esteem", 0) > 0.5:
+        hints.append("tends to remember things more positively, downplays negatives")
+    if traits.get("trait_anxiety_prone", 0) > 0.5:
+        hints.append("tends to amplify threatening or upsetting elements")
+    if traits.get("trait_self_esteem", 0) < -0.1:
+        hints.append("tends to underplay their own role or worth")
+    if traits.get("trait_stubbornness", 0) > 0.5:
+        hints.append("tends to remember their own position as more justified")
+    if traits.get("trait_attachment", 0) > 0.7:
+        hints.append("keeps partner-related details vivid, fades other details")
+    if traits.get("trait_jealousy", 0) > 0.5:
+        hints.append("tends to over-remember moments of perceived rivalry or slight")
+    return hints
+
+
+async def _distort_memories_with_hints(
+    memories: list[dict],
+    char_id:  str,
+    hints:    list[str],
+) -> dict[str, str]:
+    """
+    주어진 힌트로 기억 목록을 왜곡한다.
+    Returns: {mid: new_summary} — 힌트가 없으면 빈 dict.
+    """
+    if not hints or not memories:
+        return {}
+
+    hint_str = "; ".join(hints)
+    items    = "\n".join(
+        f'{i + 1}. [id:{m["mid"]}] {m["summary"]}'
+        for i, m in enumerate(memories)
+    )
+
+    prompt = f"""Rewrite each memory from {char_id}'s subjective perspective.
+Apply subtle distortion: {hint_str}
+
+Rules: Keep core facts intact. Only shift emphasis, tone, minor details. 1~2 sentences max. Korean OK.
+
+Memories:
+{items}
+
+Return ONLY a JSON array:
+[{{"id": "<mid>", "summary": "<rewritten>"}}, ...]"""
+
+    try:
+        model = get_model(
+            DECAY_MODEL,
+            system_prompt=f"You are {char_id}'s inner subconscious. Rewrite memories from their subjective perspective.",
+        )
+        resp = await model.generate_content_async(
+            prompt,
+            generation_config={
+                "max_output_tokens": 128 * len(memories) + 128,
+                "temperature": 0.7,
+                "response_mime_type": "application/json",
+            },
+        )
+        results = extract_json_from_llm(resp.text, source="memory_distort_batch")
+        if isinstance(results, list):
+            return {
+                item["id"]: item["summary"]
+                for item in results
+                if isinstance(item, dict) and "id" in item and "summary" in item
+            }
+    except Exception as e:
+        print(f"[DecayManager] 배치 왜곡 실패 ({char_id}): {e}")
+    return {}
+
+
+async def _distort_memories_batch(
+    memories: list[dict],
+    char_id:  str,
+    traits:   dict,
+) -> dict[str, str]:
+    """
+    동일 캐릭터의 여러 Memory를 trait 기반으로 한 번에 왜곡한다.
+    trait_hints가 없으면 왜곡 없이 빈 dict 반환.
+    Returns: {mid: new_summary}
+    """
+    hints = _build_trait_hints(traits)
+    return await _distort_memories_with_hints(memories, char_id, hints)
+
+
+# ════════════════════════════════════════════════════════════
+# 3. 호감도 급변 즉시 왜곡
+# ════════════════════════════════════════════════════════════
+
+async def distort_on_affinity_change(
+    char_id:           str,
+    pc_id:             str,
+    affinity_delta:    int,
+    current_game_time: datetime,
+) -> None:
+    """
+    호감도 급변(|delta| >= 10) 시 공유 기억을 즉시 재해석한다.
+    긍정 delta → 부정 기억 완화, 부정 delta → 중립·긍정 기억 어둡게 변형.
+    시간 기반 decay와 별개로 트리거된다.
+    """
+    if abs(affinity_delta) < 10:
+        return
+
+    memories = await _fetch_shared_memories(char_id, pc_id)
+    if not memories:
+        return
+
+    traits = await _fetch_char_traits(char_id)
+
+    # 방향에 따른 즉각적인 재해석 힌트 — trait 기반 힌트와 결합
+    direction_hints: list[str] = []
+    if affinity_delta > 0:
+        direction_hints.append("relationship just deepened — recall warmer aspects, soften previous tension")
+        direction_hints.append("reinterpret ambiguous moments more favorably")
+    else:
+        direction_hints.append("relationship just soured — recall warning signs previously overlooked")
+        direction_hints.append("reinterpret neutral moments with a trace of unease or suspicion")
+
+    all_hints = list(set(direction_hints + _build_trait_hints(traits)))
+    results   = await _distort_memories_with_hints(memories, char_id, all_hints)
+
+    for m in memories:
+        new_summary = results.get(m["mid"])
+        if new_summary and new_summary != m["summary"]:
+            distortion = float(m["distortion"] or 0)
+            await _update_memory(
+                m["mid"], new_summary, None,
+                int(m["level"]), min(1.0, distortion + 0.2),
+                current_game_time,
+            )
+
+    if results:
+        print(f"[DecayManager] affinity 왜곡: {char_id} ({len(results)}개, delta={affinity_delta:+d})")
+
+
+async def _fetch_shared_memories(char_id: str, pc_id: str) -> list[dict]:
+    """
+    char_id의 기억 중 pc_id가 함께 관련된 이벤트 기억 최대 3개 반환.
+    이미 많이 왜곡됐거나 압축된 기억, 중요도 높은 기억은 제외한다.
+    """
+    async with async_driver.session() as session:
+        rec = await session.run("""
+            MATCH (c:Character {id: $char_id})-[:REMEMBERS]->(m:Memory)
+            WHERE m.importance <= 6
+              AND m.distortion_level < 0.75
+              AND m.summary_level < 2
+            MATCH (m)-[:OF_EVENT]->(e:Event)
+            MATCH (pc:Character {id: $pc_id})-[:INVOLVED_IN]->(e)
+            RETURN m.id               AS mid,
+                   m.summary          AS summary,
+                   m.importance       AS importance,
+                   m.distortion_level AS distortion,
+                   m.summary_level    AS level
+            ORDER BY e.timestamp DESC
+            LIMIT 3
+        """, char_id=char_id, pc_id=pc_id)
+        rows = await rec.data()
+    return [dict(r) for r in rows]
 
 
 # ════════════════════════════════════════════════════════════
 # 내부 헬퍼
 # ════════════════════════════════════════════════════════════
-
-async def _distort_memory(summary: str, traits: dict, char_id: str) -> str:
-    """Haiku가 traits 기반으로 memory를 캐릭터 관점에서 살짝 왜곡."""
-    trait_hints = []
-
-    if traits.get("trait_self_esteem", 0) > 0.5:
-        trait_hints.append("tends to remember things more positively, downplays negatives")
-    if traits.get("trait_anxiety_prone", 0) > 0.5:
-        trait_hints.append("tends to amplify threatening or upsetting elements")
-    if traits.get("trait_self_esteem", 0) < -0.1:
-        trait_hints.append("tends to underplay their own role or worth")
-    if traits.get("trait_stubbornness", 0) > 0.5:
-        trait_hints.append("tends to remember their own position as more justified")
-    if traits.get("trait_attachment", 0) > 0.7:
-        trait_hints.append("keeps partner-related details vivid, fades other details")
-    if traits.get("trait_jealousy", 0) > 0.5:
-        trait_hints.append("tends to over-remember moments of perceived rivalry or slight")
-
-    if not trait_hints:
-        return summary
-
-    hint_str = "; ".join(trait_hints)
-    system_instruction = f"You are {char_id}'s inner subconscious. Rewrite memories from their subjective perspective."
-
-    prompt = f"""Rewrite this memory summary from {char_id}'s subjective perspective.
-Apply subtle distortion based on their personality: {hint_str}
-
-Rules:
-- Keep the core facts intact. Only shift emphasis, tone, or minor details.
-- Do NOT change who was present or what major event occurred.
-- 1~2 sentences max. Korean OK.
-- Return ONLY the rewritten summary. No explanation.
-
-Original summary:
-{summary}"""
-
-    try:
-        model = get_model(model_name=DECAY_MODEL, system_prompt=system_instruction)
-        resp = await model.generate_content_async(
-            prompt,
-            generation_config={"max_output_tokens": 128, "temperature": 0.7}
-        )
-        return resp.text.strip()
-    except Exception as e:
-        print(f"[DecayManager] 왜곡 실패: {e}")
-        return summary
-
-
-async def _compress_memory(summary: str, level: int) -> str:
-    """기억을 level에 맞게 압축."""
-    system_instruction = "You are a memory compressor. Reduce information while keeping the emotional core."
-
-    instruction = (
-        "Compress to 1 short sentence. Keep the emotional core."
-        if level == 1
-        else "Reduce to a single fragment: just a feeling or vague impression. Korean OK."
-    )
-    prompt = f"""{instruction}
-
-Original:
-{summary}
-
-Return ONLY the compressed version. No explanation."""
-
-    try:
-        model = get_model(DECAY_MODEL, system_prompt=system_instruction)
-        resp = await model.generate_content_async(
-            prompt,
-            generation_config={"max_output_tokens": 64, "temperature": 0.3}
-        )
-        return resp.text.strip()
-    except Exception as e:
-        print(f"[DecayManager] 압축 실패: {e}")
-        return summary
-
 
 async def _update_memory(
     mem_id:        str,
@@ -305,8 +474,7 @@ def _parse_dt(dt_str: str | None) -> datetime:
     if not dt_str:
         return datetime(2024, 1, 1)
     try:
-        dt = datetime.fromisoformat(dt_str)
-        return dt.replace(tzinfo=None)
+        return datetime.fromisoformat(dt_str).replace(tzinfo=None)
     except ValueError:
         pass
     try:

@@ -5,6 +5,7 @@ src/assets/worlds/*/
 logs/
 graph/
 data/
+scripts/
 
 .chainlit/
 .claude/

@@ -142,20 +142,36 @@ class World:
 
             "CREATE NODE TABLE IF NOT EXISTS Location(id STRING, name STRING, description STRING, atmosphere STRING, current_chars STRING[], PRIMARY KEY(id))",
 
-            "CREATE NODE TABLE IF NOT EXISTS GlobalState(id STRING, currentLocationId STRING, currentTime STRING, weather STRING, schedule_slot STRING, clients_done INT64, clients_total INT64, PRIMARY KEY(id))",
+            "CREATE NODE TABLE IF NOT EXISTS GlobalState(id STRING, currentLocationId STRING, currentTime STRING, weather STRING, schedule_slot STRING, clients_done INT64, clients_total INT64, flags STRING, PRIMARY KEY(id))",
 
             f"""CREATE NODE TABLE IF NOT EXISTS Event(
-                id STRING, summary STRING, timestamp_str STRING,
+                id STRING, summary STRING, timestamp STRING,
                 location_id STRING, impact STRING,
+                need_name STRING,
                 importance INT64, decay_rate DOUBLE, summary_level INT64,
+                safety_impact DOUBLE, safety_resolved BOOLEAN, safety_decay_rate DOUBLE,
                 embedding FLOAT[{dim}],
                 PRIMARY KEY(id)
             )""",
 
+            """CREATE NODE TABLE IF NOT EXISTS NeedsState(
+                id STRING,
+                hunger DOUBLE, rest DOUBLE, social DOUBLE,
+                fun DOUBLE, safety DOUBLE, libido DOUBLE,
+                PRIMARY KEY(id)
+            )""",
+
             f"""CREATE NODE TABLE IF NOT EXISTS Memory(
-                id STRING, content STRING, char_id STRING,
-                importance INT64, decay_rate DOUBLE,
+                id STRING,
+                event_id STRING,
+                char_id STRING,
+                summary STRING,
                 embedding FLOAT[{dim}],
+                importance INT64,
+                distortion_level DOUBLE,
+                summary_level INT64,
+                created_at STRING,
+                last_decayed_at STRING,
                 PRIMARY KEY(id)
             )""",
 
@@ -166,6 +182,17 @@ class World:
             "CREATE NODE TABLE IF NOT EXISTS WorkplaceProfile(id STRING, props STRING, PRIMARY KEY(id))",
             "CREATE NODE TABLE IF NOT EXISTS DialogueExamples(id STRING, props STRING, PRIMARY KEY(id))",
             "CREATE NODE TABLE IF NOT EXISTS Item(id STRING, name STRING, description STRING, owner_id STRING, PRIMARY KEY(id))",
+
+            # StaticEvent: 조건 기반 이벤트. foreshadow → trigger 두 단계 조건으로 복선과 발화를 분리
+            """CREATE NODE TABLE IF NOT EXISTS StaticEvent(
+                id STRING,
+                name STRING,
+                foreshadow_conditions STRING,
+                foreshadow_hint STRING,
+                trigger_conditions STRING,
+                status STRING,
+                PRIMARY KEY(id)
+            )""",
         ]
         for ddl in node_tables:
             conn.execute(ddl)
@@ -188,7 +215,10 @@ class World:
             )""",
             "CREATE REL TABLE IF NOT EXISTS INVOLVED_IN(FROM Character TO Event)",
             "CREATE REL TABLE IF NOT EXISTS OCCURRED_AT(FROM Event TO Location)",
-            "CREATE REL TABLE IF NOT EXISTS HAS_MEMORY(FROM Character TO Memory)",
+            "CREATE REL TABLE IF NOT EXISTS REMEMBERS(FROM Character TO Memory)",
+            "CREATE REL TABLE IF NOT EXISTS OF_EVENT(FROM Memory TO Event)",
+            "CREATE REL TABLE IF NOT EXISTS HAS_NEEDS(FROM Character TO NeedsState)",
+            "CREATE REL TABLE IF NOT EXISTS EVENT_INVOLVES(FROM StaticEvent TO Character)",
         ]
         for ddl in rel_tables:
             conn.execute(ddl)
@@ -197,8 +227,8 @@ class World:
 
         # ── 벡터 인덱스 (Kuzu v0.7+) ──────────────────────────
         try:
-            conn.execute("CALL CREATE_VECTOR_INDEX('Event', 'event_emb_idx', 'embedding')")
-            conn.execute("CALL CREATE_VECTOR_INDEX('Memory', 'memory_emb_idx', 'embedding')")
+            conn.execute("CALL CREATE_VECTOR_INDEX('Event', 'event_embeddings', 'embedding')")
+            conn.execute("CALL CREATE_VECTOR_INDEX('Memory', 'memory_embeddings', 'embedding')")
             print(f"[{self.WORLD_ID}] 벡터 인덱스 생성 완료 (dim={dim}).")
         except Exception as e:
             print(f"[{self.WORLD_ID}] 벡터 인덱스 생성 스킵: {e}")
@@ -209,7 +239,8 @@ class World:
                 id: 'singleton',
                 currentLocationId: $loc,
                 currentTime: $time,
-                weather: 'Clear'
+                weather: 'Clear',
+                flags: '{}'
             })
         """, {"loc": self.get_default_location_id(), "time": self.get_default_time().isoformat()})
         print(f"[{self.WORLD_ID}] GlobalState 생성 완료.")

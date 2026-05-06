@@ -1,24 +1,18 @@
-"""
-OOC (Out of Character) parser.
-Detects *...* markers and extracts world-state changes via LLM.
-
-- vertexai.generative_models.GenerationConfig import 제거
-- generate_content_async generation_config를 dict 형태로 통일
-- response.text → get_response_text() 교체 (thinking 모드 None 대응)
-- {locations+_str} 오타 → {locations_str} 수정
-"""
+# ================================
+# src/agents/prompt_factory/ooc_handler.py
+#
+# OOC(*...* 마커) 텍스트를 파싱해 세계 상태를 즉각 반영합니다.
+#
+# Functions
+#   - is_ooc(text: str) -> bool : 텍스트에 OOC 마커가 있는지 확인
+#   - parse_ooc(text: str, npc_id: str, npc_name: str) -> dict : OOC 분석 후 DB 반영
+# ================================
 
 import re
-import os
-from dotenv import load_dotenv
-from pathlib import Path
 
+from src.config import MODEL_STATE_UPDATER as OOC_MODEL
 from src.core.database import update_dynamic_state, move_location, async_driver
 from src.core.llm.client import extract_json_from_llm, get_model, get_response_text
-
-load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
-
-OOC_MODEL = os.getenv("MODEL_STATE_UPDATER", "gemini-3-flash-preview")
 
 _BOLD_RE = re.compile(r'\*\*.*?\*\*', re.DOTALL)
 
