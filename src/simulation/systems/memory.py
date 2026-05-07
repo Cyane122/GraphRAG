@@ -470,7 +470,7 @@ async def _fetch_char_traits(char_id: str) -> dict:
         for rel in ("HAS_STATE", "HAS_PROFILE"):
             rec = await session.run(f"""
                 MATCH (c:Character {{id: $cid}})-[:{rel}]->(n)
-                RETURN properties(n) AS props
+                RETURN n AS props
             """, cid=char_id)
             row = await rec.single()
             if row and row["props"]:

@@ -482,7 +482,7 @@ async def _promote_to_named(char_id: str) -> None:
 
         rec2 = await session.run("""
             MATCH (c:Character {id: $cid})-[:HAS_PROFILE]->(sp:StaticProfile)
-            RETURN properties(sp) AS props
+            RETURN sp AS props
         """, cid=char_id)
         row     = await rec2.single()
         profile = dict(row["props"]) if row else {}

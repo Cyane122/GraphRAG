@@ -157,6 +157,10 @@ new_weather: from [Clear,Cloudy,Foggy,Drizzle,Rain,Heavy Rain,Thunderstorm,Snow,
 def load_world_instance(world_id: str) -> World:
     try:
         module = import_module(f"src.assets.worlds.{world_id}.schema")
+        # 모듈에 미리 만들어진 world_instance가 있으면 그걸 쓴다.
+        # RoFanNorthGenderbendWorld처럼 __init__에 필수 인수가 있는 경우를 처리.
+        if isinstance(getattr(module, "world_instance", None), World):
+            return module.world_instance
         for attr in dir(module):
             obj = getattr(module, attr)
             if isinstance(obj, type) and issubclass(obj, World) and obj is not World:
@@ -178,7 +182,7 @@ async def fetch_character_data(char_id: str, scene_types: list[str]) -> dict:
     result: dict = {}
     async with async_driver.session() as session:
         hub_rec = await session.run(
-            "MATCH (c:Character {id: $char_id}) RETURN properties(c) AS props",
+            "MATCH (c:Character {id: $char_id}) RETURN c AS props",
             char_id=char_id,
         )
         hub_row = await hub_rec.single()
@@ -190,7 +194,7 @@ async def fetch_character_data(char_id: str, scene_types: list[str]) -> dict:
         for rel_type in needed_rels:
             rec = await session.run(f"""
                 MATCH (c:Character {{id: $char_id}})-[:{rel_type}]->(n)
-                RETURN properties(n) AS props
+                RETURN n AS props
             """, char_id=char_id)
             row = await rec.single()
             if row:
@@ -203,7 +207,7 @@ async def fetch_relationship_data(char_a: str, char_b: str) -> dict:
     async with async_driver.session() as session:
         rec = await session.run("""
             MATCH (a:Character {id: $a})-[r:RELATIONSHIP]->(b:Character {id: $b})
-            RETURN properties(r) AS props
+            RETURN r AS props
         """, a=char_a, b=char_b)
         row = await rec.single()
         return row["props"] if row else {}
@@ -309,13 +313,13 @@ async def fetch_npc_profiles(
 
             profile_rec = await session.run("""
                 MATCH (c:Character {id: $id})-[:HAS_PROFILE]->(p)
-                RETURN properties(p) AS props
+                RETURN p AS props
             """, id=nid)
             profile_row = await profile_rec.single()
 
             rel_rec = await session.run("""
                 MATCH (a:Character {id: $a})-[r:RELATIONSHIP]->(b:Character {id: $b})
-                RETURN properties(r) AS props
+                RETURN r AS props
             """, a=main_npc_id, b=nid)
             rel_row = await rel_rec.single()
 

@@ -84,7 +84,7 @@ async def _load_profile(char_id: str) -> tuple[dict, str]:
         for rel, label in [("HAS_PROFILE", "StaticProfile"), ("HAS_STATE", "DynamicState")]:
             rec = await session.run(f"""
                 MATCH (c:Character {{id: $cid}})-[:{rel}]->(n)
-                RETURN properties(n) AS props
+                RETURN n AS props
             """, cid=char_id)
             row = await rec.single()
             if row and row["props"]:
@@ -495,13 +495,13 @@ def _build_libido_hint(
 # ════════════════════════════════════════════════════════════
 
 async def _fetch_all_npcs(exclude_id: str) -> list[dict]:
-    """libido_excluded=false인 모든 NPC (PC 제외) 반환."""
+    """모든 NPC (PC 제외) 반환."""
     async with async_driver.session() as session:
+        # libido_excluded는 StaticProfile 스키마에 정의되지 않아 Kuzu Binder 오류 발생
+        # → 필터 없이 모든 NPC 반환 (PC 제외)
         rec = await session.run("""
             MATCH (c:Character)
             WHERE c.id <> $exclude
-            OPTIONAL MATCH (c)-[:HAS_PROFILE]->(sp:StaticProfile)
-            WHERE sp.libido_excluded IS NULL OR sp.libido_excluded = false
             RETURN c.id AS id
         """, exclude=exclude_id)
         rows = await rec.data()
@@ -517,7 +517,7 @@ async def _fetch_needs(npc_id: str) -> dict:
     async with async_driver.session() as session:
         rec = await session.run("""
             MATCH (c:Character {id: $cid})-[:HAS_STATE]->(d:DynamicState)
-            RETURN properties(d) AS props
+            RETURN d AS props
         """, cid=npc_id)
         row = await rec.single()
         if row and row["props"]:
@@ -525,7 +525,7 @@ async def _fetch_needs(npc_id: str) -> dict:
 
         rec2 = await session.run("""
             MATCH (c:Character {id: $cid})-[:HAS_NEEDS]->(n:NeedsState)
-            RETURN properties(n) AS props
+            RETURN n AS props
         """, cid=npc_id)
         row2 = await rec2.single()
         if row2 and row2["props"]:
@@ -545,7 +545,7 @@ async def _fetch_profile_props(npc_id: str) -> dict:
     async with async_driver.session() as session:
         rec = await session.run("""
             MATCH (c:Character {id: $cid})-[:HAS_PROFILE]->(sp:StaticProfile)
-            RETURN properties(sp) AS props
+            RETURN sp AS props
         """, cid=npc_id)
         row = await rec.single()
         return dict(row["props"]) if row and row["props"] else {}

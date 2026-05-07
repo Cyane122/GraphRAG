@@ -193,3 +193,22 @@
   - `src/simulation/state/updater.py`: 관계 깊이 파이프라인 블록 추가
     - `process_actor_response()` 내 소셜 리졸버 직후, 임신 체크 직전에 3개 기능 순차 실행
     - game time DB 조회 1회로 공유 후 각 기능에 전달 (불필요한 중복 조회 방지)
+
+## 2026-05-07
+- [리팩토링] `narrator / pc / chars` 패턴 전 세계관으로 확장
+  - `src/assets/worlds/.../schema.py`: 15개 캐릭터 클래스 임포트 후 `world_instance` 생성 인자로 전달
+  - `src/assets/worlds/default/schema.py`: `Char`, `Player` 임포트 후 `world_instance` 생성 인자로 전달
+  - `get_pc_id()`, `get_npc_id()`, `npc_name_kor()` 오버라이드 제거 (base 위임)
+- [버그픽스] Kuzu 호환성 오류 다수 수정
+  - `src/core/database/driver.py`
+    - `KuzuRecord`에 `keys()` 메서드 추가 — `dict(row)` 호출 시 정수 인덱스로 접근하던 KeyError 수정
+  - `src/core/database/helpers.py`
+    - `move_location()`: Kuzu 미지원 list comprehension `[x IN list WHERE cond]` → `list_filter(list, x -> cond)` 로 교체
+    - DELETE + SET 혼합 쿼리를 두 개의 독립 쿼리로 분리 (SET 먼저, DELETE 이후)
+  - `src/simulation/systems/needs.py`
+    - `_fetch_all_npcs()`: `sp.libido_excluded` 프로퍼티가 스키마에 없어 발생하던 Binder 오류 제거 — OPTIONAL MATCH 블록 전체 삭제
+    - `_load_profile()`, `_fetch_needs()`, `_fetch_profile_props()`: `RETURN properties(x) AS props` → `RETURN x AS props` 로 교체 (4개소)
+  - `src/agents/manager.py`: `RETURN properties(x) AS props` → `RETURN x AS props` 로 교체 (5개소)
+  - `src/simulation/systems/memory.py`: `RETURN properties(n) AS props` → `RETURN n AS props` 로 교체 (1개소)
+  - `src/simulation/systems/social.py`: `RETURN properties(sp) AS props` → `RETURN sp AS props` 로 교체 (1개소)
+  - **근본 원인**: Kuzu의 `properties()` 함수는 Neo4j와 달리 `(LIST, STRING) -> ANY` 시그니처를 가지며 노드 전체 속성 맵을 반환하지 않음. 노드를 직접 `RETURN`하면 모든 프로퍼티가 dict로 반환됨.

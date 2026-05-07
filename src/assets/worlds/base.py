@@ -3,21 +3,29 @@
 #
 # World 베이스 클래스. 모든 세계 구현체가 상속하는 인터페이스.
 # world_section / specific_prose_rules / few_shot_examples /
-# blacklist / npc_name_map / start_time 및 build_schema 정의.
+# blacklist / npc_name_map / start_time 및 _build_tables / build_schema 정의.
 #
 # Classes
 #   - World : 세계 구현체 베이스 클래스
 #             SCENE_TYPES: dict[str, str] — 씬 타입 이름 → 영문 설명 (classifier 프롬프트에 주입)
-#             get_scene_types() -> list[str]       : 타입 이름 목록 (내부 키 조회용)
+#             get_scene_types() -> list[str]           : 타입 이름 목록 (내부 키 조회용)
 #             get_scene_descriptions() -> dict[str, str] : 전체 dict (classifier 주입용)
+#             _build_tables(conn) -> None              : DDL 전용 (노드·관계 테이블, 벡터 인덱스, GlobalState)
+#             build_schema(conn) -> None               : 기본 구현은 _build_tables만 호출; 서브클래스에서 확장
 # ================================
+
+from __future__ import annotations
 
 import json
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 import kuzu
 
 from src.core.embedding.encoder import EMBEDDING_DIM
+
+if TYPE_CHECKING:
+    from src.assets.worlds.base_character import Character
 
 
 # ── 정적 노드 헬퍼 ─────────────────────────────────────────────────
@@ -49,6 +57,24 @@ def insert_static_inline(conn: kuzu.Connection, char_id: str, rel: str, label: s
 
 class World:
     WORLD_ID = "default"
+
+    def __init__(
+        self,
+        narrator: Character | None = None,
+        pc: Character | None = None,
+        chars: list[Character] | None = None,
+        perspective: int = 1,
+    ) -> None:
+        """세계 인스턴스를 초기화합니다.
+
+        narrator: 서술자 캐릭터 (NPC POV). 미지정 시 get_npc_id 기본값 사용.
+        pc: 플레이어 캐릭터. 미지정 시 get_pc_id 기본값 사용.
+        chars: 이 세계에 존재하는 캐릭터 목록. build_schema 시 사용.
+        """
+        self.narrator = narrator
+        self.pc = pc
+        self.chars: list[Character] = chars or []
+        self.perspective = perspective
 
     # classifier LLM에 주입할 씬 타입 정의. name → description(English).
     # 설명은 classifier 프롬프트에 직접 주입되므로 LLM이 타입을 정확히 구분할 수 있다.
@@ -126,18 +152,28 @@ class World:
         return {"이름": "Name"}
 
     def get_pc_id(self) -> str:
-        """PC 노드 ID를 반환합니다."""
-        return "player"
+        """PC 노드 ID를 반환합니다. narrator/pc가 주입된 경우 인스턴스 변수를 우선합니다."""
+        return self.pc.id if self.pc else "player"
 
     def get_npc_id(self) -> str:
-        """NPC 노드 ID를 반환합니다."""
-        return "npc"
+        """NPC(서술자) 노드 ID를 반환합니다. narrator가 주입된 경우 인스턴스 변수를 우선합니다."""
+        return self.narrator.id if self.narrator else "npc"
 
     def npc_name_kor(self) -> str:
-        """NPC 한국어 이름을 반환합니다."""
-        return "엔피씨"
+        """NPC(서술자) 한국어 이름을 반환합니다. narrator가 주입된 경우 인스턴스 변수를 우선합니다."""
+        return self.narrator.name if self.narrator else "엔피씨"
+
+    def _build_world_events(self, conn: kuzu.Connection) -> None:
+        """세계 레벨 StaticEvent를 생성합니다. 캐릭터 무관 이벤트(계절 전환, 대규모 사건 등).
+
+        서브클래스에서 필요 시 오버라이드합니다. 기본 구현은 no-op.
+        """
 
     def build_schema(self, conn: kuzu.Connection) -> None:
+        """DDL만 실행합니다. 캐릭터·관계 삽입은 서브클래스에서 직접 처리합니다."""
+        self._build_tables(conn)
+
+    def _build_tables(self, conn: kuzu.Connection) -> None:
         """
         Kuzu 스키마를 초기화합니다.
 

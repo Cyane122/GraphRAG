@@ -46,10 +46,14 @@ async def move_location(char_id: str, new_loc_id: str) -> None:
     """캐릭터 장소 이동 공통 로직."""
     async with async_driver.session() as session:
         # 기존 LOCATED_AT 관계와 이전 Location의 current_chars에서 제거
+        # DELETE와 SET을 분리 — Kuzu는 list comprehension 미지원, list_filter 사용
         await session.run("""
-            MATCH (c:Character {id: $char_id})-[old:LOCATED_AT]->(prev:Location)
+            MATCH (c:Character {id: $char_id})-[:LOCATED_AT]->(prev:Location)
+            SET prev.current_chars = list_filter(prev.current_chars, x -> x <> $char_id)
+        """, char_id=char_id)
+        await session.run("""
+            MATCH (c:Character {id: $char_id})-[old:LOCATED_AT]->(:Location)
             DELETE old
-            SET prev.current_chars = [x IN prev.current_chars WHERE x <> $char_id]
         """, char_id=char_id)
         # 새 Location으로 이동 — Kuzu는 MERGE 대신 CREATE 사용 (이전 관계를 이미 삭제)
         await session.run("""

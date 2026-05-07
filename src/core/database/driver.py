@@ -6,7 +6,7 @@
 # 수정 없이 재사용할 수 있게 합니다.
 #
 # Classes
-#   - KuzuRecord  : record["key"] 접근을 지원하는 행 래퍼
+#   - KuzuRecord  : record["key"] 접근 + dict() 변환을 지원하는 행 래퍼
 #   - KuzuResult  : single() / fetch_all() 을 제공하는 결과 래퍼
 #   - KuzuSession : Neo4j AsyncSession과 동일한 인터페이스
 #   - KuzuAsyncDriver : session() 팩토리 및 동기 execute_sync() 제공
@@ -32,6 +32,10 @@ class KuzuRecord:
 
     def __getitem__(self, key: str):
         return self._data[key]
+
+    def keys(self):
+        """dict() 변환 호환을 위해 키 목록을 반환합니다."""
+        return self._data.keys()
 
     def get(self, key: str, default=None):
         """키가 없으면 default를 반환합니다."""

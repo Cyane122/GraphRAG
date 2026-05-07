@@ -3,6 +3,13 @@
 #
 # Chainlit 메인 앱. 세션 초기화, 메시지 루프, OOC 분기, Manager 파이프라인,
 # Actor 스트리밍, 지연 확정(Deferred Commit), 리롤/수정을 처리합니다.
+#
+# Functions
+#   - on_chat_start() -> None : 세션 변수 초기화 및 오프닝 씬 출력
+#   - on_chat_end() -> None : 미확정 pending 강제 처리
+#   - on_message(message: cl.Message) -> None : 메시지 루프 메인 핸들러
+#   - on_reroll(action: cl.Action) -> None : 리롤 버튼 콜백
+#   - on_edit_response(action: cl.Action) -> None : 수정 버튼 콜백
 # ================================
 
 import asyncio
@@ -10,7 +17,6 @@ import json
 import logging
 import re
 import random
-import pathlib
 from datetime import datetime
 from pathlib import Path
 
@@ -18,7 +24,7 @@ from google.genai import types
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
-logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)  # neo4j 제거 시 삭제
+logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
 
 import chainlit as cl
 
@@ -30,6 +36,7 @@ from src.core.logging.conversation_logger import append_turn, parse_log_file
 from src.core.database.driver import async_driver
 from src.core.llm.client import get_client
 
+# ── 메시지 풀 ──────────────────────────────────────────────────
 UPDATING_MSGS = [
     "흘러간 시간과, 머물다 간 감정들을 기록하고 있습니다...",
     "방금 전의 찰나를 영원한 기억으로 박제하고 있습니다...",
@@ -48,21 +55,26 @@ GENERATING_MSGS = [
     "{char}의 세상을 당신과 함께 만들어갑니다...",
 ]
 
-_HEADER_HOUR_RE = re.compile(
-    r'\*{1,2}\d{4}년\s*\d{1,2}월\s*\d{1,2}일\s*[월화수목금토일]요일\s*(\d{2})시\s*\d{2}분'
-)
-
 MAX_HISTORY_TURNS  = 10
 RECENT_STORY_TURNS = 3
+_LOGS_DIR          = Path("logs")
 
+# 응답 헤더에서 시각을 추출 (**YYYY년 MM월 DD일 X요일 HH시 MM분 형식)
+_HEADER_HOUR_RE  = re.compile(
+    r'\*{1,2}\d{4}년\s*\d{1,2}월\s*\d{1,2}일\s*[월화수목금토일]요일\s*(\d{2})시\s*\d{2}분'
+)
+# </analyze> 없이 종료된 경우 산문 시작점을 날짜 헤더로 탐지
+_HEADER_SPLIT_RE = re.compile(r"(?=\*\*\d{4}년)")
+
+# ── 모듈 레벨 초기화 ──────────────────────────────────────────
 _genai_client = get_client()
+world         = load_world_instance(WORLD_ID)
+world_config  = world.get_full_config(PERSPECTIVE)
+PC_ID         = world_config["pc_id"]
+NPC_ID        = world_config["npc_id"]
+NPC_NAME_KOR  = world_config["npc_name_kor"]
 
-world        = load_world_instance(WORLD_ID)
-world_config = world.get_full_config(PERSPECTIVE)
-PC_ID        = world_config["pc_id"]
-NPC_ID       = world_config["npc_id"]
-NPC_NAME_KOR = world_config["npc_name_kor"]
-
+# SSES 전용 스케줄 모듈 — 다른 월드에서는 임포트 자체를 생략
 if WORLD_ID == "sses":
     from src.assets.worlds.sses.schedule_generator import (
         check_and_trigger_schedule,
@@ -71,10 +83,36 @@ if WORLD_ID == "sses":
 
 
 # ════════════════════════════════════════════════════════════
-# 인게임 시간 스냅샷 / 복원
+# 내부 헬퍼
 # ════════════════════════════════════════════════════════════
 
+def _make_actions() -> list[cl.Action]:
+    """리롤·수정 버튼 목록을 생성한다. 여러 곳에서 호출하므로 팩토리로 유지."""
+    return [
+        cl.Action(name="reroll",        label="🔄 다시 쓰기", payload={"action": "reroll"}),
+        cl.Action(name="edit_response", label="✏️ 수정",      payload={"action": "edit"}),
+    ]
+
+
+def _hour_from_response(text: str) -> int | None:
+    """응답 텍스트의 날짜 헤더에서 시각(0-23)을 파싱한다."""
+    m = _HEADER_HOUR_RE.search(text)
+    return int(m.group(1)) if m else None
+
+
+async def _inject_time_theme(hour: int | None, for_id: str | None = None) -> None:
+    """시각이 변경된 경우에만 TimeTheme 커스텀 엘리먼트를 발행한다."""
+    if hour is None:
+        return
+    last = cl.user_session.get("last_theme_hour", -1)
+    if hour == last:
+        return
+    cl.user_session.set("last_theme_hour", hour)
+    await cl.CustomElement(name="TimeTheme", props={"hour": hour}).send(for_id)
+
+
 async def _snapshot_game_time() -> str | None:
+    """현재 인게임 시간을 ISO 문자열로 반환한다. 리롤 복원용 스냅샷."""
     try:
         async with async_driver.session() as session:
             rec = await session.run(
@@ -87,6 +125,7 @@ async def _snapshot_game_time() -> str | None:
 
 
 async def _restore_game_time(time_str: str) -> None:
+    """리롤 시 Manager가 진행시킨 인게임 시간을 되돌린다."""
     try:
         async with async_driver.session() as session:
             await session.run(
@@ -97,26 +136,25 @@ async def _restore_game_time(time_str: str) -> None:
         pass
 
 
+async def _restore_response_msg(msg_id: str, content: str) -> None:
+    """수정 완료·취소 시 응답 메시지를 원래 형태(버튼 포함)로 복원한다."""
+    msg          = cl.Message(id=msg_id, content=content, author=NPC_NAME_KOR)
+    msg.elements = []
+    msg.actions  = _make_actions()
+    await msg.update()
+
+
 # ════════════════════════════════════════════════════════════
-# 헬퍼
+# 지연 확정 (Deferred Commit)
 # ════════════════════════════════════════════════════════════
-
-def _hour_from_response(text: str) -> int | None:
-    m = _HEADER_HOUR_RE.search(text)
-    return int(m.group(1)) if m else None
-
-
-async def _inject_time_theme(hour: int | None, forId: str | None = None) -> None:
-    if hour is None:
-        return
-    last = cl.user_session.get("last_theme_hour", -1)
-    if hour == last:
-        return
-    cl.user_session.set("last_theme_hour", hour)
-    await cl.CustomElement(name="TimeTheme", props={"hour": hour}).send(forId)
-
 
 async def _commit_pending(pending: dict) -> None:
+    """
+    이전 턴의 Actor 응답을 DB에 반영한다.
+
+    리롤 기능을 위해 실제 쓰기를 다음 턴 시작 시점으로 미룬다.
+    상태 업데이트 → 로그 기록 → SSES 스케줄 체크 순으로 처리한다.
+    """
     msg = cl.Message(content=random.choice(UPDATING_MSGS), author="기록 보관소")
     await msg.send()
 
@@ -127,7 +165,9 @@ async def _commit_pending(pending: dict) -> None:
         world_config = world_config,
     )
     if ooc_from_pregnancy:
+        # 임신 이벤트 발생 — 다음 OOC 처리 단계에서 자동 주입
         cl.user_session.set("pending_ooc", ooc_from_pregnancy)
+
     append_turn(
         user_input  = pending["user_input"],
         ai_response = pending["ai_response"],
@@ -156,57 +196,47 @@ async def _stream_actor(
     history:        list[dict],
 ) -> tuple[str, list[str], cl.Message, int | None]:
     """
-    Gemini generate_content_stream 기반 Actor 응답 스트리밍.
+    Gemini generate_content_stream으로 Actor 응답을 스트리밍한다.
 
-    - system_instruction: fixed_prompt + genre_prompt 결합
-    - history: Anthropic 포맷({role, content}) → Gemini 포맷({role, parts}) 변환
-      (role "assistant" → "model")
-    - thinking 파트(thought=True): raw_thinking에 누적 → CHARACTERS 추출
-    - text 파트: raw에 누적 + UI 실시간 스트리밍
-    - thinking_level=LOW: 과도한 사고로 인한 무출력 방지
+    - system_instruction: fixed + genre 결합
+    - prefill "<analyze>\\n": CoT 생략 방지 — 히스토리가 길어져도 항상 분석 블록 유도
+    - thinking_done 플래그: </analyze> 수신 전까지 UI 출력 억제, 이후만 스트리밍
+    - 반환: (prose, scene_chars, response_msg, hour)
     """
-    model_name   = MODEL_ACTOR
-    system_text  = f"{fixed_prompt}\n\n{genre_prompt}" if genre_prompt else fixed_prompt
-    max_tokens   = MAX_TOKEN  # actor: analyze+prose 합산 → 65% 제한 미적용
+    system_text = f"{fixed_prompt}\n\n{genre_prompt}" if genre_prompt else fixed_prompt
 
-    # history 포맷 변환 (Anthropic → Gemini)
-    gemini_msgs = []
-    for msg in history:
-        role = "model" if msg["role"] == "assistant" else "user"
-        gemini_msgs.append({"role": role, "parts": [{"text": msg["content"]}]})
-    gemini_msgs.append({"role": "user", "parts": [{"text": dynamic_prompt}]})
-    # prefill: 모델이 반드시 <analyze>로 시작하게 강제
-    # 히스토리가 길어져도 CoT 생략 방지
+    # Anthropic 포맷({role, content}) → Gemini 포맷({role, parts}) 변환
+    gemini_msgs = [
+        {
+            "role":  "model" if m["role"] == "assistant" else "user",
+            "parts": [{"text": m["content"]}],
+        }
+        for m in history
+    ]
+    gemini_msgs.append({"role": "user",  "parts": [{"text": dynamic_prompt}]})
     gemini_msgs.append({"role": "model", "parts": [{"text": "<analyze>\n"}]})
 
-    gen_msg = cl.Message(
-        content=random.choice(GENERATING_MSGS).format(char=NPC_NAME_KOR),
-        author="System",
-    )
+    gen_msg      = cl.Message(content=random.choice(GENERATING_MSGS).format(char=NPC_NAME_KOR), author="System")
+    response_msg = cl.Message(content="", author=NPC_NAME_KOR)
     await gen_msg.send()
 
-    # 모델이 <analyze>...</analyze>을 텍스트에 직접 출력함 (네이티브 thought 파트 미사용).
-    # thinking 블록이 끝날 때까지 버퍼링 → 이후 prose만 UI에 스트리밍.
     _PREFILL      = "<analyze>\n"
-    raw           = _PREFILL    # prefill 포함한 전체 원문
-    raw_thinking  = ""          # <analyze> 내용
-    thinking_buf  = _PREFILL    # prefill로 이미 <analyze> 시작됨
-    thinking_done = False       # </analyze> 수신 완료 여부
-    response_msg  = cl.Message(content="", author=NPC_NAME_KOR)
+    raw           = _PREFILL   # prefill 포함 전체 원문
+    raw_thinking  = ""
+    thinking_buf  = _PREFILL   # </analyze> 수신 대기 버퍼
+    thinking_done = False
     first_text    = True
 
     try:
         async for chunk in await _genai_client.aio.models.generate_content_stream(
-            model=model_name,
-            contents=gemini_msgs,
-            config=types.GenerateContentConfig(
-                system_instruction = system_text,
-                max_output_tokens  = max_tokens,
-                temperature        = 1.0,
-                thinking_config    = types.ThinkingConfig(thinking_level="MEDIUM"),   # MEDIUM은 내부 사고 토큰 과소비
-                automatic_function_calling = types.AutomaticFunctionCallingConfig(
-                    disable=True
-                ),
+            model    = MODEL_ACTOR,
+            contents = gemini_msgs,
+            config   = types.GenerateContentConfig(
+                system_instruction         = system_text,
+                max_output_tokens          = MAX_TOKEN,
+                temperature                = 1.0,
+                thinking_config            = types.ThinkingConfig(thinking_level="MEDIUM"),
+                automatic_function_calling = types.AutomaticFunctionCallingConfig(disable=True),
             ),
         ):
             if not chunk.candidates:
@@ -214,6 +244,7 @@ async def _stream_actor(
             candidate = chunk.candidates[0]
             if not candidate or not candidate.content or not candidate.content.parts:
                 continue
+
             for part in candidate.content.parts:
                 text = part.text or ""
                 if not text:
@@ -221,19 +252,18 @@ async def _stream_actor(
                 raw += text
 
                 if thinking_done:
-                    # thinking 끝남 → prose 실시간 스트리밍
+                    # 분석 블록 종료 이후 → prose 실시간 스트리밍
                     if first_text:
                         await gen_msg.remove()
                         await response_msg.send()
                         first_text = False
                     await response_msg.stream_token(text)
                 else:
-                    # </analyze> 탐지 대기 중
                     thinking_buf += text
                     if "</analyze>" in thinking_buf:
-                        parts = thinking_buf.split("</analyze>", 1)
-                        raw_thinking  = re.sub(r"<analyze>\s*", "", parts[0]).strip()
-                        remainder     = parts[1].lstrip()
+                        head, tail    = thinking_buf.split("</analyze>", 1)
+                        raw_thinking  = re.sub(r"<analyze>\s*", "", head).strip()
+                        remainder     = tail.lstrip()
                         thinking_done = True
                         if remainder:
                             if first_text:
@@ -245,23 +275,19 @@ async def _stream_actor(
     except Exception as e:
         print(f"[Actor] 스트리밍 오류: {e}")
 
-    # </analyze> 미도착 fallback
+    # </analyze> 미도착 fallback — 날짜 헤더(**YYYY년)를 analyze/prose 경계로 사용
     if not thinking_done and thinking_buf:
-        remainder = thinking_buf
-        if "</analyze>" in remainder:
-            parts        = remainder.split("</analyze>", 1)
-            raw_thinking = re.sub(r"<analyze>\s*", "", parts[0]).strip()
-            remainder    = parts[1].lstrip()
+        m = _HEADER_SPLIT_RE.search(thinking_buf)
+        if "</analyze>" in thinking_buf:
+            head, tail   = thinking_buf.split("</analyze>", 1)
+            raw_thinking = re.sub(r"<analyze>\s*", "", head).strip()
+            remainder    = tail.lstrip()
+        elif m:
+            raw_thinking = re.sub(r"<analyze>\s*", "", thinking_buf[:m.start()]).strip()
+            remainder    = thinking_buf[m.start():]
         else:
-            # 닫는 태그 없음 — 시간 헤더(**YYYY년)로 analyze/prose 경계 탐지
-            _HEADER_SPLIT = re.compile(r"(?=\*\*\d{4}년)")
-            _m = _HEADER_SPLIT.search(thinking_buf)
-            if _m:
-                raw_thinking = re.sub(r"<analyze>\s*", "", thinking_buf[:_m.start()]).strip()
-                remainder    = thinking_buf[_m.start():]
-            else:
-                raw_thinking = re.sub(r"<analyze>\s*", "", thinking_buf).strip()
-                remainder    = ""
+            raw_thinking = re.sub(r"<analyze>\s*", "", thinking_buf).strip()
+            remainder    = ""
         if remainder:
             if first_text:
                 await gen_msg.remove()
@@ -272,24 +298,23 @@ async def _stream_actor(
     if first_text:
         await gen_msg.remove()
         await response_msg.send()
-
     await response_msg.update()
 
-    # prose only: </analyze> 있으면 regex 제거, 없으면 헤더 이후를 prose로
+    # analyze 블록 제거 후 prose만 추출
     if "</analyze>" in raw:
         prose = re.sub(r"<analyze>.*?</analyze>", "", raw, flags=re.DOTALL).strip()
     else:
-        _m2 = re.search(r"(?=\*\*\d{4}년)", raw)
-        prose = raw[_m2.start():].strip() if _m2 else ""
+        m2    = _HEADER_SPLIT_RE.search(raw)
+        prose = raw[m2.start():].strip() if m2 else ""
 
-    pathlib.Path("logs").mkdir(exist_ok=True)
-    pathlib.Path("logs/raw_full.txt").write_text(raw, encoding="utf-8")      # analyze + prose
-    pathlib.Path("logs/raw_output.txt").write_text(prose, encoding="utf-8")  # prose only
-    pathlib.Path("logs/raw_thinking.txt").write_text(raw_thinking, encoding="utf-8")
-    print(f"\n{'=' * 60}\n[Actor Prose]\n{prose[:800]}\n{'=' * 60}")
+    _LOGS_DIR.mkdir(exist_ok=True)
+    (_LOGS_DIR / "raw_full.txt").write_text(raw,          encoding="utf-8")
+    (_LOGS_DIR / "raw_output.txt").write_text(prose,       encoding="utf-8")
+    (_LOGS_DIR / "raw_thinking.txt").write_text(raw_thinking, encoding="utf-8")
+    print(f"\n{'='*60}\n[Actor Prose]\n{prose[:800]}\n{'='*60}")
     print(f"[Actor Thinking ({len(raw_thinking)}chars)] / prose={len(prose)}chars")
 
-    # CHARACTERS 추출 — thinking 텍스트에서 파싱
+    # thinking 텍스트에서 씬 내 등장인물 추출 (2-4자 한글 이름)
     scene_chars: list[str] = []
     chars_m = re.search(r"CHARACTERS:\s*(\[.*?\])", raw_thinking, re.DOTALL)
     if chars_m:
@@ -297,24 +322,28 @@ async def _stream_actor(
             parsed = json.loads(chars_m.group(1))
             scene_chars = [
                 c for c in parsed
-                if isinstance(c, str) and 2 <= len(c) <= 4
-                and re.match(r"^[가-힣]+$", c)
+                if isinstance(c, str) and 2 <= len(c) <= 4 and re.match(r"^[가-힣]+$", c)
             ]
         except Exception:
             pass
 
-    hour = _hour_from_response(prose)
-    return prose, scene_chars, response_msg, hour
+    return prose, scene_chars, response_msg, _hour_from_response(prose)
 
+
+# ════════════════════════════════════════════════════════════
+# 로그 파일 복원
+# ════════════════════════════════════════════════════════════
 
 async def _load_log_into_session(file_path: Path) -> None:
+    """드랍된 .md 로그 파일을 파싱해 대화 히스토리를 세션에 복원한다."""
     turns = parse_log_file(file_path)
     if not turns:
         await cl.Message(content=f"⚠️ `{file_path.name}` 에서 불러올 대화가 없습니다.").send()
         return
 
     await cl.Message(content=f"📂 `{file_path.name}` — {len(turns)}턴 불러오는 중...").send()
-    new_history, new_recent = [], []
+    new_history: list[dict] = []
+    new_recent:  list[str]  = []
     for turn in turns:
         await cl.Message(content=turn["user_input"],  author="You").send()
         await cl.Message(content=turn["ai_response"], author=NPC_NAME_KOR).send()
@@ -331,24 +360,24 @@ async def _load_log_into_session(file_path: Path) -> None:
 
 
 # ════════════════════════════════════════════════════════════
-# 수정 내부 처리
+# 수정
 # ════════════════════════════════════════════════════════════
 
 async def _apply_edit(edited: str) -> None:
+    """
+    사용자가 수정한 응답 텍스트를 세션 전체에 반영한다.
+
+    응답 메시지 UI, 대화 히스토리, recent_responses, pending_commit 모두 갱신.
+    """
     pending = cl.user_session.get("pending_commit")
     if not pending:
         return
 
     msg_id = pending.get("response_msg_id")
     if msg_id:
-        restored = cl.Message(id=msg_id, content=edited, author=NPC_NAME_KOR)
-        restored.elements = []
-        restored.actions  = [
-            cl.Action(name="reroll",        label="🔄 다시 쓰기", payload={"action": "reroll"}),
-            cl.Action(name="edit_response", label="✏️ 수정",      payload={"action": "edit"}),
-        ]
-        await restored.update()
+        await _restore_response_msg(msg_id, edited)
 
+    # 히스토리에서 마지막 assistant 턴을 수정된 내용으로 교체
     history: list[dict] = cl.user_session.get("conversation_history")
     for i in range(len(history) - 1, -1, -1):
         if history[i]["role"] == "assistant":
@@ -366,48 +395,36 @@ async def _apply_edit(edited: str) -> None:
 
 
 async def _cancel_edit() -> None:
+    """수정 취소 — UI만 원래 응답으로 복원하고 세션 데이터는 건드리지 않는다."""
     pending = cl.user_session.get("pending_commit")
     if not pending:
         return
-
-    msg_id   = pending.get("response_msg_id")
-    original = pending.get("ai_response", "")
+    msg_id = pending.get("response_msg_id")
     if msg_id:
-        restored = cl.Message(id=msg_id, content=original, author=NPC_NAME_KOR)
-        restored.elements = []
-        restored.actions  = [
-            cl.Action(name="reroll",        label="🔄 다시 쓰기", payload={"action": "reroll"}),
-            cl.Action(name="edit_response", label="✏️ 수정",      payload={"action": "edit"}),
-        ]
-        await restored.update()
+        await _restore_response_msg(msg_id, pending.get("ai_response", ""))
 
 
 # ════════════════════════════════════════════════════════════
-# 리롤
+# 생성 파이프라인 (on_message / on_reroll 공용)
 # ════════════════════════════════════════════════════════════
 
-@cl.action_callback("reroll")
-async def on_reroll(action: cl.Action):
-    pending = cl.user_session.get("pending_commit")
-    if not pending:
-        return
+async def _run_generation(
+    user_input:       str,
+    history:          list[dict],
+    recent_responses: list[str],
+    step_suffix:      str = "",
+) -> None:
+    """
+    Manager → Actor 스트리밍 → 히스토리 갱신 → pending_commit 설정까지 한 번에 처리한다.
 
-    if action.forId:
-        await cl.Message(id=action.forId, content="").remove()
+    on_message와 on_reroll이 동일한 파이프라인을 공유하며,
+    step_suffix로 Step 레이블에 "(리롤)" 등을 추가할 수 있다.
+    """
+    # 1. 현재 인게임 시간 스냅샷 — 리롤 시 복원 기준점
+    prev_game_time = await _snapshot_game_time()
+    recent_story   = "\n".join(recent_responses[-RECENT_STORY_TURNS:])
 
-    cl.user_session.set("conversation_history", pending["history_snapshot"])
-    cl.user_session.set("recent_responses",     pending["recent_snapshot"])
-    cl.user_session.set("pending_commit",        None)
-
-    prev_time = pending.get("prev_game_time")
-    if prev_time:
-        await _restore_game_time(prev_time)
-
-    user_input        = pending["user_input"]
-    history:          list[dict] = cl.user_session.get("conversation_history")
-    recent_responses: list[str]  = cl.user_session.get("recent_responses")
-
-    recent_story = "\n".join(recent_responses[-RECENT_STORY_TURNS:])
+    # 2. Manager: 씬 분류 + 시간 계산 + 프롬프트 조립
     async with cl.Step(name="데이터 추출", show_input=False) as step:
         fixed, genre, dynamic, scene_types = await run_manager(
             user_input   = user_input,
@@ -417,12 +434,15 @@ async def on_reroll(action: cl.Action):
             world_id     = WORLD_ID,
             perspective  = PERSPECTIVE,
         )
-        step.output = f"씬 타입: `{scene_types}` (리롤)"
+        suffix      = f" {step_suffix}" if step_suffix else ""
+        step.output = f"씬 타입: `{scene_types}`{suffix}"
 
+    # 3. Actor 스트리밍
     full_response, scene_chars, response_msg, hour = await _stream_actor(
         fixed, genre, dynamic, history
     )
 
+    # 4. 히스토리 갱신 — 리롤을 위한 스냅샷을 먼저 보존
     history_snapshot = list(history)
     recent_snapshot  = list(recent_responses)
 
@@ -433,24 +453,54 @@ async def on_reroll(action: cl.Action):
     recent_responses.append(full_response[:1500])
     cl.user_session.set("recent_responses", recent_responses[-RECENT_STORY_TURNS:])
 
+    # 5. 다음 턴에서 확정될 pending 등록
     cl.user_session.set("pending_commit", {
-        "user_input":        user_input,
-        "ai_response":       full_response,
-        "scene_types":       scene_types,
-        "scene_chars":       scene_chars,
-        "timestamp":         datetime.now(),
-        "history_snapshot":  history_snapshot,
-        "recent_snapshot":   recent_snapshot,
-        "prev_game_time":    prev_time,
-        "response_msg_id":   response_msg.id,
+        "user_input":       user_input,
+        "ai_response":      full_response,
+        "scene_types":      scene_types,
+        "scene_chars":      scene_chars,
+        "timestamp":        datetime.now(),
+        "history_snapshot": history_snapshot,
+        "recent_snapshot":  recent_snapshot,
+        "prev_game_time":   prev_game_time,
+        "response_msg_id":  response_msg.id,
     })
 
-    response_msg.actions = [
-        cl.Action(name="reroll",        label="🔄 다시 쓰기", payload={"action": "reroll"}),
-        cl.Action(name="edit_response", label="✏️ 수정",      payload={"action": "edit"}),
-    ]
+    response_msg.actions = _make_actions()
     await response_msg.update()
-    await _inject_time_theme(hour, forId=response_msg.id)
+    await _inject_time_theme(hour, for_id=response_msg.id)
+
+
+# ════════════════════════════════════════════════════════════
+# 리롤
+# ════════════════════════════════════════════════════════════
+
+@cl.action_callback("reroll")
+async def on_reroll(action: cl.Action) -> None:
+    """
+    이전 응답 메시지를 삭제하고 같은 입력으로 재생성한다.
+
+    히스토리와 인게임 시간을 응답 직전 상태로 되돌린 뒤 파이프라인을 재실행한다.
+    DB 쓰기는 아직 확정 전(pending)이므로 별도 롤백 없이 스냅샷 복원만으로 충분하다.
+    """
+    pending = cl.user_session.get("pending_commit")
+    if not pending:
+        return
+
+    if action.forId:
+        await cl.Message(id=action.forId, content="").remove()
+
+    # 스냅샷 복원 — Manager가 진행시킨 히스토리·시간 되돌리기
+    cl.user_session.set("conversation_history", pending["history_snapshot"])
+    cl.user_session.set("recent_responses",     pending["recent_snapshot"])
+    cl.user_session.set("pending_commit",        None)
+
+    if pending.get("prev_game_time"):
+        await _restore_game_time(pending["prev_game_time"])
+
+    history          = cl.user_session.get("conversation_history")
+    recent_responses = cl.user_session.get("recent_responses")
+    await _run_generation(pending["user_input"], history, recent_responses, step_suffix="(리롤)")
 
 
 # ════════════════════════════════════════════════════════════
@@ -458,21 +508,20 @@ async def on_reroll(action: cl.Action):
 # ════════════════════════════════════════════════════════════
 
 @cl.action_callback("edit_response")
-async def on_edit_response(action: cl.Action):
+async def on_edit_response(action: cl.Action) -> None:
+    """응답 메시지를 인라인 편집 폼으로 교체한다."""
     pending = cl.user_session.get("pending_commit")
     if not pending:
         return
-
-    msg_id   = pending.get("response_msg_id")
-    original = pending.get("ai_response", "")
+    msg_id = pending.get("response_msg_id")
     if not msg_id:
         return
 
-    edit_msg = cl.Message(id=msg_id, content="", author=NPC_NAME_KOR)
+    edit_msg          = cl.Message(id=msg_id, content="", author=NPC_NAME_KOR)
     edit_msg.elements = [
         cl.CustomElement(
             name    = "EditableMessage",
-            props   = {"content": original},
+            props   = {"content": pending.get("ai_response", "")},
             display = "inline",
         )
     ]
@@ -485,9 +534,9 @@ async def on_edit_response(action: cl.Action):
 # ════════════════════════════════════════════════════════════
 
 @cl.on_chat_start
-async def on_chat_start():
+async def on_chat_start() -> None:
+    """세션 변수 초기화 및 오프닝 씬 출력."""
     opening_scene = world_config.get("opening_scene", "")
-
     cl.user_session.set("conversation_history", [])
     cl.user_session.set("recent_responses",     [opening_scene] if opening_scene else [])
     cl.user_session.set("pending_commit",        None)
@@ -502,28 +551,34 @@ async def on_chat_start():
             "- `.md` 드랍: 이전 대화 불러오기\n---"
         )
     ).send()
-
     if opening_scene:
         await cl.Message(content=opening_scene, author="세계").send()
 
 
 @cl.on_chat_end
-async def on_chat_end():
+async def on_chat_end() -> None:
+    """
+    채팅 종료 시 미확정 pending을 백그라운드에서 강제 처리한다.
+
+    정상 흐름에서는 다음 턴 시작 시 처리되지만,
+    마지막 응답 후 바로 창을 닫는 경우를 대비해 fire-and-forget으로 실행한다.
+    """
     pending = cl.user_session.get("pending_commit")
-    if pending:
-        asyncio.create_task(
-            process_actor_response(
-                pending["ai_response"], NPC_ID, PC_ID,
-                scene_types  = pending.get("scene_types"),
-                scene_chars  = pending.get("scene_chars", []),
-                world_config = world_config,
-            )
+    if not pending:
+        return
+    asyncio.create_task(
+        process_actor_response(
+            pending["ai_response"], NPC_ID, PC_ID,
+            scene_types  = pending.get("scene_types"),
+            scene_chars  = pending.get("scene_chars", []),
+            world_config = world_config,
         )
-        append_turn(
-            user_input  = pending["user_input"],
-            ai_response = pending["ai_response"],
-            timestamp   = pending.get("timestamp"),
-        )
+    )
+    append_turn(
+        user_input  = pending["user_input"],
+        ai_response = pending["ai_response"],
+        timestamp   = pending.get("timestamp"),
+    )
 
 
 # ════════════════════════════════════════════════════════════
@@ -531,10 +586,20 @@ async def on_chat_end():
 # ════════════════════════════════════════════════════════════
 
 @cl.on_message
-async def on_message(message: cl.Message):
+async def on_message(message: cl.Message) -> None:
+    """
+    메시지 루프 메인 핸들러.
+
+    1. 수정 완료/취소 프로토콜 감지 (__EDIT__: / __EDIT_CANCEL__)
+    2. .md 파일 드랍 → 로그 복원
+    3. 이전 턴 pending 확정
+    4. 임신 OOC 자동 주입
+    5. OOC 명령 처리 (*로 시작하는 입력)
+    6. Manager → Actor → 히스토리 갱신 (_run_generation)
+    """
     user_input = message.content.strip()
 
-    # ── 수정 완료 / 취소 감지 ────────────────────────────────
+    # ── 수정 완료·취소 감지 — CustomElement에서 보내는 특수 접두사 ──
     if user_input.startswith("__EDIT__:"):
         await message.remove()
         await _apply_edit(user_input[9:])
@@ -545,35 +610,35 @@ async def on_message(message: cl.Message):
         await _cancel_edit()
         return
 
-    # ── 파일 드랍 ─────────────────────────────────────────────
+    # ── 파일 드랍 ────────────────────────────────────────────────
     if message.elements:
         for el in message.elements:
-            if isinstance(el, cl.File) and el.name.endswith(".md"):
+            if isinstance(el, cl.File) and el.name.endswith(".md") and el.path:
                 await _load_log_into_session(Path(el.path))
                 return
 
     if not user_input:
         return
 
-    history:          list[dict] = cl.user_session.get("conversation_history")
-    recent_responses: list[str]  = cl.user_session.get("recent_responses")
+    history          = cl.user_session.get("conversation_history")
+    recent_responses = cl.user_session.get("recent_responses")
 
-    # ── 1. 이전 턴 확정 ──────────────────────────────────
+    # ── 1. 이전 턴 확정 ─────────────────────────────────────────
     pending = cl.user_session.get("pending_commit")
     if pending:
         await _commit_pending(pending)
         cl.user_session.set("pending_commit", None)
 
-    # ── 1.5. 임신 감지 OOC 주입 ──────────────────────────
+    # ── 2. 임신 OOC 자동 주입 ───────────────────────────────────
     pending_ooc = cl.user_session.get("pending_ooc")
     if pending_ooc:
         cl.user_session.set("pending_ooc", None)
         user_input = f"{pending_ooc}\n{user_input}"
         await cl.Message(content=pending_ooc, author="시스템").send()
 
-    # ── 2. OOC ───────────────────────────────────────────
-    ooc_changes: dict = {}
+    # ── 3. OOC 처리 ─────────────────────────────────────────────
     if is_ooc(user_input):
+        ooc_changes: dict = {}
         async with cl.Step(name="⚙️ OOC", show_input=False) as step:
             result      = await parse_ooc(user_input, NPC_ID, NPC_NAME_KOR)
             ooc_changes = result.get("state_changes", {})
@@ -583,64 +648,12 @@ async def on_message(message: cl.Message):
             step.output = "\n".join(lines)
 
         if ooc_changes.get("physical_condition") in ("injured", "ill", "hospitalized"):
+            # 부상·입원은 Actor 응답 없이 이벤트만 생성 — fire-and-forget
             asyncio.create_task(
                 delegate_complex_update(user_input, NPC_ID, PC_ID, ooc_changes, event_only=True)
             )
-
         if WORLD_ID == "sses" and ooc_changes.get("action_type") == "session_end":
             await advance_slot()
 
-    # ── 3. 인게임 시간 스냅샷 ────────────────────────────
-    prev_game_time = await _snapshot_game_time()
-
-    # ── 4. Manager ───────────────────────────────────────
-    recent_story = "\n".join(recent_responses[-RECENT_STORY_TURNS:])
-    async with cl.Step(name="데이터 추출", show_input=False) as step:
-        fixed, genre, dynamic, scene_types = await run_manager(
-            user_input   = user_input,
-            pc_id        = PC_ID,
-            npc_id       = NPC_ID,
-            recent_story = recent_story,
-            world_id     = WORLD_ID,
-            perspective  = PERSPECTIVE,
-        )
-        step.output = f"씬 타입: `{scene_types}`"
-
-    # ── 5. Actor 스트리밍 ─────────────────────────────────
-    full_response, scene_chars, response_msg, hour = await _stream_actor(
-        fixed, genre, dynamic, history
-    )
-
-    # ── 6. 히스토리 갱신 ─────────────────────────────────
-    history_snapshot = list(history)
-    recent_snapshot  = list(recent_responses)
-
-    history += [{"role": "user", "content": dynamic}, {"role": "assistant", "content": full_response}]
-    del history[:-MAX_HISTORY_TURNS * 2]
-    cl.user_session.set("conversation_history", history)
-
-    recent_responses.append(full_response[:1500])
-    cl.user_session.set("recent_responses", recent_responses[-RECENT_STORY_TURNS:])
-
-    # ── 7. 지연 확정 예약 ─────────────────────────────────
-    cl.user_session.set("pending_commit", {
-        "user_input":        user_input,
-        "ai_response":       full_response,
-        "scene_types":       scene_types,
-        "scene_chars":       scene_chars,
-        "timestamp":         datetime.now(),
-        "history_snapshot":  history_snapshot,
-        "recent_snapshot":   recent_snapshot,
-        "prev_game_time":    prev_game_time,
-        "response_msg_id":   response_msg.id,
-    })
-
-    # ── 8. 버튼 ──────────────────────────────────────────
-    response_msg.actions = [
-        cl.Action(name="reroll",        label="🔄 다시 쓰기", payload={"action": "reroll"}),
-        cl.Action(name="edit_response", label="✏️ 수정",      payload={"action": "edit"}),
-    ]
-    await response_msg.update()
-
-    # ── 9. 시간 기반 배경 테마 ───────────────────────────
-    await _inject_time_theme(hour, forId=response_msg.id)
+    # ── 4. 생성 파이프라인 ───────────────────────────────────────
+    await _run_generation(user_input, history, recent_responses)

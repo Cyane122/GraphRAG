@@ -38,12 +38,14 @@ project-root/
     │
     ├── assets/                         # ── 세계 정의 에셋 ──────────────────────────────────
     │   └── worlds/
-    │       ├── base.py                 # World 베이스 클래스. 모든 세계 구현체가 상속하는 인터페이스.
-    │       │                           # world_section / prose_rules / few_shot / blacklist /
-    │       │                           # npc_name_map / start_time / build_schema 정의
-    │       ├── utils.py                # 세계 공통 유틸리티
-    │       └── default/                # 기본 세계 구현체 (각 세계는 이 구조를 따름)
-    │           ├── schema.py           # Kuzu 스키마 정의 + 초기 노드/엣지 데이터
+    │       ├── base.py                 # World 베이스 클래스. narrator/pc/chars/perspective 주입.
+    │       │                           # _build_tables(DDL) · _build_world_events(no-op) ·
+    │       │                           # build_schema(빌드 진입점) · get_full_config 정의
+    │       ├── base_character.py       # Character 베이스 클래스 + 공용 헬퍼.
+    │       │                           # _insert_rel(RELATIONSHIP 엣지) ·
+    │       │                           # _merge_static_event(MERGE 기반 StaticEvent 생성)
+    │       └── default/                # 기본 세계 구현체 (세계별 파일은 .gitignore 제외)
+    │           ├── schema.py           # World 서브클래스. DDL ALTER + 장소 + 캐릭터 빌드 오케스트레이션.
     │           └── prompt/
     │               ├── world.md        # 세계관·배경 설명 (Fixed 프롬프트에 삽입)
     │               ├── prose_1p.md     # 1인칭 시점 묘사 규칙
@@ -125,27 +127,144 @@ project-root/
 
 씬 타입: `daily` · `emotional` · `physical` · `intimate` · `workplace` · `aegyo`
 
+## 캐릭터 정의 방법
+
+캐릭터 1명 = 파일 1개 (`src/assets/worlds/<world_id>/characters/<char_id>.py`).
+
+```python
+from src.assets.worlds.base import insert_static_inline
+from src.assets.worlds.base_character import Character, _insert_rel, _merge_static_event
+
+class Alice(Character):
+    id = "alice"
+    name = "앨리스"
+    aliases = ["앨리스", "부인"]
+    char_type = "npc"
+
+    def build_schema(self, conn: kuzu.Connection) -> None:
+        """Character 노드, StaticProfile, DynamicState를 생성합니다."""
+        conn.execute(
+            "CREATE (:Character {id: $id, name: $name, aliases: $aliases, type: $type})",
+            {"id": self.id, "name": self.name, "aliases": self.aliases, "type": self.char_type},
+        )
+        insert_static_inline(
+            conn, self.id, "HAS_PROFILE", "StaticProfile", f"{self.id}_static",
+            age=22,
+            appearance="...",
+        )
+        conn.execute(
+            "CREATE (:DynamicState {id: $id, mood: $mood, current_location: $current_location})",
+            {"id": "alice_state", "mood": "guarded", "current_location": "default_location"},
+        )
+        conn.execute(
+            "MATCH (c:Character {id: $id}), (d:DynamicState {id: $did}) CREATE (c)-[:HAS_STATE]->(d)",
+            {"id": self.id, "did": "alice_state"},
+        )
+
+    def build_relationship(self, conn: kuzu.Connection, other: Character) -> None:
+        """관계 엣지와 관련 StaticEvent를 함께 생성합니다."""
+        _RELS = {
+            "bob":     ("ally",  70, 80, "Trusted companion."),
+            "villain": ("enemy",  5,  0, "Deep-seated hostility."),
+        }
+        if other.id not in _RELS:
+            return
+        rel_type, affinity, trust, status = _RELS[other.id]
+        _insert_rel(conn, self.id, other.id, rel_type, affinity, trust, status)
+
+        # 관계 생성과 동시에 관련 이벤트를 인라인으로 선언
+        if other.id == "villain":
+            _merge_static_event(
+                conn,
+                event_id="villain_discovers_secret",
+                name="빌런, 비밀을 알게 되다",
+                foreshadow_conditions='{"type":"flag","key":"villain_suspicious","value":true}',
+                foreshadow_hint="빌런의 시선이 자꾸 앨리스에게 머문다.",
+                trigger_conditions='{"type":"flag","key":"secret_exposed","value":true}',
+                involved_ids=["alice", "villain"],
+            )
+```
+
+**규칙**
+- `build_schema` — 노드·프로파일·상태만. 관계·이벤트는 넣지 않는다.
+- `build_relationship` — `_RELS` dict로 상대방 id를 키로 조회. 모르는 상대는 자동 no-op.
+- 같은 event_id를 두 캐릭터가 모두 선언해도 MERGE로 중복 방지된다.
+
+---
+
+## 세계 초기화 방법
+
+`schema.py` 의 World 서브클래스가 `build_schema(conn)` 한 번으로 전체 스키마를 빌드한다.
+
+```python
+# schema.py
+class MyWorld(World):
+    WORLD_ID = "my_world"
+
+    def build_schema(self, conn: kuzu.Connection) -> None:
+        self._build_tables(conn)                   # 공통 DDL (노드/관계 테이블, 벡터 인덱스)
+
+        # 세계 전용 컬럼 추가
+        for col, col_type in [("custom_field", "STRING")]:
+            try: conn.execute(f"ALTER TABLE DynamicState ADD {col} {col_type}")
+            except: pass
+
+        # 장소
+        conn.execute("CREATE (:Location {id: 'town', name: '마을', ...})")
+
+        # 캐릭터 노드 + 프로파일 + 상태
+        for char in self.chars:
+            char.build_schema(conn)
+
+        # 관계 + 인라인 이벤트
+        for a in self.chars:
+            for b in self.chars:
+                if a.id != b.id:
+                    a.build_relationship(conn, b)
+
+        # 세계 레벨 이벤트 (캐릭터 무관)
+        self._build_world_events(conn)
+
+    def _build_world_events(self, conn: kuzu.Connection) -> None:
+        """계절 전환, 전쟁 선포 등 세계 레벨 StaticEvent."""
+        _merge_static_event(conn, event_id="season_change", ...)
+```
+
+**서술자·PC 변경** — `world_instance` 한 줄만 수정한다. 세계 파일 복사 불필요.
+
+```python
+# schema.py 맨 아래
+world_instance = MyWorld(
+    narrator=Alice(),   # ← 이 줄만 바꾸면 서술자 교체
+    pc=Bob(),
+    chars=[Alice(), Bob(), Villain(), ...],
+)
+```
+
+---
+
 ## 새 세계 추가
 
 1. `src/assets/worlds/<world_id>/` 디렉터리 생성
-2. `schema.py` 에 Kuzu 스키마 + 초기 데이터 정의
-3. `prompt/` 하위에 `world.md`, `prose_1p.md`, `prose_3p.md`, `blacklist.md`, `few_shot/*.md` 작성
-4. `src/assets/worlds/__init__.py` 에 world_id → 클래스 매핑 추가
-5. `python -m src.core.database.schema_builder --world_id <world_id>` 실행
+2. `characters/` 하위에 캐릭터 파일 1명 = 1파일로 작성, `__init__.py` 에 일괄 export
+3. `schema.py` 에 World 서브클래스 정의 (위 템플릿 참고)
+4. `prompt/` 하위에 `world.md`, `prose_1p.md`, `prose_3p.md`, `blacklist.md`, `few_shot/*.md` 작성
+5. `src/assets/worlds/__init__.py` 에 world_id → 클래스 매핑 추가
+6. `python -m src.core.database.schema_builder --world_id <world_id>` 실행
 
 ## 환경변수 (`.env`)
 
-| 변수 | 용도 |
-|------|------|
-| `MODEL_ACTOR` | 롤플레이 생성 LLM (Gemini) |
-| `MODEL_CLASSIFIER` | 씬 분류 LLM |
-| `MODEL_STATE_UPDATER` | 경량 상태 업데이트 LLM |
-| `MODEL_COMPLEX_UPDATER` | 다중 노드 복합 업데이트 LLM |
-| `GOOGLE_PROJECT_ID` | Google Cloud 프로젝트 ID |
-| `MODEL_EMBEDDER` | HuggingFace 임베딩 모델 |
-| `EMBEDDING_DIM` | 임베딩 차원 수 |
-| `HF_TOKEN` | HuggingFace API 토큰 |
-| `WORLD_ID` | 활성 세계 ID |
-| `PERSPECTIVE` | `1` = 1인칭, `3` = 3인칭 |
-| `MAX_TOKEN` | Actor 출력 토큰 상한 |
-| `IMPERSONATION` | PC-as-NPC 모드 플래그 |
+| 변수                      | 용도                   |
+|-------------------------|----------------------|
+| `MODEL_ACTOR`           | 롤플레이 생성 LLM (Gemini) |
+| `MODEL_CLASSIFIER`      | 씬 분류 LLM             |
+| `MODEL_STATE_UPDATER`   | 경량 상태 업데이트 LLM       |
+| `MODEL_COMPLEX_UPDATER` | 다중 노드 복합 업데이트 LLM    |
+| `GOOGLE_PROJECT_ID`     | Google Cloud 프로젝트 ID |
+| `MODEL_EMBEDDER`        | HuggingFace 임베딩 모델   |
+| `EMBEDDING_DIM`         | 임베딩 차원 수             |
+| `HF_TOKEN`              | HuggingFace API 토큰   |
+| `WORLD_ID`              | 활성 세계 ID             |
+| `PERSPECTIVE`           | `1` = 1인칭, `3` = 3인칭 |
+| `MAX_TOKEN`             | Actor 출력 토큰 상한       |
+| `IMPERSONATION`         | PC-as-NPC 모드 플래그     |
