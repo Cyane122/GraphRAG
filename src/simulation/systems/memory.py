@@ -10,6 +10,7 @@
 #   - distort_on_affinity_change(char_id, pc_id, affinity_delta, current_game_time) -> None : 호감도 급변 시 관련 기억을 즉시 재해석
 # ================================
 
+import json
 from datetime import datetime
 
 from src.config import MODEL_STATE_UPDATER as DECAY_MODEL
@@ -465,7 +466,9 @@ async def _delete_memory(mem_id: str) -> None:
 
 
 async def _fetch_char_traits(char_id: str) -> dict:
-    """DynamicState → StaticProfile 순으로 trait_* 필드 로드."""
+    """DynamicState → StaticProfile 순으로 trait_* 필드 로드.
+    StaticProfile은 JSON blob이므로 props 컬럼을 파싱해 trait_* 키를 추출한다.
+    """
     async with async_driver.session() as session:
         for rel in ("HAS_STATE", "HAS_PROFILE"):
             rec = await session.run(f"""
@@ -473,11 +476,18 @@ async def _fetch_char_traits(char_id: str) -> dict:
                 RETURN n AS props
             """, cid=char_id)
             row = await rec.single()
-            if row and row["props"]:
-                props  = dict(row["props"])
-                traits = {k: v for k, v in props.items() if k.startswith("trait_")}
-                if traits:
-                    return traits
+            if not row or not row["props"]:
+                continue
+            props = dict(row["props"])
+            # JSON blob 노드: {"id":…, "props":"…json…"} → 내부 JSON 파싱
+            if isinstance(props.get("props"), str):
+                try:
+                    props = json.loads(props["props"])
+                except (ValueError, TypeError):
+                    pass
+            traits = {k: v for k, v in props.items() if k.startswith("trait_")}
+            if traits:
+                return traits
     return {}
 
 

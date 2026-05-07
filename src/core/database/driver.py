@@ -23,6 +23,14 @@ from kuzu import QueryResult
 
 from src.config import WORLD_ID
 
+# 스키마 업데이트로 추가된 컬럼이 기존 DB에 없을 수 있으므로 시작 시 마이그레이션 시도
+# 테이블 미존재 또는 컬럼 이미 존재 시 예외를 조용히 무시한다 (idempotent)
+_COLUMN_MIGRATIONS: list[str] = [
+    "ALTER TABLE Event ADD COLUMN safety_impact DOUBLE DEFAULT 0.0",
+    "ALTER TABLE Event ADD COLUMN safety_resolved BOOLEAN DEFAULT false",
+    "ALTER TABLE Event ADD COLUMN safety_decay_rate DOUBLE DEFAULT 0.002",
+]
+
 
 class KuzuRecord:
     """Kuzu 결과 행을 dict처럼 접근할 수 있게 감쌉니다."""
@@ -83,9 +91,9 @@ class KuzuSession:
     가 수정 없이 동작합니다.
     """
 
-    def __init__(self, conn: kuzu.Connection) -> None:
+    def __init__(self, conn: kuzu.Connection, lock: asyncio.Lock) -> None:
         self._conn = conn
-        self._lock = asyncio.Lock()
+        self._lock = lock
 
     async def run(
         self,
@@ -96,6 +104,7 @@ class KuzuSession:
         """쿼리를 실행하고 KuzuResult를 반환합니다."""
         params = {**(parameters or {}), **kwargs}
 
+        # 드라이버 전역 락으로 직렬화 — kuzu.Connection은 스레드 안전하지 않음
         async with self._lock:
             qr = await asyncio.to_thread(self._conn.execute, query, params)
 
@@ -120,10 +129,20 @@ class KuzuAsyncDriver:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._db   = kuzu.Database(db_path)
         self._conn = kuzu.Connection(self._db)
+        self._lock = asyncio.Lock()
+        self._run_migrations()
 
     def session(self) -> KuzuSession:
         """KuzuSession을 반환합니다 (async context manager로 사용)."""
-        return KuzuSession(self._conn)
+        return KuzuSession(self._conn, self._lock)
+
+    def _run_migrations(self) -> None:
+        """기존 DB에 누락된 컬럼을 추가한다. 이미 존재하거나 테이블 미존재 시 무시."""
+        for ddl in _COLUMN_MIGRATIONS:
+            try:
+                self._conn.execute(ddl)
+            except Exception:
+                pass
 
     def execute_sync(self, query: str, params: dict | None = None) -> QueryResult | list[QueryResult]:
         """동기 쿼리 실행. 스키마 초기화 CLI 전용."""

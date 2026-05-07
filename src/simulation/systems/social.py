@@ -332,28 +332,25 @@ async def _create_stub(
             CREATE (:Character {id: $id, name: $name, type: "transient"})
         """, id=char_id, name=name_kor)
 
+        # StaticProfile 스키마는 (id, props) 두 컬럼만 존재 — 데이터는 JSON blob으로 저장
+        profile_json = json.dumps({
+            "name_kor":         name_kor,
+            "type":             "transient",
+            "personality":      stub.get("personality", ""),
+            "context":          stub.get("context", ""),
+            "role":             stub.get("relation_type", "acquaintance"),
+            "first_seen":       timestamp,
+            "last_seen":        timestamp,
+            "appearance_count": 0,
+            "libido_excluded":  True,
+        }, ensure_ascii=False)
         await session.run("""
             MATCH (c:Character {id: $cid})
-            CREATE (c)-[:HAS_PROFILE]->(:StaticProfile {
-                id:               $pid,
-                name_kor:         $name_kor,
-                type:             "transient",
-                personality:      $personality,
-                context:          $context,
-                role:             $role,
-                first_seen:       $ts,
-                last_seen:        $ts,
-                appearance_count: 0,
-                libido_excluded:  true
-            })
+            CREATE (c)-[:HAS_PROFILE]->(:StaticProfile {id: $pid, props: $props_json})
         """,
-            cid         = char_id,
-            pid         = f"{char_id}_static",
-            name_kor    = name_kor,
-            personality = stub.get("personality", ""),
-            context     = stub.get("context", ""),
-            role        = stub.get("relation_type", "acquaintance"),
-            ts          = timestamp,
+            cid        = char_id,
+            pid        = f"{char_id}_static",
+            props_json = profile_json,
         )
 
         await session.run("""
@@ -412,13 +409,25 @@ Return ONLY JSON:
 
 
 async def _increment_appearance(char_id: str) -> None:
-    """StaticProfile의 appearance_count를 1 증가시킨다."""
+    """StaticProfile JSON blob의 appearance_count를 1 증가시킨다."""
     async with async_driver.session() as session:
+        rec = await session.run("""
+            MATCH (c:Character {id: $cid})-[:HAS_PROFILE]->(sp:StaticProfile)
+            RETURN sp.props AS props_json
+        """, cid=char_id)
+        row = await rec.single()
+        current: dict = {}
+        if row and row["props_json"]:
+            try:
+                current = json.loads(row["props_json"])
+            except (ValueError, TypeError):
+                pass
+        current["appearance_count"] = current.get("appearance_count", 0) + 1
+        current["last_seen"] = datetime.now().isoformat()
         await session.run("""
             MATCH (c:Character {id: $cid})-[:HAS_PROFILE]->(sp:StaticProfile)
-            SET sp.appearance_count = coalesce(sp.appearance_count, 0) + 1,
-                sp.last_seen        = $ts
-        """, cid=char_id, ts=datetime.now().isoformat())
+            SET sp.props = $props_json
+        """, cid=char_id, props_json=json.dumps(current, ensure_ascii=False))
 
 
 async def _link_to_event(char_id: str, event_id: str) -> None:
@@ -445,12 +454,18 @@ async def _check_and_promote(
     async with async_driver.session() as session:
         rec = await session.run("""
             MATCH (c:Character {id: $cid})-[:HAS_PROFILE]->(sp:StaticProfile)
-            RETURN sp.appearance_count AS count, c.type AS type
+            RETURN sp.props AS props_json, c.type AS type
         """, cid=char_id)
         row = await rec.single()
         if not row or row["type"] != "transient":
             return
-        count = row["count"] or 0
+        props: dict = {}
+        if row["props_json"]:
+            try:
+                props = json.loads(row["props_json"])
+            except (ValueError, TypeError):
+                pass
+        count = props.get("appearance_count", 0)
 
     async with async_driver.session() as session:
         rec = await session.run("""
@@ -482,10 +497,15 @@ async def _promote_to_named(char_id: str) -> None:
 
         rec2 = await session.run("""
             MATCH (c:Character {id: $cid})-[:HAS_PROFILE]->(sp:StaticProfile)
-            RETURN sp AS props
+            RETURN sp.props AS props_json
         """, cid=char_id)
         row     = await rec2.single()
-        profile = dict(row["props"]) if row else {}
+        profile: dict = {}
+        if row and row["props_json"]:
+            try:
+                profile = json.loads(row["props_json"])
+            except (ValueError, TypeError):
+                pass
 
     event_summaries = "\n".join(
         f"- {e['summary']} (importance {e['importance']})"
@@ -518,22 +538,20 @@ Return ONLY JSON:
         print(f"[WorldBuilder] Personality 생성 실패: {e}")
 
     async with async_driver.session() as session:
+        # Personality 스키마도 (id, props) JSON blob 구조
+        personality_json = json.dumps({
+            "core_traits":         personality_data.get("core_traits", ""),
+            "speech_style":        personality_data.get("speech_style", ""),
+            "habit_when_thinking": personality_data.get("habit_when_thinking", ""),
+            "sample_line":         personality_data.get("sample_line", ""),
+        }, ensure_ascii=False)
         await session.run("""
             MATCH (c:Character {id: $cid})
-            CREATE (c)-[:HAS_PERSONALITY]->(:Personality {
-                id:                  $pid,
-                core_traits:         $traits,
-                speech_style:        $speech,
-                habit_when_thinking: $habit,
-                sample_line:         $sample
-            })
+            CREATE (c)-[:HAS_PERSONALITY]->(:Personality {id: $pid, props: $props_json})
         """,
-            cid    = char_id,
-            pid    = f"{char_id}_personality",
-            traits = personality_data.get("core_traits", ""),
-            speech = personality_data.get("speech_style", ""),
-            habit  = personality_data.get("habit_when_thinking", ""),
-            sample = personality_data.get("sample_line", ""),
+            cid        = char_id,
+            pid        = f"{char_id}_personality",
+            props_json = personality_json,
         )
 
         await session.run("""
@@ -546,12 +564,10 @@ Return ONLY JSON:
             })
         """, cid=char_id, nid=f"{char_id}_needs")
 
+        # c.type만 갱신 — StaticProfile은 JSON blob이라 별도 read-modify-write 불필요
         await session.run("""
             MATCH (c:Character {id: $cid})
             SET c.type = "named"
-            WITH c
-            MATCH (c)-[:HAS_PROFILE]->(sp:StaticProfile)
-            SET sp.type = "named"
         """, cid=char_id)
 
     try:

@@ -10,6 +10,7 @@
 # ================================
 
 import asyncio
+import json
 import re
 from datetime import datetime
 from importlib import import_module
@@ -199,7 +200,15 @@ async def fetch_character_data(char_id: str, scene_types: list[str]) -> dict:
             row = await rec.single()
             if row:
                 key = REL_TO_KEY.get(rel_type, rel_type.lower())
-                result[key] = row["props"]
+                raw = row["props"]
+                # JSON blob 노드(StaticProfile 등)는 {"id":…, "props":"…json…"} 형태로 반환됨
+                if isinstance(raw, dict) and isinstance(raw.get("props"), str):
+                    try:
+                        result[key] = json.loads(raw["props"])
+                    except (ValueError, TypeError):
+                        result[key] = raw
+                else:
+                    result[key] = raw
     return result
 
 
@@ -323,11 +332,17 @@ async def fetch_npc_profiles(
             """, a=main_npc_id, b=nid)
             rel_row = await rel_rec.single()
 
+            raw_profile = profile_row["props"] if profile_row else {}
+            if isinstance(raw_profile, dict) and isinstance(raw_profile.get("props"), str):
+                try:
+                    raw_profile = json.loads(raw_profile["props"])
+                except (ValueError, TypeError):
+                    pass
             results.append({
                 "char_id":    nid,
                 "name":       name_row["name"],
-                "profile":    profile_row["props"] if profile_row else {},
-                "rel_to_npc": rel_row["props"]     if rel_row     else {},
+                "profile":    raw_profile,
+                "rel_to_npc": rel_row["props"] if rel_row else {},
             })
     return results
 

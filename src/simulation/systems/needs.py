@@ -9,6 +9,7 @@
 # ================================
 
 import asyncio
+import json
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -69,6 +70,21 @@ async def ensure_traits(char_id: str) -> dict:
     personality = profile.get("personality", "")
     role        = profile.get("role", profile.get("job", ""))
     age         = profile.get("age", "")
+
+    # personality 미정의 캐릭터는 DynamicState 행동 설명으로 보완
+    if not personality and source_label == "StaticProfile":
+        async with async_driver.session() as session:
+            rec = await session.run("""
+                MATCH (c:Character {id: $cid})-[:HAS_STATE]->(d:DynamicState)
+                RETURN d.behavioral_facade AS bf,
+                       d.mood AS mood,
+                       d.mental_condition AS mc
+            """, cid=char_id)
+            dyn_row = await rec.single()
+            if dyn_row:
+                parts = [v for v in (dyn_row.get("bf"), dyn_row.get("mood"), dyn_row.get("mc")) if v]
+                personality = " | ".join(parts)
+
     print(f"[TraitsInit] {char_id}: trait_* 없음 → Haiku 생성 중...")
 
     generated = await _generate_traits_from_personality(char_id, personality, role, str(age))
@@ -79,16 +95,31 @@ async def ensure_traits(char_id: str) -> dict:
 
 
 async def _load_profile(char_id: str) -> tuple[dict, str]:
-    """StaticProfile → DynamicState 순으로 탐색. (props, label) 반환."""
+    """StaticProfile(JSON blob) → DynamicState 순으로 탐색. (props_dict, label) 반환.
+    StaticProfile은 props 컬럼이 JSON 문자열이므로 파싱 후 반환한다.
+    """
     async with async_driver.session() as session:
-        for rel, label in [("HAS_PROFILE", "StaticProfile"), ("HAS_STATE", "DynamicState")]:
-            rec = await session.run(f"""
-                MATCH (c:Character {{id: $cid}})-[:{rel}]->(n)
-                RETURN n AS props
-            """, cid=char_id)
-            row = await rec.single()
-            if row and row["props"]:
-                return dict(row["props"]), label
+        # StaticProfile: props 컬럼이 JSON blob — n.props 로 직접 조회 후 파싱
+        rec = await session.run("""
+            MATCH (c:Character {id: $cid})-[:HAS_PROFILE]->(n:StaticProfile)
+            RETURN n.props AS props_json
+        """, cid=char_id)
+        row = await rec.single()
+        if row and row["props_json"]:
+            try:
+                return json.loads(row["props_json"]), "StaticProfile"
+            except (ValueError, TypeError):
+                pass
+
+        # DynamicState: 명시적 컬럼 노드 — 노드 전체를 dict로 변환
+        rec = await session.run("""
+            MATCH (c:Character {id: $cid})-[:HAS_STATE]->(n:DynamicState)
+            RETURN n AS props
+        """, cid=char_id)
+        row = await rec.single()
+        if row and row["props"]:
+            return dict(row["props"]), "DynamicState"
+
     return {}, ""
 
 
@@ -163,15 +194,35 @@ Return only the raw JSON object."""
 
 
 async def _write_traits_to_db(char_id: str, source_label: str, traits: dict) -> None:
-    """trait 딕셔너리를 StaticProfile 또는 DynamicState 노드에 저장한다."""
+    """trait 딕셔너리를 DB에 저장한다.
+    StaticProfile은 props JSON blob에 병합해 저장한다.
+    DynamicState에는 trait_* 컬럼이 없어 저장을 건너뛴다 (메모리 전용).
+    """
     if not traits:
         return
-    set_clause = ", ".join(f"n.{k} = ${k}" for k in traits)
-    rel = "HAS_PROFILE" if source_label == "StaticProfile" else "HAS_STATE"
+
+    if source_label != "StaticProfile":
+        # DynamicState 스키마에 trait_* 컬럼이 없으므로 저장 불가
+        print(f"[TraitsInit] {char_id}: DynamicState에 trait 저장 불가 — 이번 턴 메모리 전용")
+        return
+
+    # StaticProfile.props는 JSON blob — 기존 데이터를 읽어 traits를 병합한 뒤 덮어쓴다
     async with async_driver.session() as session:
+        rec = await session.run("""
+            MATCH (c:Character {id: $cid})-[:HAS_PROFILE]->(n:StaticProfile)
+            RETURN n.props AS props_json
+        """, cid=char_id)
+        row = await rec.single()
+        current: dict = {}
+        if row and row["props_json"]:
+            try:
+                current = json.loads(row["props_json"])
+            except (ValueError, TypeError):
+                pass
+        current.update(traits)
         await session.run(
-            f"MATCH (c:Character {{id: $cid}})-[:{rel}]->(n) SET {set_clause}",
-            cid=char_id, **traits,
+            "MATCH (c:Character {id: $cid})-[:HAS_PROFILE]->(n:StaticProfile) SET n.props = $props_json",
+            cid=char_id, props_json=json.dumps(current, ensure_ascii=False),
         )
 
 
