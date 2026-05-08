@@ -428,22 +428,22 @@ async def run_manager(
 
         async with async_driver.session() as session:
             rec = await session.run("""
-                CALL db.index.vector.queryNodes('memory_embeddings', $candidates, $embedding)
-                YIELD node AS mem, score
+                CALL QUERY_VECTOR_INDEX('Memory', 'memory_embeddings', $embedding, $candidates)
+                WITH node AS mem, distance
                 MATCH (c:Character {id: $char_id})-[:REMEMBERS]->(mem)
-                WHERE score >= $threshold AND mem.summary_level < 3
+                WHERE distance <= $max_distance AND mem.summary_level < 3
                 RETURN mem.event_id         AS id,
                        mem.summary          AS summary,
                        mem.distortion_level AS distortion,
-                       score
-                ORDER BY score DESC
+                       distance
+                ORDER BY distance ASC
                 LIMIT $limit
             """,
-                char_id    = npc_id,
-                embedding  = query_embedding,
-                candidates = 10,
-                threshold  = 0.65,
-                limit      = 2,
+                char_id      = npc_id,
+                embedding    = query_embedding,
+                candidates   = 10,
+                max_distance = 0.35,
+                limit        = 2,
             )
             raw_memories = await rec.data()
 
@@ -454,7 +454,7 @@ async def run_manager(
             recall_events.append({
                 "id":      m["id"],
                 "summary": m["summary"],
-                "score":   round(m["score"], 3),
+                "score":   round(max(0.0, 1.0 - float(m.get("distance") or 0.0)), 3),
             })
             if m["distortion"] and float(m["distortion"]) > 0.2:
                 memory_conflicts.append(m["summary"])
@@ -493,6 +493,51 @@ async def run_manager(
             world_context["static_events"] = static_hints
     except Exception as e:
         print(f"[StaticEvent] 평가 실패 (무시): {e}")
+
+    # Life-depth hints are dynamic context. Keep them out of fixed prompts so
+    # Gemini's implicit cache remains stable across turns.
+    try:
+        from src.simulation.systems.goals import fetch_goal_hints
+
+        goal_hints = await fetch_goal_hints(
+            owner_id     = npc_id,
+            pc_id        = pc_id,
+            current_time = current_dt,
+            limit        = 2,
+        )
+        if goal_hints:
+            world_context["life_goals"] = goal_hints
+    except Exception as e:
+        print(f"[LifeDepth] goal hints failed (ignored): {e}")
+
+    try:
+        from src.simulation.systems.items import fetch_object_memory_hints
+
+        item_hints = await fetch_object_memory_hints(
+            owner_id    = npc_id,
+            pc_id       = pc_id,
+            location_id = loc_id or "",
+            user_input  = user_input,
+            limit       = 2,
+        )
+        if item_hints:
+            world_context["object_memories"] = item_hints
+    except Exception as e:
+        print(f"[LifeDepth] object hints failed (ignored): {e}")
+
+    try:
+        from src.simulation.systems.secrets import fetch_secret_hints
+
+        secret_hints = await fetch_secret_hints(
+            owner_id     = npc_id,
+            pc_id        = pc_id,
+            current_time = current_dt,
+            limit        = 2,
+        )
+        if secret_hints:
+            world_context["secret_hints"] = secret_hints
+    except Exception as e:
+        print(f"[LifeDepth] secret hints failed (ignored): {e}")
 
     if hasattr(world, "get_full_config_async"):
         world_config = await world.get_full_config_async([npc_id, pc_id], async_driver)

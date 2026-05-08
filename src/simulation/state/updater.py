@@ -318,6 +318,48 @@ async def process_actor_response(
         print(f"[Updater] 성격 변화 실패 (무시): {e}")
 
     # ── 임신 체크 ────────────────────────────────────────────
+    # Life-depth postprocessors keep long-running goals, meaningful objects,
+    # and conditional secrets in step with the accepted actor response.
+    _event_id = new_event.get("id") if new_event else None
+    try:
+        from src.simulation.systems.goals import apply_goal_updates
+
+        await apply_goal_updates(
+            actor_response = actor_response,
+            owner_id       = npc_id,
+            pc_id          = pc_id,
+            current_time   = _depth_dt,
+            event_id       = _event_id,
+        )
+    except Exception as e:
+        print(f"[LifeDepth] goal update failed (ignored): {e}")
+
+    try:
+        from src.simulation.systems.items import apply_item_updates
+
+        await apply_item_updates(
+            actor_response = actor_response,
+            owner_id       = npc_id,
+            pc_id          = pc_id,
+            current_time   = _depth_dt,
+            event_id       = _event_id,
+        )
+    except Exception as e:
+        print(f"[LifeDepth] item update failed (ignored): {e}")
+
+    try:
+        from src.simulation.systems.secrets import apply_secret_updates
+
+        await apply_secret_updates(
+            actor_response = actor_response,
+            owner_id       = npc_id,
+            pc_id          = pc_id,
+            current_time   = _depth_dt,
+            event_id       = _event_id,
+        )
+    except Exception as e:
+        print(f"[LifeDepth] secret update failed (ignored): {e}")
+
     try:
         return await process_ejaculation(npc_id, actor_response)
     except Exception as e:
@@ -476,10 +518,18 @@ async def _update_acceptance_scores(npc_id: str, ts_delta: int, na_delta: int) -
             """
             MATCH (c:Character {id: $npc_id})-[:HAS_STATE]->(s:DynamicState)
             WHERE s.ts_acceptance IS NOT NULL
-            SET s.ts_acceptance       = max(0, min(100,
-                    coalesce(s.ts_acceptance, 0) + $ts_delta)),
-                s.northern_attachment = max(0, min(100,
-                    coalesce(s.northern_attachment, 0) + $na_delta))
+            SET s.ts_acceptance =
+                    CASE
+                        WHEN coalesce(s.ts_acceptance, 0) + $ts_delta > 100 THEN 100
+                        WHEN coalesce(s.ts_acceptance, 0) + $ts_delta < 0 THEN 0
+                        ELSE coalesce(s.ts_acceptance, 0) + $ts_delta
+                    END,
+                s.northern_attachment =
+                    CASE
+                        WHEN coalesce(s.northern_attachment, 0) + $na_delta > 100 THEN 100
+                        WHEN coalesce(s.northern_attachment, 0) + $na_delta < 0 THEN 0
+                        ELSE coalesce(s.northern_attachment, 0) + $na_delta
+                    END
             """,
             npc_id=npc_id, ts_delta=ts_delta, na_delta=na_delta,
         )

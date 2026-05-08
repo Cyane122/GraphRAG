@@ -242,7 +242,46 @@ class World:
             "CREATE NODE TABLE IF NOT EXISTS IntimateProfile(id STRING, props STRING, PRIMARY KEY(id))",
             "CREATE NODE TABLE IF NOT EXISTS WorkplaceProfile(id STRING, props STRING, PRIMARY KEY(id))",
             "CREATE NODE TABLE IF NOT EXISTS DialogueExamples(id STRING, props STRING, PRIMARY KEY(id))",
-            "CREATE NODE TABLE IF NOT EXISTS Item(id STRING, name STRING, description STRING, owner_id STRING, PRIMARY KEY(id))",
+            """CREATE NODE TABLE IF NOT EXISTS Item(
+                id STRING,
+                name STRING,
+                description STRING,
+                owner_id STRING,
+                location_id STRING,
+                emotional_weight INT64,
+                visibility STRING,
+                last_seen_at STRING,
+                PRIMARY KEY(id)
+            )""",
+
+            """CREATE NODE TABLE IF NOT EXISTS Goal(
+                id STRING,
+                owner_id STRING,
+                title STRING,
+                description STRING,
+                status STRING,
+                progress INT64,
+                subtlety INT64,
+                next_hint STRING,
+                trigger_conditions STRING,
+                completion_conditions STRING,
+                last_progressed_at STRING,
+                PRIMARY KEY(id)
+            )""",
+
+            """CREATE NODE TABLE IF NOT EXISTS Secret(
+                id STRING,
+                owner_id STRING,
+                title STRING,
+                private_summary STRING,
+                public_hint STRING,
+                status STRING,
+                sensitivity INT64,
+                reveal_conditions STRING,
+                current_reveal_level INT64,
+                last_hinted_at STRING,
+                PRIMARY KEY(id)
+            )""",
 
             # StaticEvent: 조건 기반 이벤트. foreshadow → trigger 두 단계 조건으로 복선과 발화를 분리
             """CREATE NODE TABLE IF NOT EXISTS StaticEvent(
@@ -280,6 +319,13 @@ class World:
             "CREATE REL TABLE IF NOT EXISTS OF_EVENT(FROM Memory TO Event)",
             "CREATE REL TABLE IF NOT EXISTS HAS_NEEDS(FROM Character TO NeedsState)",
             "CREATE REL TABLE IF NOT EXISTS EVENT_INVOLVES(FROM StaticEvent TO Character)",
+            "CREATE REL TABLE IF NOT EXISTS PURSUES(FROM Character TO Goal)",
+            "CREATE REL TABLE IF NOT EXISTS GOAL_RELATED_EVENT(FROM Goal TO Event)",
+            "CREATE REL TABLE IF NOT EXISTS OWNS(FROM Character TO Item)",
+            "CREATE REL TABLE IF NOT EXISTS GAVE(FROM Character TO Item)",
+            "CREATE REL TABLE IF NOT EXISTS ANCHORS_MEMORY(FROM Item TO Memory)",
+            "CREATE REL TABLE IF NOT EXISTS ROOTED_IN(FROM Secret TO Event)",
+            "CREATE REL TABLE IF NOT EXISTS TRIGGERED_BY(FROM Secret TO Item)",
         ]
         for ddl in rel_tables:
             conn.execute(ddl)

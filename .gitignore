@@ -1,4 +1,6 @@
 .env
+AGENTS.md
+CLAUDE.md
 
 src/assets/worlds/*/
 !src/assets/worlds/default/

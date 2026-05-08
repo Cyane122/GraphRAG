@@ -806,8 +806,11 @@ class PromptBuilder:
         static_events = world_context.get("static_events", [])
         nearby        = world_context.get("nearby_activity", [])
         sns           = world_context.get("sns_posts", [])
+        goals         = world_context.get("life_goals", [])
+        item_memories = world_context.get("object_memories", [])
+        secrets       = world_context.get("secret_hints", [])
 
-        if not static_events and not nearby and not sns:
+        if not static_events and not nearby and not sns and not goals and not item_memories and not secrets:
             return ""
 
         parts: list[str] = []
@@ -827,6 +830,50 @@ class PromptBuilder:
         if sns:
             lines = "\n".join(f"- {p}" for p in sns)
             parts.append(f"[SNS Feed]\n{lines}")
+
+        if goals:
+            lines = []
+            for g in goals:
+                title = g.get("title", "?")
+                hint = g.get("hint") or g.get("next_hint") or ""
+                subtlety = g.get("subtlety", "?")
+                lines.append(f"- {title} (subtlety={subtlety}): {hint}")
+            parts.append(
+                "[Life Goals]\n"
+                + "\n".join(lines)
+                + "\nUse these as indirect behavior, schedule pressure, object handling, or hesitation. Do not explain them outright."
+            )
+
+        if item_memories:
+            lines = []
+            for item in item_memories:
+                name = item.get("name") or item.get("item_name") or item.get("item_id") or "?"
+                memory = (
+                    item.get("memory")
+                    or item.get("memory_summary")
+                    or item.get("summary")
+                    or item.get("hint")
+                    or ""
+                )
+                lines.append(f"- {name}: {memory}")
+            parts.append(
+                "[Object Memories]\n"
+                + "\n".join(lines)
+                + "\nLet the object's physical details carry the association before any explicit recollection."
+            )
+
+        if secrets:
+            lines = []
+            for secret in secrets:
+                title = secret.get("title", "?")
+                hint = secret.get("hint") or secret.get("public_hint") or ""
+                level = secret.get("reveal_level", secret.get("current_reveal_level", 0))
+                lines.append(f"- {title} (reveal_level={level}): {hint}")
+            parts.append(
+                "[Subtext]\n"
+                + "\n".join(lines)
+                + "\nReveal only through avoidance, body reaction, omission, or a single partial clue unless the scene forces disclosure."
+            )
 
         return "<world_context>\n" + "\n\n".join(parts) + "\n</world_context>"
 

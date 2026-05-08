@@ -430,7 +430,7 @@ def _calc_multiplier(
     elif need == "safety":
         m = 1.0
         m += t.get("trait_anxiety_prone", 0) * 0.5
-        mental = int(needs.get("mental_condition", "stable"))
+        mental = needs.get("mental_condition", "stable")
         if mental in ("stressed", "anxious"):
             m *= 1.3
         return max(0.5, m)
@@ -586,8 +586,16 @@ async def _fetch_needs(npc_id: str) -> dict:
         defaults["id"] = f"{npc_id}_needs"
         await session.run("""
             MATCH (c:Character {id: $cid})
-            CREATE (c)-[:HAS_NEEDS]->(n:NeedsState $props)
-        """, cid=npc_id, props=defaults)
+            CREATE (c)-[:HAS_NEEDS]->(n:NeedsState {
+                id:     $id,
+                hunger: $hunger,
+                rest:   $rest,
+                social: $social,
+                fun:    $fun,
+                safety: $safety,
+                libido: $libido
+            })
+        """, cid=npc_id, **defaults)
         return defaults
 
 
@@ -596,10 +604,18 @@ async def _fetch_profile_props(npc_id: str) -> dict:
     async with async_driver.session() as session:
         rec = await session.run("""
             MATCH (c:Character {id: $cid})-[:HAS_PROFILE]->(sp:StaticProfile)
-            RETURN sp AS props
+            RETURN sp.props AS props_json
         """, cid=npc_id)
         row = await rec.single()
-        return dict(row["props"]) if row and row["props"] else {}
+        if not row or not row["props_json"]:
+            return {}
+        raw = row["props_json"]
+        if isinstance(raw, str):
+            try:
+                return json.loads(raw)
+            except (ValueError, TypeError):
+                return {}
+        return raw if isinstance(raw, dict) else {}
 
 
 async def _write_needs(npc_id: str, updates: dict) -> None:

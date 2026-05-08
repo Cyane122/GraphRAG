@@ -212,3 +212,40 @@
   - `src/simulation/systems/memory.py`: `RETURN properties(n) AS props` → `RETURN n AS props` 로 교체 (1개소)
   - `src/simulation/systems/social.py`: `RETURN properties(sp) AS props` → `RETURN sp AS props` 로 교체 (1개소)
   - **근본 원인**: Kuzu의 `properties()` 함수는 Neo4j와 달리 `(LIST, STRING) -> ANY` 시그니처를 가지며 노드 전체 속성 맵을 반환하지 않음. 노드를 직접 `RETURN`하면 모든 프로퍼티가 dict로 반환됨.
+
+## 2026-05-08
+- [버그픽스] 2026-05-07 Kuzu 호환성 수정 후 남아 있던 동일 계열 오류 정리
+  - `src/simulation/systems/needs.py`
+    - `_fetch_profile_props()`: `StaticProfile` 노드 전체가 아니라 `sp.props` JSON blob을 직접 조회하고 파싱하도록 변경
+    - `_fetch_needs()`: Kuzu에서 파싱되지 않는 `CREATE (n:NeedsState $props)` 문법을 명시적 필드 생성 쿼리로 교체
+    - `_calc_multiplier()`: `mental_condition` 문자열을 `int()`로 변환하던 오류 제거
+  - `src/simulation/state/updater.py`
+    - `_update_acceptance_scores()`: Kuzu에서 실패하던 `max()/min()` 중첩 클램프를 `CASE WHEN` 기반 클램프로 교체
+  - `src/agents/manager.py`
+    - Memory recall 벡터 검색을 Neo4j 문법 `db.index.vector.queryNodes()`에서 Kuzu 문법 `QUERY_VECTOR_INDEX()`로 교체
+    - Kuzu의 `distance` 값을 기존 prompt score 의미에 맞게 `1 - distance` 형태로 변환
+- [검증] `.venv` Python 기준 `compileall` 통과
+- [검증] 임시 Kuzu DB에서 `NeedsState` 생성, `StaticProfile.props` 조회, acceptance score 갱신, vector recall 쿼리 실행 확인
+- [신규] TODO-4 **삶은 넓어지며 또한 깊어진다** 2차 구현
+  - `src/simulation/systems/goals.py` 신규: NPC 장기 목표 시스템
+    - `fetch_goal_hints()`: active `Goal`을 Dynamic prompt용 은근한 행동/일정 압박 힌트로 반환
+    - `apply_goal_updates()`: Actor 응답 확정 후 목표 진행도, 상태, 다음 힌트 갱신
+    - `PURSUES`, `GOAL_RELATED_EVENT` 관계로 캐릭터·이벤트와 연결
+  - `src/simulation/systems/items.py` 신규: 물건에 담긴 추억 시스템
+    - `fetch_object_memory_hints()`: 현재 위치/소유자/유저 입력/벡터 recall 기반으로 Item-anchored Memory 힌트 조회
+    - `apply_item_updates()`: 기존 Item의 위치·소유자·분실 상태·설명·앵커 기억을 보수적으로 갱신
+    - `ensure_item_memory()`: `Item` → `ANCHORS_MEMORY` → `Memory`, `Character` → `REMEMBERS` 연결 생성
+  - `src/simulation/systems/secrets.py` 신규: 조건부 비밀/서브텍스트 시스템
+    - `fetch_secret_hints()`: 조건을 만족한 `Secret`의 `public_hint`만 prompt에 제공하고 `private_summary`는 노출하지 않음
+    - `apply_secret_updates()`: reveal 조건 충족 시 reveal level/status 갱신 및 이벤트 연결
+  - `src/assets/worlds/base.py`
+    - `Goal`, `Secret`, 확장 `Item` 노드 테이블 추가
+    - `PURSUES`, `GOAL_RELATED_EVENT`, `OWNS`, `GAVE`, `ANCHORS_MEMORY`, `ROOTED_IN`, `TRIGGERED_BY` 관계 테이블 추가
+  - `src/agents/manager.py`
+    - step 7.7 추가: goal / object memory / secret hint를 `world_context`에 동적 주입
+  - `src/agents/prompt_factory/builder.py`
+    - `<world_context>`에 `[Life Goals]`, `[Object Memories]`, `[Subtext]` 블록 렌더링
+    - Fixed prompt가 아니라 Dynamic prompt에만 넣어 Gemini implicit cache 안정성 유지
+  - `src/simulation/state/updater.py`
+    - Actor 응답 확정 후 `apply_goal_updates()`, `apply_item_updates()`, `apply_secret_updates()` 후처리 호출
+  - [검증] `py_compile` 및 life-depth public import 확인 통과
