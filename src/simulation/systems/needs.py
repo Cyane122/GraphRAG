@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from src.config import MODEL_STATE_UPDATER as TRAITS_MODEL
-from src.core.database import async_driver, update_dynamic_state
+from src.core.database import async_driver
 from src.core.llm.client import get_model, extract_json_from_llm
 from src.simulation.state.classifier import _sanitize_stress_level
 from src.agents.resolver import resolve_action, SETTLE_LEVELS
@@ -53,6 +53,11 @@ def _is_traits_complete(props: dict) -> bool:
     return all(k in props for k in REQUIRED_KEYS)
 
 
+def _has_nonzero_traits(props: dict) -> bool:
+    """저장된 trait 값 중 하나라도 실제 편향값이 있는지 확인한다."""
+    return any(abs(_as_float(props.get(k), 0.0)) > 0.0001 for k in ALL_TRAIT_KEYS if k in props)
+
+
 async def ensure_traits(char_id: str) -> dict:
     """
     StaticProfile (또는 DynamicState) 에 trait_* 필드가 없으면
@@ -64,7 +69,7 @@ async def ensure_traits(char_id: str) -> dict:
         print(f"[TraitsInit] {char_id}: 프로필 없음 → 기본값 반환")
         return _default_traits()
 
-    if _is_traits_complete(profile):
+    if _is_traits_complete(profile) and _has_nonzero_traits(profile):
         return {k: profile[k] for k in ALL_TRAIT_KEYS if k in profile}
 
     personality = profile.get("personality", "")
@@ -88,6 +93,10 @@ async def ensure_traits(char_id: str) -> dict:
     print(f"[TraitsInit] {char_id}: trait_* 없음 → Haiku 생성 중...")
 
     generated = await _generate_traits_from_personality(char_id, personality, role, str(age))
+    if not generated:
+        print(f"[TraitsInit] {char_id}: 트레이트 생성 실패 → DB 저장 생략")
+        return _default_traits()
+
     await _write_traits_to_db(char_id, source_label, generated)
     print(f"[TraitsInit] {char_id}: 트레이트 생성 완료 → DB 저장")
 
@@ -145,7 +154,7 @@ Character Profile:
 
 Instructions for JSON output:
 1. The output must be a single JSON object.
-2. Include ALL of the following 35 keys. Do not omit any.
+2. Include ALL of the following {len(ALL_TRAIT_KEYS)} keys. Do not omit any.
   - Keys: {keys_inline}
 3. Every key's value must be a float between -1.0 and 1.0.
   - A positive value indicates a strong presence of the trait.
@@ -164,17 +173,20 @@ Return only the raw JSON object."""
         resp = await model.generate_content_async(
             prompt,
             generation_config={
-                "max_output_tokens": 2048,
-                "temperature":       0.2,
+                "max_output_tokens": 4096,
+                "temperature":       0.0,
                 "response_mime_type": "application/json",
             }
         )
         parsed = extract_json_from_llm(resp.text, source=f"TraitsInit:{char_id}")
         if not isinstance(parsed, dict):
-            print(f"[TraitsInit] {char_id}: 파싱 결과가 dict가 아님 ({type(parsed)}) → 기본값")
-            return _default_traits()
+            print(f"[TraitsInit] {char_id}: 파싱 결과가 dict가 아님 ({type(parsed)}) → 저장 생략")
+            return {}
 
         result = {k: max(-1.0, min(1.0, float(v))) for k, v in parsed.items() if k in ALL_TRAIT_KEYS}
+        if not result:
+            print(f"[TraitsInit] {char_id}: 유효 trait 키 없음 → 저장 생략")
+            return {}
 
         missing = [k for k in ALL_TRAIT_KEYS if k not in result]
         if missing:
@@ -183,14 +195,14 @@ Return only the raw JSON object."""
                 result[k] = 0.0
 
         if not all(k in result for k in REQUIRED_KEYS):
-            print(f"[TraitsInit] {char_id}: 필수 키 누락, 생성 실패로 간주 → 기본값")
-            return _default_traits()
+            print(f"[TraitsInit] {char_id}: 필수 키 누락, 생성 실패로 간주 → 저장 생략")
+            return {}
 
         return result
 
     except Exception as e:
-        print(f"[TraitsInit] Flash 생성 실패 ({char_id}): {e} → 기본값")
-        return _default_traits()
+        print(f"[TraitsInit] Flash 생성 실패 ({char_id}): {e} → 저장 생략")
+        return {}
 
 
 async def _write_traits_to_db(char_id: str, source_label: str, traits: dict) -> None:
@@ -298,7 +310,7 @@ async def run_needs_update(
         updates: dict[str, float] = {}
 
         for need_name, base_rate in NEED_BASE_RATES.items():
-            old_val = needs.get(need_name, NEED_DEFAULTS[need_name])
+            old_val = _as_float(needs.get(need_name), NEED_DEFAULTS[need_name])
 
             if need_name == "safety":
                 new_val = await _apply_safety_decay(npc_id, old_val, elapsed_minutes)
@@ -340,7 +352,7 @@ async def run_needs_update(
                 time_after_resolve = (
                     elapsed_minutes
                     - (THRESHOLD - old_val) / eff_rate
-                    - (result.get("duration_minutes", 0) if result else 0)
+                    - _as_float(result.get("duration_minutes") if result else None, 0.0)
                 )
                 settle  = SETTLE_LEVELS.get(need_name, 0.2)
                 new_val = min(1.0, settle + eff_rate * max(0, time_after_resolve))
@@ -387,6 +399,26 @@ def _count_overflows(
     return overflows, settled_val
 
 
+def _as_float(value, default: float = 0.0) -> float:
+    """Nullable DB values and malformed LLM values fall back to a numeric default."""
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_int(value, default: int = 0) -> int:
+    """Nullable DB values and malformed LLM values fall back to an integer default."""
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _calc_multiplier(
     need:    str,
     traits:  dict,
@@ -398,14 +430,14 @@ def _calc_multiplier(
 
     if need == "hunger":
         m = 1.0
-        m += t.get("trait_gluttony", 0) * 0.4
+        m += _as_float(t.get("trait_gluttony"), 0.0) * 0.4
         return max(0.3, m)
 
     elif need == "rest":
         m = 1.0
-        m += t.get("trait_laziness", 0) * 0.5
-        m += t.get("trait_vitality", 0) * -0.35
-        m += t.get("trait_light_sleeper", 0) * 0.3
+        m += _as_float(t.get("trait_laziness"), 0.0) * 0.5
+        m += _as_float(t.get("trait_vitality"), 0.0) * -0.35
+        m += _as_float(t.get("trait_light_sleeper"), 0.0) * 0.3
         physical = needs.get("physical_condition", "healthy")
         if physical in ("injured", "ill", "hospitalized"):
             m *= 1.4
@@ -413,23 +445,23 @@ def _calc_multiplier(
 
     elif need == "social":
         m = 1.0
-        m += t.get("trait_extroversion", 0) * 1.0
-        m += t.get("trait_attention_seeking", 0) * 0.6
-        m += t.get("trait_independence", 0) * -0.4
+        m += _as_float(t.get("trait_extroversion"), 0.0) * 1.0
+        m += _as_float(t.get("trait_attention_seeking"), 0.0) * 0.6
+        m += _as_float(t.get("trait_independence"), 0.0) * -0.4
         return max(0.2, m)
 
     elif need == "fun":
         m = 1.0
-        m += t.get("trait_hedonism", 0) * 0.7
-        m += t.get("trait_curiosity", 0) * 0.4
-        stress = _sanitize_stress_level(needs.get("stress_level", 0))
+        m += _as_float(t.get("trait_hedonism"), 0.0) * 0.7
+        m += _as_float(t.get("trait_curiosity"), 0.0) * 0.4
+        stress = _sanitize_stress_level(_as_int(needs.get("stress_level"), 0))
         if stress and stress >= 7:
             m *= 0.5
         return max(0.2, m)
 
     elif need == "safety":
         m = 1.0
-        m += t.get("trait_anxiety_prone", 0) * 0.5
+        m += _as_float(t.get("trait_anxiety_prone"), 0.0) * 0.5
         mental = needs.get("mental_condition", "stable")
         if mental in ("stressed", "anxious"):
             m *= 1.3
@@ -437,10 +469,10 @@ def _calc_multiplier(
 
     elif need == "libido":
         m = 1.0
-        m += t.get("trait_libido_drive", 0) * 1.0
-        m += t.get("trait_hedonism", 0) * 0.4
-        m += t.get("trait_intimacy_drive", 0) * 0.3
-        cycle_day = int(needs.get("cycle_day", 0))
+        m += _as_float(t.get("trait_libido_drive"), 0.0) * 1.0
+        m += _as_float(t.get("trait_hedonism"), 0.0) * 0.4
+        m += _as_float(t.get("trait_intimacy_drive"), 0.0) * 0.3
+        cycle_day = _as_int(needs.get("cycle_day"), 0)
         if 12 <= cycle_day <= 16:
             m *= 1.8
         physical = needs.get("physical_condition", "healthy")
@@ -571,18 +603,20 @@ async def _fetch_needs(npc_id: str) -> dict:
             RETURN d AS props
         """, cid=npc_id)
         row = await rec.single()
-        if row and row["props"]:
-            return dict(row["props"])
+        dynamic_props = dict(row["props"]) if row and row["props"] else {}
 
         rec2 = await session.run("""
             MATCH (c:Character {id: $cid})-[:HAS_NEEDS]->(n:NeedsState)
             RETURN n AS props
         """, cid=npc_id)
         row2 = await rec2.single()
+        needs_props = {f: v for f, v in NEED_DEFAULTS.items()}
         if row2 and row2["props"]:
-            return dict(row2["props"])
+            needs_props.update(dict(row2["props"]))
+            needs_props.update(dynamic_props)
+            return needs_props
 
-        defaults       = {f: v for f, v in NEED_DEFAULTS.items()}
+        defaults       = dict(needs_props)
         defaults["id"] = f"{npc_id}_needs"
         await session.run("""
             MATCH (c:Character {id: $cid})
@@ -596,6 +630,7 @@ async def _fetch_needs(npc_id: str) -> dict:
                 libido: $libido
             })
         """, cid=npc_id, **defaults)
+        defaults.update(dynamic_props)
         return defaults
 
 
@@ -619,7 +654,7 @@ async def _fetch_profile_props(npc_id: str) -> dict:
 
 
 async def _write_needs(npc_id: str, updates: dict) -> None:
-    """욕구 수치를 DynamicState 또는 NeedsState에 저장."""
+    """욕구 수치를 NeedsState에 저장."""
     if not updates:
         return
 
@@ -628,19 +663,30 @@ async def _write_needs(npc_id: str, updates: dict) -> None:
     if not need_updates:
         return
 
-    async with async_driver.session() as session:
-        rec = await session.run("""
-            MATCH (c:Character {id: $cid})-[:HAS_STATE]->(d:DynamicState)
-            RETURN d.id AS did
-        """, cid=npc_id)
-        row = await rec.single()
-
-    if row:
-        await update_dynamic_state(npc_id, need_updates)
-        return
-
     set_clause = ", ".join(f"n.{k} = ${k}" for k in need_updates)
     async with async_driver.session() as session:
+        rec = await session.run("""
+            MATCH (c:Character {id: $cid})-[:HAS_NEEDS]->(n:NeedsState)
+            RETURN n.id AS nid
+        """, cid=npc_id)
+        row = await rec.single()
+        if not row:
+            defaults = {f: need_updates.get(f, v) for f, v in NEED_DEFAULTS.items()}
+            defaults["id"] = f"{npc_id}_needs"
+            await session.run("""
+                MATCH (c:Character {id: $cid})
+                CREATE (c)-[:HAS_NEEDS]->(n:NeedsState {
+                    id:     $id,
+                    hunger: $hunger,
+                    rest:   $rest,
+                    social: $social,
+                    fun:    $fun,
+                    safety: $safety,
+                    libido: $libido
+                })
+            """, cid=npc_id, **defaults)
+            return
+
         await session.run(
             f"MATCH (c:Character {{id: $cid}})-[:HAS_NEEDS]->(n:NeedsState) SET {set_clause}",
             cid=npc_id, **need_updates,

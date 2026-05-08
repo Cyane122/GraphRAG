@@ -591,6 +591,30 @@ def _render_state_line(
     return " | ".join(parts) if parts else "—"
 
 
+def _clean_prompt_dict(data: dict) -> dict:
+    """프롬프트에 넣기 전 Kuzu 내부 필드와 null 값을 제거합니다."""
+    cleaned: dict = {}
+    for key, value in data.items():
+        if key.startswith("_") or value is None:
+            continue
+        if isinstance(value, dict):
+            nested = _clean_prompt_dict(value)
+            if nested:
+                cleaned[key] = nested
+            continue
+        if isinstance(value, list):
+            nested_list = [
+                _clean_prompt_dict(item) if isinstance(item, dict) else item
+                for item in value
+                if item is not None
+            ]
+            if nested_list:
+                cleaned[key] = nested_list
+            continue
+        cleaned[key] = value
+    return cleaned
+
+
 class PromptBuilder:
 
     def __init__(
@@ -699,31 +723,31 @@ class PromptBuilder:
         if "static_profile" in char_data:
             sections.append(
                 "<static>\n"
-                + json.dumps(char_data["static_profile"], ensure_ascii=False, indent=2)
+                + json.dumps(_clean_prompt_dict(char_data["static_profile"]), ensure_ascii=False, indent=2)
                 + "\n</static>"
             )
         if "personality" in char_data:
             sections.append(
                 "<personality>\n"
-                + json.dumps(char_data["personality"], ensure_ascii=False, indent=2)
+                + json.dumps(_clean_prompt_dict(char_data["personality"]), ensure_ascii=False, indent=2)
                 + "\n</personality>"
             )
         if "dynamic_state" in char_data:
             sections.append(
                 "<state>\n"
-                + json.dumps(char_data["dynamic_state"], ensure_ascii=False, indent=2)
+                + json.dumps(_clean_prompt_dict(char_data["dynamic_state"]), ensure_ascii=False, indent=2)
                 + "\n</state>"
             )
         if "intimate" in scene_types and "intimate_profile" in char_data:
             sections.append(
                 "<intimate>\n"
-                + json.dumps(char_data["intimate_profile"], ensure_ascii=False, indent=2)
+                + json.dumps(_clean_prompt_dict(char_data["intimate_profile"]), ensure_ascii=False, indent=2)
                 + "\n</intimate>"
             )
         if "workplace" in scene_types and "workplace_profile" in char_data:
             sections.append(
                 "<workplace>\n"
-                + json.dumps(char_data["workplace_profile"], ensure_ascii=False, indent=2)
+                + json.dumps(_clean_prompt_dict(char_data["workplace_profile"]), ensure_ascii=False, indent=2)
                 + "\n</workplace>"
             )
         return "<character>\n" + "\n".join(sections) + "\n</character>"

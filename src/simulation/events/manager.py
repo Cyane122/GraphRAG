@@ -6,7 +6,7 @@
 # 활성 이벤트의 hint 목록을 반환합니다.
 #
 # Functions
-#   - evaluate_all(current_dt: datetime) -> list[dict] : 모든 이벤트를 평가하고 활성 hint 목록을 반환합니다.
+#   - evaluate_all(current_dt: datetime, commit: bool = True) -> list[dict] : 모든 이벤트를 평가하고 활성 hint 목록을 반환합니다.
 #   - set_flag(key: str, value: bool) -> None : GlobalState.flags에 플래그를 세팅합니다.
 # ================================
 
@@ -17,7 +17,7 @@ from src.core.database.driver import async_driver
 from src.simulation.events.evaluator import evaluate_conditions
 
 
-async def evaluate_all(current_dt: datetime) -> list[dict]:
+async def evaluate_all(current_dt: datetime, commit: bool = True) -> list[dict]:
     """
     dormant/foreshadowing 상태인 모든 StaticEvent를 평가해 상태를 갱신합니다.
     foreshadowing 또는 active 상태이고 hint가 있는 이벤트 목록을 반환합니다.
@@ -31,7 +31,7 @@ async def evaluate_all(current_dt: datetime) -> list[dict]:
             RETURN e.id                    AS id,
                    e.name                  AS name,
                    e.foreshadow_conditions AS fc,
-                   e.foreshadow_hint       AS hint,
+                   e.foreshadow_hint       AS foreshadow_hint,
                    e.trigger_conditions    AS tc,
                    e.status               AS status
         """)
@@ -42,7 +42,7 @@ async def evaluate_all(current_dt: datetime) -> list[dict]:
     for row in rows:
         event_id = row["id"]
         name     = row["name"]
-        hint     = row.get("hint") or ""
+        hint     = row.get("foreshadow_hint") or ""
         status   = row["status"]
 
         try:
@@ -61,8 +61,8 @@ async def evaluate_all(current_dt: datetime) -> list[dict]:
         else:
             new_status = status
 
-        # 상태가 변경된 경우에만 DB 갱신
-        if new_status != status:
+        # Actor 응답 확정 전에는 prompt hint만 계산하고 상태 변경은 commit 단계로 미룬다.
+        if commit and new_status != status:
             async with async_driver.session() as session:
                 await session.run(
                     "MATCH (e:StaticEvent {id: $id}) SET e.status = $status",

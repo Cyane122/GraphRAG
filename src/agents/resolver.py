@@ -10,7 +10,7 @@
 from datetime import datetime
 
 from src.config import MODEL_STATE_UPDATER as ACTION_MODEL
-from src.core.database import async_driver, update_dynamic_state
+from src.core.database import async_driver
 from src.core.llm.client import get_model, extract_json_from_llm
 
 # 해소 후 안착 수치
@@ -19,6 +19,15 @@ SETTLE_LEVELS = {
     "rest":   0.10,
     "social": 0.20,
     "fun":    0.20,
+}
+
+NEED_DEFAULTS = {
+    "hunger": 0.3,
+    "rest":   0.2,
+    "social": 0.1,
+    "fun":    0.4,
+    "safety": 0.05,
+    "libido": 0.2,
 }
 
 # 해소 가능한 욕구 → 행동 힌트
@@ -156,7 +165,7 @@ async def _create_event(
     target_loc = action.get("target_location_id", "") or origin_loc_id
     if valid_loc_ids and target_loc not in valid_loc_ids:
         target_loc = origin_loc_id
-    importance = int(action.get("importance", 1))
+    importance = int(action.get("importance") or 1)
 
     async with async_driver.session() as session:
         await session.run("""
@@ -190,7 +199,7 @@ async def _create_event(
     return event_id
 
 
-async def _settle_need(npc_id: str, need_name: str) -> None:
+async def _settle_need_legacy(npc_id: str, need_name: str) -> None:
     """욕구 수치를 해소 후 안착값으로 내림."""
     settle_val = SETTLE_LEVELS.get(need_name, 0.2)
 
@@ -203,11 +212,45 @@ async def _settle_need(npc_id: str, need_name: str) -> None:
         row = await rec.single()
 
     if row:
-        await update_dynamic_state(npc_id, {need_name: settle_val})
         return
 
     # NeedsState가 있는 경우 (secondary NPC)
     async with async_driver.session() as session:
+        await session.run(f"""
+            MATCH (c:Character {{id: $cid}})-[:HAS_NEEDS]->(n:NeedsState)
+            SET n.{need_name} = $val
+        """, cid=npc_id, val=settle_val)
+
+
+async def _settle_need(npc_id: str, need_name: str) -> None:
+    """Settle a need value on the character's NeedsState node."""
+    settle_val = SETTLE_LEVELS.get(need_name, 0.2)
+
+    async with async_driver.session() as session:
+        rec = await session.run("""
+            MATCH (c:Character {id: $cid})-[:HAS_NEEDS]->(n:NeedsState)
+            RETURN n.id AS nid
+        """, cid=npc_id)
+        row = await rec.single()
+
+        if not row:
+            defaults = dict(NEED_DEFAULTS)
+            defaults[need_name] = settle_val
+            defaults["id"] = f"{npc_id}_needs"
+            await session.run("""
+                MATCH (c:Character {id: $cid})
+                CREATE (c)-[:HAS_NEEDS]->(n:NeedsState {
+                    id:     $id,
+                    hunger: $hunger,
+                    rest:   $rest,
+                    social: $social,
+                    fun:    $fun,
+                    safety: $safety,
+                    libido: $libido
+                })
+            """, cid=npc_id, **defaults)
+            return
+
         await session.run(f"""
             MATCH (c:Character {{id: $cid}})-[:HAS_NEEDS]->(n:NeedsState)
             SET n.{need_name} = $val

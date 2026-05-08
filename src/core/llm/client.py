@@ -223,8 +223,14 @@ def extract_json_from_llm(raw_text, source: str = "unknown") -> dict | list:
         return parsed if isinstance(parsed, (dict, list)) else {}
 
     except Exception as e:
-        preview = raw_text[:1000] if raw_text else "(empty)"
-        print(f"[LLM Parser Error:{source}] 파싱 실패: {e}\nRaw Text: {preview}...")
+        preview_limit = 1000
+        if raw_text:
+            preview = raw_text[:preview_limit]
+            suffix = "... [log truncated]" if len(raw_text) > preview_limit else ""
+        else:
+            preview = "(empty)"
+            suffix = ""
+        print(f"[LLM Parser Error:{source}] 파싱 실패: {e}\nRaw Text: {preview}{suffix}")
         return {}
 
 

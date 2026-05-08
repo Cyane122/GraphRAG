@@ -198,12 +198,21 @@ class World:
                 knee_condition STRING, injury_detail STRING,
                 condition STRING, energy DOUBLE, stress DOUBLE, current_task STRING,
                 current_location STRING,
+                outfit STRING, injury_marks STRING,
+                pregnant BOOLEAN, pregnancy_day INT64, cum_shots_this_cycle INT64,
+                ts_acceptance INT64, northern_attachment INT64,
+                body_perception STRING, behavioral_facade STRING,
+                hygiene DOUBLE, appearance DOUBLE, physique STRING,
+                age_presentation STRING, nervousness DOUBLE, attitude STRING,
+                social_skill DOUBLE, consideration DOUBLE, stamina DOUBLE,
+                odor STRING, emotional_state STRING, attachment_risk DOUBLE,
+                expectation_gap DOUBLE, penis_size STRING,
                 PRIMARY KEY(id)
             )""",
 
-            "CREATE NODE TABLE IF NOT EXISTS Location(id STRING, name STRING, description STRING, atmosphere STRING, current_chars STRING[], PRIMARY KEY(id))",
+            "CREATE NODE TABLE IF NOT EXISTS Location(id STRING, name STRING, description STRING, atmosphere STRING, current_chars STRING[], district STRING, PRIMARY KEY(id))",
 
-            "CREATE NODE TABLE IF NOT EXISTS GlobalState(id STRING, currentLocationId STRING, currentTime STRING, weather STRING, schedule_slot STRING, clients_done INT64, clients_total INT64, flags STRING, PRIMARY KEY(id))",
+            "CREATE NODE TABLE IF NOT EXISTS GlobalState(id STRING, currentLocationId STRING, currentTime STRING, weather STRING, schedule_slot STRING, clients_done INT64, clients_total INT64, flags STRING, today_schedule STRING, schedule_date STRING, PRIMARY KEY(id))",
 
             f"""CREATE NODE TABLE IF NOT EXISTS Event(
                 id STRING, summary STRING, timestamp STRING,
@@ -237,7 +246,7 @@ class World:
             )""",
 
             # 정적 프로파일 노드: 세계별로 속성 구조가 달라 JSON blob으로 저장
-            "CREATE NODE TABLE IF NOT EXISTS StaticProfile(id STRING, props STRING, PRIMARY KEY(id))",
+            "CREATE NODE TABLE IF NOT EXISTS StaticProfile(id STRING, props STRING, age INT64, gender STRING, role STRING, PRIMARY KEY(id))",
             "CREATE NODE TABLE IF NOT EXISTS Personality(id STRING, props STRING, PRIMARY KEY(id))",
             "CREATE NODE TABLE IF NOT EXISTS IntimateProfile(id STRING, props STRING, PRIMARY KEY(id))",
             "CREATE NODE TABLE IF NOT EXISTS WorkplaceProfile(id STRING, props STRING, PRIMARY KEY(id))",

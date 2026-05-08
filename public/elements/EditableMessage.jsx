@@ -1,13 +1,18 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 export default function EditableMessage(allProps) {
   // Chainlit 버전마다 props 전달 구조가 다름
   const raw = allProps.content
     ?? allProps.props?.content
     ?? allProps.element?.props?.content
+    ?? allProps.element?.props?.props?.content
     ?? "";
 
   const [text, setText] = useState(raw);
+
+  useEffect(() => {
+    setText(raw);
+  }, [raw]);
 
   const handleConfirm = () => {
     window.sendPrompt(`__EDIT__:${text}`);

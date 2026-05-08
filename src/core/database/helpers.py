@@ -17,8 +17,26 @@ from datetime import datetime
 from src.core.database.driver import async_driver
 
 
+DYNAMIC_STATE_FIELDS = {
+    "id",
+    "physical_condition", "mental_condition", "stress_level", "mood",
+    "cycle_day", "location_id", "workplace_stress_level",
+    "knee_condition", "injury_detail", "condition", "energy", "stress",
+    "current_task", "current_location",
+    "outfit", "injury_marks",
+    "pregnant", "pregnancy_day", "cum_shots_this_cycle",
+    "ts_acceptance", "northern_attachment", "body_perception", "behavioral_facade",
+    "hygiene", "appearance", "physique", "age_presentation", "nervousness",
+    "attitude", "social_skill", "consideration", "stamina", "odor",
+    "emotional_state", "attachment_risk", "expectation_gap", "penis_size",
+}
+
+
 async def update_dynamic_state(char_id: str, updates: dict) -> None:
     """DynamicState 노드 속성 공통 업데이트."""
+    if not updates:
+        return
+    updates = {k: v for k, v in updates.items() if k in DYNAMIC_STATE_FIELDS and k != "id"}
     if not updates:
         return
     set_clause = ", ".join(f"d.{k} = ${k}" for k in updates)
@@ -35,9 +53,9 @@ async def update_relationship_affinity(char_a: str, char_b: str, delta: int) -> 
         await session.run("""
             MATCH (a:Character {id: $a})-[r:RELATIONSHIP]->(b:Character {id: $b})
             SET r.affinity = CASE
-                WHEN r.affinity + $delta > 100  THEN 100
-                WHEN r.affinity + $delta < -100 THEN -100
-                ELSE r.affinity + $delta
+                WHEN coalesce(r.affinity, 0) + $delta > 100  THEN 100
+                WHEN coalesce(r.affinity, 0) + $delta < -100 THEN -100
+                ELSE coalesce(r.affinity, 0) + $delta
             END
         """, a=char_a, b=char_b, delta=delta)
 

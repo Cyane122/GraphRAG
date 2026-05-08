@@ -10,6 +10,8 @@
 #   - on_message(message: cl.Message) -> None : 메시지 루프 메인 핸들러
 #   - on_reroll(action: cl.Action) -> None : 리롤 버튼 콜백
 #   - on_edit_response(action: cl.Action) -> None : 수정 버튼 콜백
+#   - route_user_input(user_input: str, message: cl.Message) -> TurnInputType : 입력 처리 경로 판별
+#   - _send_status_toast(content: str) -> cl.CustomElement : 중앙 상태 토스트 출력
 # ================================
 
 import asyncio
@@ -18,6 +20,7 @@ import logging
 import re
 import random
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
 
 from google.genai import types
@@ -29,7 +32,7 @@ logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
 import chainlit as cl
 
 from src.config import PERSPECTIVE, WORLD_ID, MODEL_ACTOR, MAX_TOKEN
-from src.agents.manager import run_manager, load_world_instance
+from src.agents.manager import run_manager, load_world_instance, commit_manager_effects
 from src.agents.prompt_factory.ooc_handler import is_ooc, parse_ooc
 from src.simulation.state.updater import process_actor_response, delegate_complex_update
 from src.core.logging.conversation_logger import append_turn, parse_log_file
@@ -58,6 +61,7 @@ GENERATING_MSGS = [
 MAX_HISTORY_TURNS  = 10
 RECENT_STORY_TURNS = 3
 _LOGS_DIR          = Path("logs")
+_TURN_DEBUG_DIR    = _LOGS_DIR / "turn_debug"
 
 # 응답 헤더에서 시각을 추출 (**YYYY년 MM월 DD일 X요일 HH시 MM분 형식)
 _HEADER_HOUR_RE  = re.compile(
@@ -65,6 +69,23 @@ _HEADER_HOUR_RE  = re.compile(
 )
 # </analyze> 없이 종료된 경우 산문 시작점을 날짜 헤더로 탐지
 _HEADER_SPLIT_RE = re.compile(r"(?=\*\*\d{4}년)")
+_OOC_SPAN_RE     = re.compile(r"(?<!\*)\*(?!\*)(.*?)(?<!\*)\*(?!\*)", re.DOTALL)
+_LORE_QA_RE      = re.compile(
+    r"(설정|세계관|관계|호감도|상태|기억|현재\s*시간|현재\s*장소|캐릭터|프로필|누구|어디|언제|왜|뭐|무엇|알려줘|요약)",
+)
+_SYSTEM_COMMAND_PREFIXES = ("/", "!")
+
+
+class TurnInputType(str, Enum):
+    """사용자 입력이 통과할 처리 경로를 나타냅니다."""
+
+    ROLEPLAY = "roleplay"
+    OOC_PATCH = "ooc_patch"
+    LORE_QA = "lore_qa"
+    REROLL = "reroll"
+    EDIT = "edit"
+    SYSTEM_COMMAND = "system_command"
+    EMPTY = "empty"
 
 # ── 모듈 레벨 초기화 ──────────────────────────────────────────
 _genai_client = get_client()
@@ -94,10 +115,119 @@ def _make_actions() -> list[cl.Action]:
     ]
 
 
+def _strip_ooc_spans(text: str) -> str:
+    """별표 OOC 구간을 제거한 뒤 남은 RP 입력을 반환합니다."""
+    without_bold = re.sub(r"\*\*.*?\*\*", "", text, flags=re.DOTALL)
+    return _OOC_SPAN_RE.sub("", without_bold).strip()
+
+
+def _looks_like_lore_qa(text: str) -> bool:
+    """설정 확인성 질문인지 보수적으로 판별합니다."""
+    if not _LORE_QA_RE.search(text):
+        return False
+    return (
+        text.endswith("?")
+        or "알려줘" in text
+        or "요약" in text
+        or text.startswith(("설정", "세계관", "상태", "관계"))
+    )
+
+
+def route_user_input(user_input: str, message: cl.Message) -> TurnInputType:
+    """
+    사용자 입력의 처리 경로만 판단합니다.
+
+    라우터는 DB write나 LLM 호출을 하지 않습니다. 실제 처리는 on_message의 early return
+    분기에서 수행해 메시지 루프를 읽으면 각 입력이 어디로 가는지 바로 보이게 합니다.
+    """
+    text = user_input.strip()
+    if not text and not message.elements:
+        return TurnInputType.EMPTY
+    if text.startswith("__EDIT__:") or text == "__EDIT_CANCEL__":
+        return TurnInputType.EDIT
+    if text in {"/reroll", "!reroll", "/retry", "!retry"}:
+        return TurnInputType.REROLL
+    if text.startswith(_SYSTEM_COMMAND_PREFIXES):
+        return TurnInputType.SYSTEM_COMMAND
+    if is_ooc(text):
+        return TurnInputType.OOC_PATCH if not _strip_ooc_spans(text) else TurnInputType.ROLEPLAY
+    if _looks_like_lore_qa(text):
+        return TurnInputType.LORE_QA
+    return TurnInputType.ROLEPLAY
+
+
+async def _handle_system_command(user_input: str) -> None:
+    """Actor 파이프라인을 거치지 않는 앱 레벨 명령을 처리합니다."""
+    command = user_input.strip().lower()
+    if command in {"/help", "!help"}:
+        await cl.Message(
+            content=(
+                "- 일반 입력: RP 진행\n"
+                "- `*...*`: OOC 상태 패치\n"
+                "- `/help`: 명령 도움말\n"
+                "- `.md` 파일 드랍: 이전 대화 불러오기"
+            ),
+            author="시스템",
+        ).send()
+        return
+    if command in {"/status", "!status"}:
+        await _send_lore_qa_response(user_input)
+        return
+    await cl.Message(content=f"알 수 없는 시스템 명령입니다: `{user_input}`", author="시스템").send()
+
+
+async def _send_lore_qa_response(user_input: str) -> None:
+    """설정 확인성 질문에 Actor RP 대신 짧은 시스템 응답을 보냅니다."""
+    current_time = await _snapshot_game_time()
+    npc_location = await _fetch_character_location_name(NPC_ID)
+    pc_location  = await _fetch_character_location_name(PC_ID)
+    await cl.Message(
+        content=(
+            f"**현재 설정 요약**\n"
+            f"- 월드: `{WORLD_ID}`\n"
+            f"- PC: `{PC_ID}`\n"
+            f"- NPC: `{NPC_NAME_KOR}` (`{NPC_ID}`)\n"
+            f"- 현재 시간: `{current_time or '알 수 없음'}`\n"
+            f"- NPC 위치: `{npc_location or '알 수 없음'}`\n"
+            f"- PC 위치: `{pc_location or '알 수 없음'}`\n\n"
+            f"질문: {user_input}"
+        ),
+        author="시스템",
+    ).send()
+
+
+async def _fetch_character_location_name(char_id: str) -> str | None:
+    """캐릭터가 연결된 Location 이름을 조회합니다."""
+    try:
+        async with async_driver.session() as session:
+            result = await session.run(
+                """
+                MATCH (c:Character {id: $char_id})-[:LOCATED_AT]->(l:Location)
+                RETURN coalesce(l.name, l.id) AS location
+                """,
+                char_id=char_id,
+            )
+            row = await result.single()
+            return row["location"] if row else None
+    except Exception:
+        return None
+
+
 def _hour_from_response(text: str) -> int | None:
     """응답 텍스트의 날짜 헤더에서 시각(0-23)을 파싱한다."""
     m = _HEADER_HOUR_RE.search(text)
     return int(m.group(1)) if m else None
+
+
+def _hour_from_time_string(time_str: str | None) -> int | None:
+    """DB에 저장된 인게임 시간 문자열에서 시각(0-23)을 추출한다."""
+    if not time_str:
+        return None
+    try:
+        return datetime.fromisoformat(time_str).hour
+    except ValueError:
+        m = re.search(r"\b([01]?\d|2[0-3]):\d{2}", time_str)
+        return int(m.group(1)) if m else None
 
 
 async def _inject_time_theme(hour: int | None, for_id: str | None = None) -> None:
@@ -108,7 +238,18 @@ async def _inject_time_theme(hour: int | None, for_id: str | None = None) -> Non
     if hour == last:
         return
     cl.user_session.set("last_theme_hour", hour)
-    await cl.CustomElement(name="TimeTheme", props={"hour": hour}).send(for_id)
+    await cl.CustomElement(name="TimeTheme", props={"hour": hour}).send(for_id or "")
+
+
+async def _send_status_toast(content: str) -> cl.CustomElement:
+    """일반 메시지 대신 화면 중앙에 잠깐 뜨는 상태 토스트를 출력한다."""
+    toast = cl.CustomElement(
+        name="StatusToast",
+        props={"content": content},
+        display="inline",
+    )
+    await toast.send(for_id="")
+    return toast
 
 
 async def _snapshot_game_time() -> str | None:
@@ -155,8 +296,13 @@ async def _commit_pending(pending: dict) -> None:
     리롤 기능을 위해 실제 쓰기를 다음 턴 시작 시점으로 미룬다.
     상태 업데이트 → 로그 기록 → SSES 스케줄 체크 순으로 처리한다.
     """
-    msg = cl.Message(content=random.choice(UPDATING_MSGS), author="기록 보관소")
-    await msg.send()
+    toast = await _send_status_toast(random.choice(UPDATING_MSGS))
+
+    await commit_manager_effects(
+        pending.get("manager_effects"),
+        pc_id=PC_ID,
+        npc_id=NPC_ID,
+    )
 
     ooc_from_pregnancy = await process_actor_response(
         pending["ai_response"], NPC_ID, PC_ID,
@@ -179,10 +325,10 @@ async def _commit_pending(pending: dict) -> None:
         if sms:
             await cl.Message(content=sms, author="사회정서지원과").send()
 
-    msg.content = random.choice(UPDATED_MSGS)
-    await msg.update()
+    await toast.remove()
+    toast = await _send_status_toast(random.choice(UPDATED_MSGS))
     await asyncio.sleep(1.5)
-    await msg.remove()
+    await toast.remove()
 
 
 # ════════════════════════════════════════════════════════════
@@ -216,9 +362,8 @@ async def _stream_actor(
     gemini_msgs.append({"role": "user",  "parts": [{"text": dynamic_prompt}]})
     gemini_msgs.append({"role": "model", "parts": [{"text": "<analyze>\n"}]})
 
-    gen_msg      = cl.Message(content=random.choice(GENERATING_MSGS).format(char=NPC_NAME_KOR), author="System")
+    gen_msg      = await _send_status_toast(random.choice(GENERATING_MSGS).format(char=NPC_NAME_KOR))
     response_msg = cl.Message(content="", author=NPC_NAME_KOR)
-    await gen_msg.send()
 
     _PREFILL      = "<analyze>\n"
     raw           = _PREFILL   # prefill 포함 전체 원문
@@ -404,6 +549,92 @@ async def _cancel_edit() -> None:
         await _restore_response_msg(msg_id, pending.get("ai_response", ""))
 
 
+def _write_turn_debug_snapshot(
+    user_input:       str,
+    fixed_prompt:     str,
+    genre_prompt:     str,
+    dynamic_prompt:   str,
+    scene_types:      list[str],
+    manager_effects:  dict,
+    history:          list[dict],
+) -> str | None:
+    """Actor 호출 직전의 최종 프롬프트와 manager 후보 정보를 파일로 저장합니다."""
+    try:
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        turn_dir = _TURN_DEBUG_DIR / stamp
+        turn_dir.mkdir(parents=True, exist_ok=True)
+
+        system_text = f"{fixed_prompt}\n\n{genre_prompt}" if genre_prompt else fixed_prompt
+        final_prompt = (
+            "[SYSTEM]\n"
+            f"{system_text}\n\n"
+            "[HISTORY]\n"
+            f"{json.dumps(history, ensure_ascii=False, indent=2)}\n\n"
+            "[USER_DYNAMIC_PROMPT]\n"
+            f"{dynamic_prompt}\n"
+        )
+
+        files = {
+            "fixed_prompt.txt":   fixed_prompt,
+            "genre_prompt.txt":   genre_prompt or "",
+            "dynamic_prompt.txt": dynamic_prompt,
+            "final_prompt.txt":   final_prompt,
+            "history.json":       json.dumps(history, ensure_ascii=False, indent=2),
+            "metadata.json":      json.dumps({
+                "timestamp":       stamp,
+                "world_id":        WORLD_ID,
+                "pc_id":           PC_ID,
+                "npc_id":          NPC_ID,
+                "npc_name":        NPC_NAME_KOR,
+                "scene_types":     scene_types,
+                "user_input":      user_input,
+                "manager_effects": manager_effects,
+                "prompt_lengths": {
+                    "fixed":   len(fixed_prompt),
+                    "genre":   len(genre_prompt or ""),
+                    "dynamic": len(dynamic_prompt),
+                    "final":   len(final_prompt),
+                },
+            }, ensure_ascii=False, indent=2),
+        }
+        for name, content in files.items():
+            (turn_dir / name).write_text(content, encoding="utf-8")
+
+        summary = [
+            f"# Turn Debug {stamp}",
+            "",
+            f"- world: `{WORLD_ID}`",
+            f"- pc: `{PC_ID}`",
+            f"- npc: `{NPC_NAME_KOR}` (`{NPC_ID}`)",
+            f"- scene_types: `{scene_types}`",
+            f"- fixed chars: `{len(fixed_prompt)}`",
+            f"- genre chars: `{len(genre_prompt or '')}`",
+            f"- dynamic chars: `{len(dynamic_prompt)}`",
+            f"- final chars: `{len(final_prompt)}`",
+            "",
+            "## User Input",
+            "",
+            user_input,
+            "",
+            "## Time Plan",
+            "",
+            "```json",
+            json.dumps(manager_effects.get("time_plan"), ensure_ascii=False, indent=2),
+            "```",
+            "",
+            "## Pending Effects",
+            "",
+            "```json",
+            json.dumps(manager_effects.get("pending_effects", []), ensure_ascii=False, indent=2),
+            "```",
+        ]
+        (turn_dir / "summary.md").write_text("\n".join(summary), encoding="utf-8")
+        return str(turn_dir)
+    except OSError as e:
+        print(f"[TurnDebug] 저장 실패: {e}")
+        return None
+
+
 # ════════════════════════════════════════════════════════════
 # 생성 파이프라인 (on_message / on_reroll 공용)
 # ════════════════════════════════════════════════════════════
@@ -426,21 +657,34 @@ async def _run_generation(
 
     # 2. Manager: 씬 분류 + 시간 계산 + 프롬프트 조립
     async with cl.Step(name="데이터 추출", show_input=False) as step:
-        fixed, genre, dynamic, scene_types = await run_manager(
+        fixed, genre, dynamic, scene_types, manager_effects = await run_manager(
             user_input   = user_input,
             pc_id        = PC_ID,
             npc_id       = NPC_ID,
             recent_story = recent_story,
             world_id     = WORLD_ID,
             perspective  = PERSPECTIVE,
+            return_meta  = True,
         )
         suffix      = f" {step_suffix}" if step_suffix else ""
         step.output = f"씬 타입: `{scene_types}`{suffix}"
+
+    debug_dir = _write_turn_debug_snapshot(
+        user_input      = user_input,
+        fixed_prompt    = fixed,
+        genre_prompt    = genre,
+        dynamic_prompt  = dynamic,
+        scene_types     = scene_types,
+        manager_effects = manager_effects,
+        history         = history,
+    )
 
     # 3. Actor 스트리밍
     full_response, scene_chars, response_msg, hour = await _stream_actor(
         fixed, genre, dynamic, history
     )
+    if hour is None:
+        hour = _hour_from_time_string(await _snapshot_game_time())
 
     # 4. 히스토리 갱신 — 리롤을 위한 스냅샷을 먼저 보존
     history_snapshot = list(history)
@@ -463,6 +707,13 @@ async def _run_generation(
         "history_snapshot": history_snapshot,
         "recent_snapshot":  recent_snapshot,
         "prev_game_time":   prev_game_time,
+        "manager_effects":  manager_effects,
+        "time_plan":        manager_effects.get("time_plan"),
+        "pending_effects":  manager_effects.get("pending_effects", []),
+        "pending_state_diff": [],
+        "committed_diff":   [],
+        "rejected_diff":    [],
+        "debug_dir":        debug_dir,
         "response_msg_id":  response_msg.id,
     })
 
@@ -483,12 +734,20 @@ async def on_reroll(action: cl.Action) -> None:
     히스토리와 인게임 시간을 응답 직전 상태로 되돌린 뒤 파이프라인을 재실행한다.
     DB 쓰기는 아직 확정 전(pending)이므로 별도 롤백 없이 스냅샷 복원만으로 충분하다.
     """
+    await _reroll_pending_response(action.forId)
+
+
+async def _reroll_pending_response(message_id: str | None = None) -> None:
+    """현재 pending 응답을 버리고 같은 사용자 입력으로 다시 생성합니다."""
     pending = cl.user_session.get("pending_commit")
     if not pending:
+        await cl.Message(content="다시 쓸 pending 응답이 없습니다.", author="시스템").send()
         return
 
-    if action.forId:
-        await cl.Message(id=action.forId, content="").remove()
+    if message_id:
+        await cl.Message(id=message_id, content="").remove()
+    elif pending.get("response_msg_id"):
+        await cl.Message(id=pending["response_msg_id"], content="").remove()
 
     # 스냅샷 복원 — Manager가 진행시킨 히스토리·시간 되돌리기
     cl.user_session.set("conversation_history", pending["history_snapshot"])
@@ -553,6 +812,7 @@ async def on_chat_start() -> None:
     ).send()
     if opening_scene:
         await cl.Message(content=opening_scene, author="세계").send()
+    await _inject_time_theme(_hour_from_time_string(await _snapshot_game_time()))
 
 
 @cl.on_chat_end
@@ -566,6 +826,11 @@ async def on_chat_end() -> None:
     pending = cl.user_session.get("pending_commit")
     if not pending:
         return
+    await commit_manager_effects(
+        pending.get("manager_effects"),
+        pc_id=PC_ID,
+        npc_id=NPC_ID,
+    )
     asyncio.create_task(
         process_actor_response(
             pending["ai_response"], NPC_ID, PC_ID,
@@ -590,24 +855,29 @@ async def on_message(message: cl.Message) -> None:
     """
     메시지 루프 메인 핸들러.
 
-    1. 수정 완료/취소 프로토콜 감지 (__EDIT__: / __EDIT_CANCEL__)
-    2. .md 파일 드랍 → 로그 복원
-    3. 이전 턴 pending 확정
-    4. 임신 OOC 자동 주입
-    5. OOC 명령 처리 (*로 시작하는 입력)
-    6. Manager → Actor → 히스토리 갱신 (_run_generation)
+    1. Turn Router가 입력 유형을 판별
+    2. 수정/리롤/파일/empty/system 명령은 즉시 처리 후 종료
+    3. 확정 가능한 이전 pending을 커밋
+    4. OOC-only와 설정 QA는 Actor 파이프라인을 건너뜀
+    5. RP 입력만 Manager → Actor → 히스토리 갱신 (_run_generation)
     """
     user_input = message.content.strip()
+    route = route_user_input(user_input, message)
 
     # ── 수정 완료·취소 감지 — CustomElement에서 보내는 특수 접두사 ──
-    if user_input.startswith("__EDIT__:"):
+    if route == TurnInputType.EDIT and user_input.startswith("__EDIT__:"):
         await message.remove()
         await _apply_edit(user_input[9:])
         return
 
-    if user_input == "__EDIT_CANCEL__":
+    if route == TurnInputType.EDIT and user_input == "__EDIT_CANCEL__":
         await message.remove()
         await _cancel_edit()
+        return
+
+    if route == TurnInputType.REROLL:
+        await message.remove()
+        await _reroll_pending_response()
         return
 
     # ── 파일 드랍 ────────────────────────────────────────────────
@@ -617,7 +887,11 @@ async def on_message(message: cl.Message) -> None:
                 await _load_log_into_session(Path(el.path))
                 return
 
-    if not user_input:
+    if route == TurnInputType.EMPTY or not user_input:
+        return
+
+    if route == TurnInputType.SYSTEM_COMMAND:
+        await _handle_system_command(user_input)
         return
 
     history          = cl.user_session.get("conversation_history")
@@ -635,6 +909,7 @@ async def on_message(message: cl.Message) -> None:
         cl.user_session.set("pending_ooc", None)
         user_input = f"{pending_ooc}\n{user_input}"
         await cl.Message(content=pending_ooc, author="시스템").send()
+        route = route_user_input(user_input, message)
 
     # ── 3. OOC 처리 ─────────────────────────────────────────────
     if is_ooc(user_input):
@@ -654,6 +929,13 @@ async def on_message(message: cl.Message) -> None:
             )
         if WORLD_ID == "sses" and ooc_changes.get("action_type") == "session_end":
             await advance_slot()
+
+        if route == TurnInputType.OOC_PATCH:
+            return
+
+    if route == TurnInputType.LORE_QA:
+        await _send_lore_qa_response(user_input)
+        return
 
     # ── 4. 생성 파이프라인 ───────────────────────────────────────
     await _run_generation(user_input, history, recent_responses)

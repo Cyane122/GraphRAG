@@ -23,12 +23,52 @@ from kuzu import QueryResult
 
 from src.config import WORLD_ID
 
-# 스키마 업데이트로 추가된 컬럼이 기존 DB에 없을 수 있으므로 시작 시 마이그레이션 시도
-# 테이블 미존재 또는 컬럼 이미 존재 시 예외를 조용히 무시한다 (idempotent)
+# 스키마 업데이트로 추가된 테이블/컬럼이 기존 DB에 없을 수 있으므로 시작 시 마이그레이션 시도
+# Kuzu ALTER 문법은 "ADD COLUMN"이 아니라 "ADD"를 사용한다.
+_TABLE_MIGRATIONS: list[str] = [
+    """CREATE NODE TABLE IF NOT EXISTS NeedsState(
+        id STRING,
+        hunger DOUBLE, rest DOUBLE, social DOUBLE,
+        fun DOUBLE, safety DOUBLE, libido DOUBLE,
+        PRIMARY KEY(id)
+    )""",
+    "CREATE REL TABLE IF NOT EXISTS HAS_NEEDS(FROM Character TO NeedsState)",
+]
+
 _COLUMN_MIGRATIONS: list[str] = [
-    "ALTER TABLE Event ADD COLUMN safety_impact DOUBLE DEFAULT 0.0",
-    "ALTER TABLE Event ADD COLUMN safety_resolved BOOLEAN DEFAULT false",
-    "ALTER TABLE Event ADD COLUMN safety_decay_rate DOUBLE DEFAULT 0.002",
+    "ALTER TABLE DynamicState ADD outfit STRING DEFAULT ''",
+    "ALTER TABLE DynamicState ADD injury_marks STRING DEFAULT ''",
+    "ALTER TABLE DynamicState ADD pregnant BOOLEAN DEFAULT false",
+    "ALTER TABLE DynamicState ADD pregnancy_day INT64 DEFAULT 0",
+    "ALTER TABLE DynamicState ADD cum_shots_this_cycle INT64 DEFAULT 0",
+    "ALTER TABLE DynamicState ADD ts_acceptance INT64 DEFAULT 0",
+    "ALTER TABLE DynamicState ADD northern_attachment INT64 DEFAULT 0",
+    "ALTER TABLE DynamicState ADD body_perception STRING DEFAULT ''",
+    "ALTER TABLE DynamicState ADD behavioral_facade STRING DEFAULT ''",
+    "ALTER TABLE DynamicState ADD hygiene DOUBLE DEFAULT 0.0",
+    "ALTER TABLE DynamicState ADD appearance DOUBLE DEFAULT 0.0",
+    "ALTER TABLE DynamicState ADD physique STRING DEFAULT ''",
+    "ALTER TABLE DynamicState ADD age_presentation STRING DEFAULT ''",
+    "ALTER TABLE DynamicState ADD nervousness DOUBLE DEFAULT 0.0",
+    "ALTER TABLE DynamicState ADD attitude STRING DEFAULT ''",
+    "ALTER TABLE DynamicState ADD social_skill DOUBLE DEFAULT 0.0",
+    "ALTER TABLE DynamicState ADD consideration DOUBLE DEFAULT 0.0",
+    "ALTER TABLE DynamicState ADD stamina DOUBLE DEFAULT 0.0",
+    "ALTER TABLE DynamicState ADD odor STRING DEFAULT ''",
+    "ALTER TABLE DynamicState ADD emotional_state STRING DEFAULT ''",
+    "ALTER TABLE DynamicState ADD attachment_risk DOUBLE DEFAULT 0.0",
+    "ALTER TABLE DynamicState ADD expectation_gap DOUBLE DEFAULT 0.0",
+    "ALTER TABLE DynamicState ADD penis_size STRING DEFAULT ''",
+    "ALTER TABLE Location ADD district STRING DEFAULT ''",
+    "ALTER TABLE GlobalState ADD today_schedule STRING DEFAULT ''",
+    "ALTER TABLE GlobalState ADD schedule_date STRING DEFAULT ''",
+    "ALTER TABLE StaticProfile ADD age INT64 DEFAULT 0",
+    "ALTER TABLE StaticProfile ADD gender STRING DEFAULT ''",
+    "ALTER TABLE StaticProfile ADD role STRING DEFAULT ''",
+    "ALTER TABLE Event ADD safety_impact DOUBLE DEFAULT 0.0",
+    "ALTER TABLE Event ADD safety_resolved BOOLEAN DEFAULT false",
+    "ALTER TABLE Event ADD safety_decay_rate DOUBLE DEFAULT 0.002",
+    "ALTER TABLE Event ADD need_name STRING DEFAULT ''",
 ]
 
 
@@ -137,12 +177,20 @@ class KuzuAsyncDriver:
         return KuzuSession(self._conn, self._lock)
 
     def _run_migrations(self) -> None:
-        """기존 DB에 누락된 컬럼을 추가한다. 이미 존재하거나 테이블 미존재 시 무시."""
-        for ddl in _COLUMN_MIGRATIONS:
+        """기존 DB에 누락된 테이블과 컬럼을 추가한다."""
+        for ddl in [*_TABLE_MIGRATIONS, *_COLUMN_MIGRATIONS]:
             try:
                 self._conn.execute(ddl)
-            except Exception:
-                pass
+            except Exception as exc:
+                message = str(exc).lower()
+                if (
+                    "already exists" in message
+                    or "already has property" in message
+                    or "duplicate" in message
+                    or "cannot find table" in message
+                ):
+                    continue
+                print(f"[KuzuMigration] skipped failed migration: {ddl} ({exc})")
 
     def execute_sync(self, query: str, params: dict | None = None) -> QueryResult | list[QueryResult]:
         """동기 쿼리 실행. 스키마 초기화 CLI 전용."""

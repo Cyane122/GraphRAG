@@ -176,7 +176,7 @@
     - `_distort_memories_batch()`: 동일 캐릭터의 왜곡 대상 전체를 JSON 배열 1회 호출로 처리
     - `_compress_memories_batch()`: 압축 대상 전체를 레벨별 1회 호출로 처리
     - `run_decay()`: 버킷 분류(삭제/압축L2/압축L1/왜곡) 후 버킷당 1회 배치 처리로 재구조화
-- [신규] **관계에 깊이 더하기** (TODO 4)
+- [신규] **관계에 깊이 더하기**
   - `src/simulation/systems/reputation.py` 신규: 사회적 평판과 소문 전파 시스템
     - 중요도 ≥ 5 + |affinity delta| ≥ 3인 이벤트 발생 시 source NPC 지인에게 소문 확산
     - 배치 LLM 호출로 NPC별 소문 내용·호감도 변화 생성 (원본 delta의 35% 강도)
@@ -249,3 +249,121 @@
   - `src/simulation/state/updater.py`
     - Actor 응답 확정 후 `apply_goal_updates()`, `apply_item_updates()`, `apply_secret_updates()` 후처리 호출
   - [검증] `py_compile` 및 life-depth public import 확인 통과
+- [신규] TODO 문서 전면 재작성
+  - `TODO.md`: 단순 TODO-4 목록에서 엔진 안정화 로드맵 문서로 확장
+  - 1차 작업: Turn Router, Deferred Commit / State Diff, State Update Guard 정리
+  - 2차 작업: Manager 책임 분리, SceneState / Context Planner, Dynamic Context Budgeter / Renderer 정리
+  - 3차 작업: 범용 노드, 장기 시뮬레이션, 확장 보류 항목 정리
+- [신규] Turn Router 1차 구현
+  - `app.py`
+    - `TurnInputType` enum 추가: `roleplay`, `ooc_patch`, `lore_qa`, `reroll`, `edit`, `system_command`, `empty`
+    - `route_user_input(user_input, message)` 추가. 라우터는 DB write나 LLM 호출 없이 입력 경로만 판별
+    - `on_message`를 입력 유형별 early return 구조로 정리
+    - OOC-only 입력은 `parse_ooc` 처리 후 Actor 생성 없이 종료
+    - OOC + RP가 섞인 입력은 OOC 처리 후 기존 RP 생성으로 진행
+    - 설정/관계/상태성 질문은 Actor RP 대신 시스템 QA 응답으로 분리
+    - `/reroll`, `/help`, `/status` 시스템 명령 경로 추가
+    - 리롤 버튼 콜백 로직을 `_reroll_pending_response()`로 분리해 명령 경로와 공유
+- [신규] Chainlit UI 상태 토스트 추가
+  - `public/elements/StatusToast.jsx` 신규: 중앙 오버레이 형태의 상태 메시지 컴포넌트
+  - `app.py`
+    - `_send_status_toast()` 추가
+    - Actor 생성 중 / deferred commit 중 상태 메시지를 일반 채팅 메시지 대신 토스트로 출력
+    - 응답 헤더에서 시각을 못 읽으면 DB 인게임 시간으로 TimeTheme fallback 적용
+  - `public/stylesheet.css`
+    - 시간대 배경과 말풍선 스타일 재정리
+    - `.status-toast-overlay`, `.status-toast-box` 스타일 추가
+    - Chainlit 기본 메시지 카드 중첩/배경을 줄여 토스트와 본문이 겹치지 않도록 조정
+  - `public/elements/EditableMessage.jsx`
+    - Chainlit props 중첩 구조 대응 추가
+    - `useEffect`로 편집 대상 응답 변경 시 textarea 내용 동기화
+- [버그픽스] Kuzu 스키마/마이그레이션 및 NeedsState 안정화
+  - `src/assets/worlds/base.py`
+    - `DynamicState` 확장 필드 추가 (`outfit`, `injury_marks`, 임신/수용도/외형/심리 보조 필드 등)
+    - `Location.district`, `GlobalState.today_schedule`, `GlobalState.schedule_date` 추가
+    - `StaticProfile`에 `age`, `gender`, `role` 컬럼 추가
+  - `src/core/database/driver.py`
+    - 시작 시 누락된 `NeedsState`, `HAS_NEEDS` 테이블을 생성하는 migration 추가
+    - Kuzu ALTER 문법에 맞춰 컬럼 migration을 `ADD` 기반으로 정리
+    - migration 실패 사유를 구분해 이미 존재하는 컬럼/테이블은 조용히 skip
+  - `src/core/database/helpers.py`
+    - `DYNAMIC_STATE_FIELDS` whitelist 추가로 잘못된 DynamicState 필드 write 방지
+    - `update_relationship_affinity()`가 `null` affinity에서도 안전하게 clamp되도록 `coalesce` 적용
+  - `src/core/database/__init__.py`
+    - schema builder 등에서 패키지 임포트만 해도 active Kuzu store가 열리지 않도록 lazy export로 변경
+- [버그픽스] Needs / Resolver / Social 계열 null 안정화
+  - `src/simulation/systems/needs.py`
+    - 욕구 수치를 DynamicState가 아니라 `NeedsState`에 저장하도록 정리
+    - `NeedsState`가 없으면 기본값으로 생성 후 갱신
+    - `_as_float()`, `_as_int()` 추가로 DB null 및 LLM 비정상 값을 안전하게 처리
+    - trait 생성 실패 시 0값 trait을 DB에 저장하지 않고 기본값만 사용
+    - 저장된 trait이 모두 0이면 미완성으로 보고 재생성 가능하게 변경
+  - `src/agents/resolver.py`
+    - 욕구 해소 후 `NeedsState`를 생성/갱신하도록 `_settle_need()` 재작성
+    - `importance`, duration 등 nullable LLM 값 처리 안정화
+  - `src/simulation/systems/social.py`, `src/simulation/systems/personality.py`
+    - `initial_affinity`, `appearance_count`, `macro_drift_count`가 null일 때 기본값 사용
+- [버그픽스] 이벤트/상태 업데이트 가드 강화
+  - `src/simulation/events/evaluator.py`
+    - StaticEvent stat 조건에서 허용된 관계 필드(`affinity`, `trust`)만 평가하도록 제한
+  - `src/simulation/events/manager.py`
+    - `foreshadow_hint` alias 불일치 수정
+  - `src/simulation/state/classifier.py`
+    - `affinity`를 DynamicState safe field에서 제거해 호감도 변경이 잘못된 경로로 들어가지 않도록 수정
+  - `src/core/llm/client.py`
+    - JSON 파싱 실패 로그가 너무 길어지지 않도록 raw preview truncation 추가
+- [문서] `readme.md`
+  - `goals.py`, `items.py`, `secrets.py` 모듈 설명 추가
+  - 파이프라인 설명에 Life Goals / Object Memories / Secret/Subtext 수집 및 후처리 단계 추가
+  - Dynamic prompt의 life-depth hints와 Fixed prompt cache 분리 원칙 문서화
+- [리팩토링] Deferred Commit / State Diff 1차 안정화
+  - `src/simulation/state/updater.py`
+    - `build_time_plan()`: 시간/날씨/위치 변경을 DB write 없이 계산
+    - `commit_time_plan()`: 계산된 시간 계획을 확정 시점에만 DB에 반영
+    - 기존 `apply_time_updates()`는 위 두 단계를 사용하는 호환 wrapper로 유지
+  - `src/agents/manager.py`
+    - `run_manager()`에서 시간/위치 DB write 제거
+    - Actor 전 needs update, memory decay, cycle tick 실행 제거
+    - 예상 시각/장소는 prompt context 계산에만 사용
+    - `manager_effects`, `time_plan`, `pending_effects` 구조를 반환하도록 `return_meta` 옵션 추가
+    - `commit_manager_effects()` 추가: pending 확정 시 time / needs / decay / cycle / StaticEvent side effect를 순차 commit
+    - StaticEvent 평가는 Actor 전에는 `commit=False`로 hint만 계산하고, 확정 시점에 상태를 갱신
+  - `app.py`
+    - `_run_generation()`이 `manager_effects`, `time_plan`, `pending_effects`, `pending_state_diff`를 `pending_commit`에 저장
+    - `_commit_pending()`과 `on_chat_end()`가 Actor 응답 후처리 전에 `commit_manager_effects()`를 실행
+  - [검증] `py_compile` 통과 및 `build_time_plan()` 단위 확인
+- [신규] 최종 프롬프트 디버그 로그 저장
+  - `app.py`
+    - `_write_turn_debug_snapshot()` 추가
+    - Actor 호출 직전 `logs/turn_debug/<timestamp>/`에 `fixed_prompt.txt`, `genre_prompt.txt`, `dynamic_prompt.txt`, `final_prompt.txt`, `history.json`, `metadata.json`, `summary.md` 저장
+    - `metadata.json`에 scene types, user input, manager effects, time plan, pending effects, prompt 길이 기록
+    - `pending_commit["debug_dir"]`에 해당 디버그 폴더 경로 저장
+- [버그픽스] Dynamic prompt `<state>` null 필드 정리
+  - `src/agents/prompt_factory/builder.py`
+    - `_clean_prompt_dict()` 추가
+    - Kuzu가 노드 반환 시 포함하는 `_id`, `_label`, null 컬럼을 prompt JSON 렌더링 전에 제거
+    - `<static>`, `<personality>`, `<state>`, `<intimate>`, `<workplace>` 블록에 공통 적용
+    - 기존 `final_prompt.txt`에서 `<state>`에 `Location`, `GlobalState`, `Event`, `Memory`, `Goal`, `Secret` 계열 null 필드가 섞이던 문제 수정
+- [신규] State Update Guard / Confidence 1차 구현
+  - `src/simulation/state/updater.py`
+    - `guard_actor_response()` 추가: Actor 응답이 State Updater로 넘어가기 전 시스템 프롬프트 누출, private secret 과노출, PC 조작, 비유적 신체 표현 위험을 rule-based로 검사
+    - guard reject 시 DynamicState / Relationship / Event / Memory / LifeDepth 후처리를 실행하지 않고 종료
+    - `_audit_state_updates()`: DynamicState 후보마다 `confidence`, `evidence`, `commit_policy` 생성
+    - 물리 상태 필드는 실제 부상/질병 evidence가 없거나 비유 표현만 있으면 `hold`/`reject`
+    - `_audit_relationship_delta()`, `_audit_event_candidate()` 추가로 관계 delta와 Event 후보도 confidence/evidence 기반으로 commit 여부 결정
+    - `logs/state_audit/<timestamp>.json`에 guard 결과, state 후보, relationship 후보, event 후보 저장
+  - [검증] `py_compile` 통과
+- [검증] 1.1~1.3 통합 검증
+  - 대상: `app.py`, `src/agents/manager.py`, `src/simulation/state/updater.py`, `src/simulation/events/manager.py`, `src/agents/prompt_factory/builder.py`
+  - `py_compile` 통과
+  - `route_user_input()` 단위 확인: empty / system_command / reroll / edit / ooc_patch / lore_qa / roleplay 분기 확인
+  - `build_time_plan()` 단위 확인: 시간/날씨/위치 계획이 DB write 없이 계산됨
+  - `guard_actor_response()` 단위 확인
+    - 정상 문장 통과
+    - PC 조작 문장 reject
+    - 시스템/secret 누출 reject
+    - 비유적 신체 표현 warning
+  - `_audit_state_updates()` 단위 확인
+    - 비유 표현 기반 physical update는 `reject`
+    - 실제 부상 evidence가 있는 physical update는 `commit`
+  - `TODO.md` 1.1~1.3 작업 항목과 완료 기준 체크 완료

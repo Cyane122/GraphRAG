@@ -92,6 +92,9 @@ project-root/
             │                           # micro: 친밀도 ≥ 65 + 30일 쿨다운 / macro: 중대 이벤트(importance ≥ 9)
             ├── reputation.py           # NPC 간 소문 전파 (importance ≥ 5 이벤트 발생 시).
             │                           # 지인 NPC 호감도·기억 갱신
+            ├── goals.py                # NPC 장기 목표. Dynamic hint 조회 + Actor 응답 후 진행도 갱신
+            ├── items.py                # 물건에 담긴 기억. Item ↔ Memory 앵커링, 위치·소유자·분실 상태 갱신
+            ├── secrets.py              # 조건부 비밀/서브텍스트. public_hint만 prompt에 주입, reveal 상태 갱신
             └── social.py               # 세계 맥락 생성 (근처 활동 + SNS 피드) 및 캐릭터 그래프 관리
 ```
 
@@ -107,25 +110,43 @@ project-root/
       ├─ Memory Decay                            오래된 기억 왜곡/압축
       ├─ Organic Tick                            여성 캐릭터 생리주기 진행
       ├─ Needs Update                            욕구 수치 갱신, 임계 초과 시 자율행동
+      ├─ Life Goals                              장기 목표 hint 수집
+      ├─ Object Memories                         현재 장소·소유 물건 기반 기억 hint 수집
+      ├─ Secret/Subtext                          조건 충족 비밀의 public hint 수집
       └─ World Context                           근처 활동·SNS 피드 생성
   → PromptBuilder                                Fixed / Genre / Dynamic 3-파트 조립
   → Actor Agent                                  Gemini 롤플레이 응답 생성 (스트리밍)
   → State Updater                                Classifier → 복합 업데이트 → 관계 깊이 파이프라인
       ├─ reputation.propagate_gossip             소문 전파
       ├─ memory.distort_on_affinity_change       호감도 급변 시 기억 재해석
-      └─ personality.check_personality_drift     성격 drift 체크
+      ├─ personality.check_personality_drift     성격 drift 체크
+      ├─ goals.apply_goal_updates                장기 목표 진행도·상태 갱신
+      ├─ items.apply_item_updates                물건 상태·앵커 기억 갱신
+      └─ secrets.apply_secret_updates            조건부 비밀 reveal 상태 갱신
   → [DB 커밋은 다음 턴 시작 시 지연 확정]
 ```
 
 ## 3-파트 프롬프트
 
-| 파트          | 내용                               | 특성                                    |
-|-------------|----------------------------------|---------------------------------------|
-| **Fixed**   | operator_policy + 규칙 + 세계관 + 캐릭터 | Gemini implicit cache 대상 — 매 턴 동일해야 함 |
-| **Genre**   | 씬 타입별 묘사 규칙 + 퓨샷 예시              | 씬 분류 결과에 따라 교체                        |
-| **Dynamic** | 현재 시각·장소·날씨 + DB 컨텍스트 + 유저 입력    | 매 턴 재조립                               |
+| 파트          | 내용                                               | 특성                                    |
+|-------------|--------------------------------------------------|---------------------------------------|
+| **Fixed**   | operator_policy + 규칙 + 세계관 + 캐릭터                 | Gemini implicit cache 대상 — 매 턴 동일해야 함 |
+| **Genre**   | 씬 타입별 묘사 규칙 + 퓨샷 예시                              | 씬 분류 결과에 따라 교체                        |
+| **Dynamic** | 현재 시각·장소·날씨 + DB 컨텍스트 + 유저 입력 + life-depth hints | 매 턴 재조립                               |
 
 씬 타입: `daily` · `emotional` · `physical` · `intimate` · `workplace` · `aegyo`
+
+### Life-Depth Context
+
+삶의 깊이 계층은 모두 Dynamic prompt에만 들어간다. Fixed prompt에 넣지 않아 Gemini implicit cache를 깨지 않기 위함이다.
+
+| 시스템            | DB 노드/관계                                 | Prompt 역할                                      | 후처리                                              |
+|----------------|------------------------------------------|------------------------------------------------|--------------------------------------------------|
+| Goal           | `Goal`, `PURSUES`, `GOAL_RELATED_EVENT`  | NPC 장기 목표를 행동·일정 압박·망설임으로 은근히 노출               | `apply_goal_updates()`가 진행도, 상태, 다음 hint 갱신      |
+| Item Memory    | `Item`, `ANCHORS_MEMORY`, `OWNS`, `GAVE` | 물건의 물성에서 과거 기억이 스치도록 힌트 제공                     | `apply_item_updates()`가 위치·소유자·분실 상태·앵커 기억 갱신    |
+| Secret/Subtext | `Secret`, `ROOTED_IN`, `TRIGGERED_BY`    | `public_hint`만 제공하고 `private_summary`는 노출하지 않음 | `apply_secret_updates()`가 reveal level/status 갱신 |
+
+`PromptBuilder.build_world_section()`은 `world_context["life_goals"]`, `world_context["object_memories"]`, `world_context["secret_hints"]`를 각각 `[Life Goals]`, `[Object Memories]`, `[Subtext]` 블록으로 렌더링한다.
 
 ## 캐릭터 정의 방법
 

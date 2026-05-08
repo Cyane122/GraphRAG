@@ -14,7 +14,7 @@ from src.core.llm.client import get_model, extract_json_from_llm
 
 SAFE_FIELDS = {
     "mood", "mental_condition", "stress_level",
-    "workplace_stress_level", "cycle_day", "location_id", "affinity",
+    "workplace_stress_level", "cycle_day", "location_id",
     "outfit", "injury_marks",
 }
 PHYSICAL_FIELDS = {"physical_condition", "injury_detail"}

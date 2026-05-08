@@ -365,7 +365,7 @@ async def _create_stub(
             main     = main_npc_id,
             cid      = char_id,
             rel_type = stub.get("relation_type", "acquaintance"),
-            affinity = int(stub.get("initial_affinity", 0)),
+            affinity = int(stub.get("initial_affinity") or 0),
             status   = stub.get("relation_status", "first encounter"),
         )
 
@@ -422,7 +422,7 @@ async def _increment_appearance(char_id: str) -> None:
                 current = json.loads(row["props_json"])
             except (ValueError, TypeError):
                 pass
-        current["appearance_count"] = current.get("appearance_count", 0) + 1
+        current["appearance_count"] = int(current.get("appearance_count") or 0) + 1
         current["last_seen"] = datetime.now().isoformat()
         await session.run("""
             MATCH (c:Character {id: $cid})-[:HAS_PROFILE]->(sp:StaticProfile)

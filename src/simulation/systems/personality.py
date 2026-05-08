@@ -213,7 +213,7 @@ async def _apply_macro_drift(npc_id: str, game_time: datetime) -> None:
         return
 
     event_context = await _load_high_importance_events(npc_id)
-    drift_count   = int(props.get("macro_drift_count", 0)) + 1
+    drift_count   = int(props.get("macro_drift_count") or 0) + 1
 
     prompt = f"""Character {npc_id} has just experienced a life-altering event (importance 9–10).
 

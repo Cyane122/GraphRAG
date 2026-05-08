@@ -6,6 +6,7 @@
 # Functions
 #   - load_world_instance(world_id: str) -> World : world_id에 해당하는 World 인스턴스 로드
 #   - run_manager(user_input, pc_id, npc_id, recent_story, world_id, perspective) -> tuple[str, str, str, list[str]] : 전체 파이프라인 실행 후 (fixed, genre, dynamic, scene_types) 반환
+#   - commit_manager_effects(effects: dict, pc_id: str, npc_id: str) -> None : pending manager side effect를 확정 반영
 #   - _classify_and_parse_time(user_input, recent_story, global_state, allowed_locs, scene_descriptions) -> dict : 씬 분류 + 시간 파싱 (scene_descriptions는 세계관별 타입명→설명 dict)
 # ================================
 
@@ -16,16 +17,14 @@ from datetime import datetime
 from importlib import import_module
 
 from src.config import MODEL_CLASSIFIER as CLASSIFIER_MODEL
-from src.agents.prompt_factory.builder import PromptBuilder
+from src.agents.manager_pipeline import ManagerDependencies, run_manager_pipeline
 from src.assets.worlds.base import World
 from src.core.database.driver import async_driver
 from src.core.llm.client import extract_json_from_llm, get_model
-from src.core.embedding.encoder import embed_async
 from src.simulation.systems.memory import run_decay
 from src.simulation.systems.organic import tick_cycle_day
-from src.simulation.state.updater import apply_time_updates
+from src.simulation.state.updater import commit_time_plan
 from src.simulation.systems.needs import run_needs_update
-from src.simulation.systems.social import build_world_context
 from src.simulation.events import evaluate_all as evaluate_static_events
 
 REL_TO_KEY = {
@@ -347,6 +346,48 @@ async def fetch_npc_profiles(
     return results
 
 
+async def commit_manager_effects(effects: dict | None, pc_id: str, npc_id: str) -> None:
+    """Actor 응답이 확정된 턴의 manager side effect를 DB에 반영합니다."""
+    if not effects:
+        return
+
+    time_plan = effects.get("time_plan")
+    current_dt: datetime | None = None
+    if time_plan:
+        current_dt = await commit_time_plan(time_plan, pc_id, npc_id)
+
+    needs_plan = effects.get("needs_update") or {}
+    if needs_plan:
+        try:
+            needs_time = current_dt or datetime.fromisoformat(needs_plan["current_time"])
+            await run_needs_update(
+                pc_id           = needs_plan.get("pc_id") or pc_id,
+                elapsed_minutes = float(needs_plan.get("elapsed_minutes") or 1.0),
+                current_time    = needs_time,
+            )
+        except Exception as e:
+            print(f"[ManagerCommit] needs update 실패 (무시): {e}")
+
+    daily_plan = effects.get("daily_systems") or {}
+    days_passed = int(daily_plan.get("days_passed") or 0)
+    if days_passed > 0:
+        daily_time = current_dt or datetime.fromisoformat(daily_plan["current_time"])
+        try:
+            await run_decay(daily_time)
+        except Exception as e:
+            print(f"[ManagerCommit] decay 실패 (무시): {e}")
+        try:
+            await tick_cycle_day(npc_id, days_passed)
+        except Exception as e:
+            print(f"[ManagerCommit] cycle tick 실패 (무시): {e}")
+
+    if current_dt:
+        try:
+            await evaluate_static_events(current_dt, commit=True)
+        except Exception as e:
+            print(f"[ManagerCommit] StaticEvent 평가 실패 (무시): {e}")
+
+
 # ════════════════════════════════════════════════════════════
 # 메인 파이프라인
 # ════════════════════════════════════════════════════════════
@@ -358,229 +399,41 @@ async def run_manager(
     recent_story: str = "",
     world_id:     str = None,
     perspective:  int = 3,
-) -> tuple[str, str, str, list[str]]:
-
-    world       : World = load_world_instance(world_id)
-    world_config = world.get_full_config(perspective)
-    start_dt     = world_config.get("start_time")
-
-    # ── 1. 시간 계산 + 씬 분류 ──────────────────────────────
-    global_state = await fetch_global_state(start_dt)
-
-    rule_result = _try_rule_based(user_input)
-    if rule_result:
-        parse_result = rule_result
-        scene_types  = rule_result["scene_types"]
-        print(f"[Classify+Time / rule-based] scene={scene_types} elapsed={rule_result['elapsed_minutes']}min")
-    else:
-        allowed_locs = await _get_allowed_locations()
-        parse_result = await _classify_and_parse_time(
-            user_input, recent_story, global_state, allowed_locs,
-            scene_descriptions=world.get_scene_descriptions(),
-        )
-        scene_types = parse_result.get("scene_types") or ["daily"]
-
-    # ── 2. DB 시간 사이드이펙트 ──────────────────────────────
-    base_time  = datetime.fromisoformat(global_state["currentTime"])
-    current_dt = await apply_time_updates(
-        plan      = parse_result,
-        base_time = base_time,
-        pc_id     = pc_id,
-        npc_id    = npc_id,
+    return_meta:   bool = False,
+) -> tuple[str, str, str, list[str]] | tuple[str, str, str, list[str], dict]:
+    """Orchestrate turn preparation while leaving each stage testable in isolation."""
+    prompts, scene_types, manager_effects = await run_manager_pipeline(
+        user_input,
+        pc_id,
+        npc_id,
+        recent_story,
+        world_id,
+        perspective,
+        ManagerDependencies(
+            load_world_instance=load_world_instance,
+            fetch_global_state=fetch_global_state,
+            try_rule_based=_try_rule_based,
+            get_allowed_locations=_get_allowed_locations,
+            classify_and_parse_time=_classify_and_parse_time,
+            fetch_character_data=fetch_character_data,
+            fetch_relationship_data=fetch_relationship_data,
+            fetch_recent_events=fetch_recent_events,
+            get_location_name_from_id=get_location_name_from_id,
+            fetch_location=fetch_location,
+            detect_present_npcs=detect_present_npcs,
+            fetch_npc_profiles=fetch_npc_profiles,
+        ),
     )
 
-    # ── 3. 욕구 업데이트 + libido hints ──────────────────────
-    elapsed_minutes = max(1.0, (current_dt - base_time).total_seconds() / 60)
-
-    needs_result = await run_needs_update(
-        pc_id           = pc_id,
-        elapsed_minutes = elapsed_minutes,
-        current_time    = current_dt,
-    )
-    libido_hints: dict[str, str] = needs_result.get("libido_hints", {})
-
-    # ── 3-1. 기억 풍화 (날짜 변경 시) ────────────────────────
-    days_passed = (current_dt.date() - base_time.date()).days
-    if days_passed > 0:
-        try:
-            await run_decay(current_dt)
-        except Exception as e:
-            print(f"[Manager] decay 실패 (무시): {e}")
-        try:
-            await tick_cycle_day(npc_id, days_passed)
-        except Exception as e:
-            print(f"[Manager] cycle tick 실패 (무시): {e}")
-
-    # ── 4. DB 병렬 조회 ─────────────────────────────────────
-    char_data, user_data, relationship, recent_events = await asyncio.gather(
-        fetch_character_data(npc_id, scene_types),
-        fetch_character_data(pc_id,  scene_types),
-        fetch_relationship_data(pc_id, npc_id),
-        fetch_recent_events(npc_id, pc_id, limit=3),
-    )
-
-    # ── 5. Vector 유사 검색 (recall_events) — Memory 기반 ────
-    recall_events:    list[dict] = []
-    memory_conflicts: list[str]  = []
-    raw_memories:     list[dict] = []
-    try:
-        query_embedding = await embed_async(user_input)
-
-        async with async_driver.session() as session:
-            rec = await session.run("""
-                CALL QUERY_VECTOR_INDEX('Memory', 'memory_embeddings', $embedding, $candidates)
-                WITH node AS mem, distance
-                MATCH (c:Character {id: $char_id})-[:REMEMBERS]->(mem)
-                WHERE distance <= $max_distance AND mem.summary_level < 3
-                RETURN mem.event_id         AS id,
-                       mem.summary          AS summary,
-                       mem.distortion_level AS distortion,
-                       distance
-                ORDER BY distance ASC
-                LIMIT $limit
-            """,
-                char_id      = npc_id,
-                embedding    = query_embedding,
-                candidates   = 10,
-                max_distance = 0.35,
-                limit        = 2,
-            )
-            raw_memories = await rec.data()
-
-        recent_ids = {e["id"] for e in recent_events}
-        for m in raw_memories:
-            if m["id"] in recent_ids:
-                continue
-            recall_events.append({
-                "id":      m["id"],
-                "summary": m["summary"],
-                "score":   round(max(0.0, 1.0 - float(m.get("distance") or 0.0)), 3),
-            })
-            if m["distortion"] and float(m["distortion"]) > 0.2:
-                memory_conflicts.append(m["summary"])
-
-    except Exception as e:
-        print(f"[Manager] recall_events 조회 실패 (무시): {e}")
-
-    # ── 6. 위치 정보 ────────────────────────────────────────
-    updated_state = await fetch_global_state(start_dt)
-    loc_id        = updated_state.get("currentLocationId")
-    location_name = await get_location_name_from_id(loc_id) or await fetch_location(npc_id)
-
-    if "dynamic_state" in char_data:
-        char_data["dynamic_state"]["location_id"] = location_name
-
-    # ── 7. 씬 내 NPC 감지 ───────────────────────────────────
-    present_npc_ids = detect_present_npcs(user_input, recent_story, world.get_npc_name_map())
-    npcs = await fetch_npc_profiles(present_npc_ids, npc_id, pc_id) if present_npc_ids else []
-
-    # ── 7.5. 세상은 움직인다 + SNS 피드 ─────────────────────
-    world_context: dict = {}
-    try:
-        world_context = await build_world_context(
-            npc_id       = npc_id,
-            pc_id        = pc_id,
-            location_id  = loc_id or "",
-            current_time = current_dt,
+    if return_meta:
+        return (
+            prompts.fixed,
+            prompts.genre,
+            prompts.dynamic,
+            scene_types,
+            manager_effects,
         )
-    except Exception as e:
-        print(f"[WorldNarrator] 컨텍스트 수집 실패 (무시): {e}")
-
-    # ── 7.6. StaticEvent 평가 ────────────────────────────────
-    try:
-        static_hints = await evaluate_static_events(current_dt)
-        if static_hints:
-            world_context["static_events"] = static_hints
-    except Exception as e:
-        print(f"[StaticEvent] 평가 실패 (무시): {e}")
-
-    # Life-depth hints are dynamic context. Keep them out of fixed prompts so
-    # Gemini's implicit cache remains stable across turns.
-    try:
-        from src.simulation.systems.goals import fetch_goal_hints
-
-        goal_hints = await fetch_goal_hints(
-            owner_id     = npc_id,
-            pc_id        = pc_id,
-            current_time = current_dt,
-            limit        = 2,
-        )
-        if goal_hints:
-            world_context["life_goals"] = goal_hints
-    except Exception as e:
-        print(f"[LifeDepth] goal hints failed (ignored): {e}")
-
-    try:
-        from src.simulation.systems.items import fetch_object_memory_hints
-
-        item_hints = await fetch_object_memory_hints(
-            owner_id    = npc_id,
-            pc_id       = pc_id,
-            location_id = loc_id or "",
-            user_input  = user_input,
-            limit       = 2,
-        )
-        if item_hints:
-            world_context["object_memories"] = item_hints
-    except Exception as e:
-        print(f"[LifeDepth] object hints failed (ignored): {e}")
-
-    try:
-        from src.simulation.systems.secrets import fetch_secret_hints
-
-        secret_hints = await fetch_secret_hints(
-            owner_id     = npc_id,
-            pc_id        = pc_id,
-            current_time = current_dt,
-            limit        = 2,
-        )
-        if secret_hints:
-            world_context["secret_hints"] = secret_hints
-    except Exception as e:
-        print(f"[LifeDepth] secret hints failed (ignored): {e}")
-
-    if hasattr(world, "get_full_config_async"):
-        world_config = await world.get_full_config_async([npc_id, pc_id], async_driver)
-    else:
-        world_config = world.get_full_config(perspective)
-
-    # ── 8. 프롬프트 조립 ────────────────────────────────────
-    builder = PromptBuilder(
-        world_config,
-        char_data.get("name"),
-        user_data.get("name"),
-        perspective=perspective,
-    )
-
-    fixed_prompt, genre_prompt, dynamic_prompt = builder.build(
-        scene_types      = scene_types,
-        char_data        = char_data,
-        relationship     = relationship,
-        events           = recent_events,
-        recall_events    = [
-            {
-                "summary":  e["summary"],
-                "score":    e.get("score", 0),
-                "conflict": e["id"] in [m["id"] for m in raw_memories if float(m.get("distortion") or 0) > 0.2],
-            }
-            for e in recall_events
-        ],
-        recent_story     = recent_story,
-        user_input       = user_input,
-        location         = location_name,
-        npcs             = npcs,
-        dt               = current_dt,
-        memory_conflicts = memory_conflicts,
-        world_context    = world_context,
-    )
-
-    # ── 9. libido hints → dynamic prompt 주입 ───────────────
-    if libido_hints:
-        hint_block     = "\n".join(f"<!-- {v} -->" for v in libido_hints.values())
-        dynamic_prompt = hint_block + "\n\n" + dynamic_prompt
-
-    return fixed_prompt, genre_prompt, dynamic_prompt, scene_types
-
+    return prompts.fixed, prompts.genre, prompts.dynamic, scene_types
 
 # ════════════════════════════════════════════════════════════
 # 테스트

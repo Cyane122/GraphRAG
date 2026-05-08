@@ -22,6 +22,10 @@ _OPS: dict = {
     "==": _op.eq,
 }
 
+_RELATIONSHIP_FIELDS = {
+    "affinity", "trust",
+}
+
 
 async def _eval_time(cond: dict, current_dt: datetime) -> bool:
     """게임 날짜(월·일)와 조건값(MM-DD)을 정수로 변환해 비교합니다."""
@@ -49,6 +53,8 @@ async def _eval_stat(cond: dict, _current_dt: datetime) -> bool:
 
     fn = _OPS.get(op)
     if not all([fn, field, value is not None, char_from, char_to]):
+        return False
+    if field not in _RELATIONSHIP_FIELDS:
         return False
 
     async with async_driver.session() as session:
