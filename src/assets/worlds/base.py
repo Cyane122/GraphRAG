@@ -210,7 +210,59 @@ class World:
                 PRIMARY KEY(id)
             )""",
 
-            "CREATE NODE TABLE IF NOT EXISTS Location(id STRING, name STRING, description STRING, atmosphere STRING, current_chars STRING[], district STRING, PRIMARY KEY(id))",
+            """CREATE NODE TABLE IF NOT EXISTS Location(
+                id STRING,
+                name STRING,
+                description STRING,
+                atmosphere STRING,
+                current_chars STRING[],
+                district STRING,
+                summary STRING,
+                prompt_hint STRING,
+                prompt_priority INT64,
+                tags STRING[],
+                PRIMARY KEY(id)
+            )""",
+
+            """CREATE NODE TABLE IF NOT EXISTS Rule(
+                id STRING,
+                name STRING,
+                summary STRING,
+                prompt_hint STRING,
+                prompt_priority INT64,
+                tags STRING[],
+                location_id STRING,
+                owner_id STRING,
+                scene_type STRING,
+                status STRING,
+                PRIMARY KEY(id)
+            )""",
+
+            """CREATE NODE TABLE IF NOT EXISTS SpeechProfile(
+                id STRING,
+                name STRING,
+                summary STRING,
+                prompt_hint STRING,
+                prompt_priority INT64,
+                tags STRING[],
+                char_id STRING,
+                audience_id STRING,
+                scene_type STRING,
+                PRIMARY KEY(id)
+            )""",
+
+            """CREATE NODE TABLE IF NOT EXISTS RelationshipProfile(
+                id STRING,
+                name STRING,
+                summary STRING,
+                prompt_hint STRING,
+                prompt_priority INT64,
+                tags STRING[],
+                source_id STRING,
+                target_id STRING,
+                scene_type STRING,
+                PRIMARY KEY(id)
+            )""",
 
             "CREATE NODE TABLE IF NOT EXISTS GlobalState(id STRING, currentLocationId STRING, currentTime STRING, weather STRING, schedule_slot STRING, clients_done INT64, clients_total INT64, flags STRING, today_schedule STRING, schedule_date STRING, PRIMARY KEY(id))",
 
@@ -219,6 +271,9 @@ class World:
                 location_id STRING, impact STRING,
                 need_name STRING,
                 importance INT64, decay_rate DOUBLE, summary_level INT64,
+                memory_type STRING,
+                narrative_summary STRING,
+                state_summary STRING,
                 safety_impact DOUBLE, safety_resolved BOOLEAN, safety_decay_rate DOUBLE,
                 embedding FLOAT[{dim}],
                 PRIMARY KEY(id)
@@ -237,6 +292,9 @@ class World:
                 char_id STRING,
                 summary STRING,
                 embedding FLOAT[{dim}],
+                memory_type STRING,
+                narrative_summary STRING,
+                state_summary STRING,
                 importance INT64,
                 distortion_level DOUBLE,
                 summary_level INT64,
@@ -316,6 +374,11 @@ class World:
             "CREATE REL TABLE IF NOT EXISTS HAS_WORKPLACE(FROM Character TO WorkplaceProfile)",
             "CREATE REL TABLE IF NOT EXISTS HAS_DIALOGUE_EXAMPLES(FROM Character TO DialogueExamples)",
             "CREATE REL TABLE IF NOT EXISTS LOCATED_AT(FROM Character TO Location)",
+            "CREATE REL TABLE IF NOT EXISTS HAS_SPEECH_PROFILE(FROM Character TO SpeechProfile)",
+            "CREATE REL TABLE IF NOT EXISTS HAS_RELATIONSHIP_PROFILE(FROM Character TO RelationshipProfile)",
+            "CREATE REL TABLE IF NOT EXISTS PROFILE_TARGET(FROM RelationshipProfile TO Character)",
+            "CREATE REL TABLE IF NOT EXISTS APPLIES_AT(FROM Rule TO Location)",
+            "CREATE REL TABLE IF NOT EXISTS RULE_FOR_CHARACTER(FROM Rule TO Character)",
             """CREATE REL TABLE IF NOT EXISTS RELATIONSHIP(
                 FROM Character TO Character,
                 type STRING, affinity INT64, trust INT64,

@@ -227,12 +227,22 @@ async def fetch_recent_events(npc_id: str, pc_id: str, limit: int = 3) -> list[d
             MATCH (npc:Character {id: $npc_id})-[:INVOLVED_IN]->(e:Event)
             OPTIONAL MATCH (npc)-[:REMEMBERS]->(m_npc:Memory)-[:OF_EVENT]->(e)
             OPTIONAL MATCH (pc:Character {id: $pc_id})-[:REMEMBERS]->(m_pc:Memory)-[:OF_EVENT]->(e)
-            RETURN e.id           AS id,
-                   e.summary      AS summary,
-                   e.timestamp    AS timestamp,
-                   e.impact       AS impact,
-                   m_npc.summary  AS npc_memory,
-                   m_pc.summary   AS pc_memory
+            RETURN e.id                AS id,
+                   CASE
+                       WHEN e.narrative_summary IS NULL OR e.narrative_summary = '' THEN e.summary
+                       ELSE e.narrative_summary
+                   END                 AS summary,
+                   e.timestamp         AS timestamp,
+                   e.impact            AS impact,
+                   e.memory_type       AS memory_type,
+                   CASE
+                       WHEN m_npc.narrative_summary IS NULL OR m_npc.narrative_summary = '' THEN m_npc.summary
+                       ELSE m_npc.narrative_summary
+                   END                 AS npc_memory,
+                   CASE
+                       WHEN m_pc.narrative_summary IS NULL OR m_pc.narrative_summary = '' THEN m_pc.summary
+                       ELSE m_pc.narrative_summary
+                   END                 AS pc_memory
             ORDER BY e.timestamp DESC
             LIMIT $limit
         """, npc_id=npc_id, pc_id=pc_id, limit=limit)

@@ -5,7 +5,7 @@
 # 왜곡과 압축은 배치 처리로 LLM 호출 횟수를 최소화합니다.
 #
 # Functions
-#   - ensure_memories_for_event(event_id, summary, importance, char_ids, timestamp, embedding) -> None : Event에 관련된 캐릭터별 Memory 노드 생성
+#   - ensure_memories_for_event(event_id, summary, importance, char_ids, timestamp, embedding, memory_type, narrative_summary, state_summary) -> None : Event에 관련된 캐릭터별 Memory 노드 생성
 #   - run_decay(current_game_time: datetime) -> None : 게임 내 시간 경과에 따라 기억 풍화·왜곡·삭제
 #   - distort_on_affinity_change(char_id, pc_id, affinity_delta, current_game_time) -> None : 호감도 급변 시 관련 기억을 즉시 재해석
 # ================================
@@ -43,6 +43,9 @@ async def ensure_memories_for_event(
     char_ids:   list[str],
     timestamp:  str,
     embedding:  list[float] | None = None,
+    memory_type: str = "episodic",
+    narrative_summary: str = "",
+    state_summary: str = "",
 ) -> None:
     """
     Event에 관련된 캐릭터별 Memory 노드를 생성.
@@ -78,6 +81,9 @@ async def ensure_memories_for_event(
                     char_id:          $char_id,
                     summary:          $summary,
                     embedding:        $emb,
+                    memory_type:      $memory_type,
+                    narrative_summary: $narrative_summary,
+                    state_summary:    $state_summary,
                     importance:       $importance,
                     distortion_level: 0.0,
                     summary_level:    0,
@@ -85,7 +91,9 @@ async def ensure_memories_for_event(
                     last_decayed_at:  $ts
                 })
             """, mid=mem_id, event_id=event_id, char_id=char_id,
-                 summary=summary, emb=emb, importance=importance, ts=timestamp)
+                 summary=summary, emb=emb, memory_type=memory_type,
+                 narrative_summary=narrative_summary, state_summary=state_summary,
+                 importance=importance, ts=timestamp)
 
             await session.run("""
                 MATCH (c:Character {id: $cid}), (m:Memory {id: $mid})
@@ -403,7 +411,10 @@ async def _fetch_shared_memories(char_id: str, pc_id: str) -> list[dict]:
             MATCH (m)-[:OF_EVENT]->(e:Event)
             MATCH (pc:Character {id: $pc_id})-[:INVOLVED_IN]->(e)
             RETURN m.id               AS mid,
-                   m.summary          AS summary,
+                   CASE
+                       WHEN m.narrative_summary IS NULL OR m.narrative_summary = '' THEN m.summary
+                       ELSE m.narrative_summary
+                   END                AS summary,
                    m.importance       AS importance,
                    m.distortion_level AS distortion,
                    m.summary_level    AS level
@@ -438,6 +449,7 @@ async def _update_memory(
             await session.run("""
                 MATCH (m:Memory {id: $mid})
                 SET m.summary          = $summary,
+                    m.narrative_summary = $summary,
                     m.embedding        = $emb,
                     m.summary_level    = $level,
                     m.distortion_level = $distortion,
@@ -448,6 +460,7 @@ async def _update_memory(
             await session.run("""
                 MATCH (m:Memory {id: $mid})
                 SET m.summary          = $summary,
+                    m.narrative_summary = $summary,
                     m.summary_level    = $level,
                     m.distortion_level = $distortion,
                     m.last_decayed_at  = $ts

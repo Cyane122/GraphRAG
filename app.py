@@ -12,6 +12,8 @@
 #   - on_edit_response(action: cl.Action) -> None : 수정 버튼 콜백
 #   - route_user_input(user_input: str, message: cl.Message) -> TurnInputType : 입력 처리 경로 판별
 #   - _send_status_toast(content: str) -> cl.CustomElement : 중앙 상태 토스트 출력
+#   - _commit_scene_state(pending: dict) -> None : accepted Actor response로 SceneState 갱신
+#   - _should_run_scheduler(pending: dict) -> bool : Context Planner가 장기/일정 맥락을 선택했는지 확인
 # ================================
 
 import asyncio
@@ -34,6 +36,7 @@ import chainlit as cl
 from src.config import PERSPECTIVE, WORLD_ID, MODEL_ACTOR, MAX_TOKEN
 from src.agents.manager import run_manager, load_world_instance, commit_manager_effects
 from src.agents.prompt_factory.ooc_handler import is_ooc, parse_ooc
+from src.agents.scene_state import update_scene_state_after_response
 from src.simulation.state.updater import process_actor_response, delegate_complex_update
 from src.core.logging.conversation_logger import append_turn, parse_log_file
 from src.core.database.driver import async_driver
@@ -289,6 +292,31 @@ async def _restore_response_msg(msg_id: str, content: str) -> None:
 # 지연 확정 (Deferred Commit)
 # ════════════════════════════════════════════════════════════
 
+def _commit_scene_state(pending: dict) -> None:
+    """Accepted Actor responses update the lightweight SceneState after reroll risk ends."""
+    manager_effects = pending.get("manager_effects") or {}
+    scene_state = manager_effects.get("scene_state") or {}
+    update_scene_state_after_response(
+        world_id=WORLD_ID,
+        pc_id=PC_ID,
+        npc_id=NPC_ID,
+        user_input=pending.get("user_input", ""),
+        actor_response=pending.get("ai_response", ""),
+        scene_types=pending.get("scene_types") or [],
+        scene_chars=pending.get("scene_chars") or [],
+        location=scene_state.get("location"),
+    )
+
+
+def _should_run_scheduler(pending: dict) -> bool:
+    """Run world schedulers only when the planner selected schedule-like context."""
+    manager_effects = pending.get("manager_effects") or {}
+    context_plan = manager_effects.get("context_plan") or {}
+    required_systems = set(context_plan.get("required_systems") or [])
+    query_focus = set(context_plan.get("query_focus") or [])
+    return bool({"goals", "social"} & required_systems or {"long_term_pressure", "nearby_activity"} & query_focus)
+
+
 async def _commit_pending(pending: dict) -> None:
     """
     이전 턴의 Actor 응답을 DB에 반영한다.
@@ -314,13 +342,15 @@ async def _commit_pending(pending: dict) -> None:
         # 임신 이벤트 발생 — 다음 OOC 처리 단계에서 자동 주입
         cl.user_session.set("pending_ooc", ooc_from_pregnancy)
 
+    _commit_scene_state(pending)
+
     append_turn(
         user_input  = pending["user_input"],
         ai_response = pending["ai_response"],
         timestamp   = pending.get("timestamp"),
     )
 
-    if WORLD_ID == "sses":
+    if WORLD_ID == "sses" and _should_run_scheduler(pending):
         sms = await check_and_trigger_schedule()
         if sms:
             await cl.Message(content=sms, author="사회정서지원과").send()
@@ -690,7 +720,7 @@ async def _run_generation(
     history_snapshot = list(history)
     recent_snapshot  = list(recent_responses)
 
-    history += [{"role": "user", "content": dynamic}, {"role": "assistant", "content": full_response}]
+    history += [{"role": "user", "content": user_input}, {"role": "assistant", "content": full_response}]
     del history[:-MAX_HISTORY_TURNS * 2]
     cl.user_session.set("conversation_history", history)
 
@@ -818,10 +848,10 @@ async def on_chat_start() -> None:
 @cl.on_chat_end
 async def on_chat_end() -> None:
     """
-    채팅 종료 시 미확정 pending을 백그라운드에서 강제 처리한다.
+    채팅 종료 시 미확정 pending을 세션 종료 전에 강제 처리한다.
 
     정상 흐름에서는 다음 턴 시작 시 처리되지만,
-    마지막 응답 후 바로 창을 닫는 경우를 대비해 fire-and-forget으로 실행한다.
+    마지막 응답 후 바로 창을 닫는 경우에도 후처리가 유실되지 않도록 기다린다.
     """
     pending = cl.user_session.get("pending_commit")
     if not pending:
@@ -831,14 +861,14 @@ async def on_chat_end() -> None:
         pc_id=PC_ID,
         npc_id=NPC_ID,
     )
-    asyncio.create_task(
-        process_actor_response(
-            pending["ai_response"], NPC_ID, PC_ID,
-            scene_types  = pending.get("scene_types"),
-            scene_chars  = pending.get("scene_chars", []),
-            world_config = world_config,
-        )
+    await process_actor_response(
+        pending["ai_response"], NPC_ID, PC_ID,
+        scene_types  = pending.get("scene_types"),
+        scene_chars  = pending.get("scene_chars", []),
+        world_config = world_config,
     )
+    _commit_scene_state(pending)
+
     append_turn(
         user_input  = pending["user_input"],
         ai_response = pending["ai_response"],

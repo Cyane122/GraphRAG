@@ -33,6 +33,48 @@ _TABLE_MIGRATIONS: list[str] = [
         PRIMARY KEY(id)
     )""",
     "CREATE REL TABLE IF NOT EXISTS HAS_NEEDS(FROM Character TO NeedsState)",
+    """CREATE NODE TABLE IF NOT EXISTS Rule(
+        id STRING,
+        name STRING,
+        summary STRING,
+        prompt_hint STRING,
+        prompt_priority INT64,
+        tags STRING[],
+        location_id STRING,
+        owner_id STRING,
+        scene_type STRING,
+        status STRING,
+        PRIMARY KEY(id)
+    )""",
+    """CREATE NODE TABLE IF NOT EXISTS SpeechProfile(
+        id STRING,
+        name STRING,
+        summary STRING,
+        prompt_hint STRING,
+        prompt_priority INT64,
+        tags STRING[],
+        char_id STRING,
+        audience_id STRING,
+        scene_type STRING,
+        PRIMARY KEY(id)
+    )""",
+    """CREATE NODE TABLE IF NOT EXISTS RelationshipProfile(
+        id STRING,
+        name STRING,
+        summary STRING,
+        prompt_hint STRING,
+        prompt_priority INT64,
+        tags STRING[],
+        source_id STRING,
+        target_id STRING,
+        scene_type STRING,
+        PRIMARY KEY(id)
+    )""",
+    "CREATE REL TABLE IF NOT EXISTS HAS_SPEECH_PROFILE(FROM Character TO SpeechProfile)",
+    "CREATE REL TABLE IF NOT EXISTS HAS_RELATIONSHIP_PROFILE(FROM Character TO RelationshipProfile)",
+    "CREATE REL TABLE IF NOT EXISTS PROFILE_TARGET(FROM RelationshipProfile TO Character)",
+    "CREATE REL TABLE IF NOT EXISTS APPLIES_AT(FROM Rule TO Location)",
+    "CREATE REL TABLE IF NOT EXISTS RULE_FOR_CHARACTER(FROM Rule TO Character)",
 ]
 
 _COLUMN_MIGRATIONS: list[str] = [
@@ -60,6 +102,10 @@ _COLUMN_MIGRATIONS: list[str] = [
     "ALTER TABLE DynamicState ADD expectation_gap DOUBLE DEFAULT 0.0",
     "ALTER TABLE DynamicState ADD penis_size STRING DEFAULT ''",
     "ALTER TABLE Location ADD district STRING DEFAULT ''",
+    "ALTER TABLE Location ADD summary STRING DEFAULT ''",
+    "ALTER TABLE Location ADD prompt_hint STRING DEFAULT ''",
+    "ALTER TABLE Location ADD prompt_priority INT64 DEFAULT 0",
+    "ALTER TABLE Location ADD tags STRING[] DEFAULT []",
     "ALTER TABLE GlobalState ADD today_schedule STRING DEFAULT ''",
     "ALTER TABLE GlobalState ADD schedule_date STRING DEFAULT ''",
     "ALTER TABLE StaticProfile ADD age INT64 DEFAULT 0",
@@ -69,6 +115,12 @@ _COLUMN_MIGRATIONS: list[str] = [
     "ALTER TABLE Event ADD safety_resolved BOOLEAN DEFAULT false",
     "ALTER TABLE Event ADD safety_decay_rate DOUBLE DEFAULT 0.002",
     "ALTER TABLE Event ADD need_name STRING DEFAULT ''",
+    "ALTER TABLE Event ADD memory_type STRING DEFAULT 'episodic'",
+    "ALTER TABLE Event ADD narrative_summary STRING DEFAULT ''",
+    "ALTER TABLE Event ADD state_summary STRING DEFAULT ''",
+    "ALTER TABLE Memory ADD memory_type STRING DEFAULT 'episodic'",
+    "ALTER TABLE Memory ADD narrative_summary STRING DEFAULT ''",
+    "ALTER TABLE Memory ADD state_summary STRING DEFAULT ''",
 ]
 
 

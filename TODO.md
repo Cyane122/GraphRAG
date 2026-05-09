@@ -297,7 +297,7 @@ State diff 후보 예시:
 - [x] `run_manager`를 읽었을 때 단계별 역할이 명확하다.
 - [x] 시간 계획과 시간 커밋이 분리된다.
 - [x] Context 조회와 Context 렌더링이 분리된다.
-- [ ] PromptBuilder는 이미 정리된 context를 받아 조립하는 역할에 가까워진다.
+- [x] PromptBuilder는 이미 정리된 context를 받아 조립하는 역할에 가까워진다.
 
 주의:
 
@@ -363,20 +363,20 @@ Context Planner 출력 초안:
 
 작업 항목:
 
-- [ ] SceneState를 저장할 위치를 정한다.
+- [x] SceneState를 저장할 위치를 정한다.
   - 초기에는 Chainlit session 또는 lightweight DB node 중 하나로 시작한다.
   - 장기적으로는 DB node가 적합하다.
-- [ ] Actor 응답 후 SceneState 업데이트 후보를 추출한다.
-- [ ] 장면이 이어지는 경우 `unresolved_beats`를 유지한다.
-- [ ] 장면이 바뀌는 경우 새 SceneState를 생성한다.
-- [ ] SceneState를 Context Planner 입력으로 사용한다.
-- [ ] Planner는 필요한 시스템과 노드만 선택한다.
+- [x] Actor 응답 후 SceneState 업데이트 후보를 추출한다.
+- [x] 장면이 이어지는 경우 `unresolved_beats`를 유지한다.
+- [x] 장면이 바뀌는 경우 새 SceneState를 생성한다.
+- [x] SceneState를 Context Planner 입력으로 사용한다.
+- [x] Planner는 필요한 시스템과 노드만 선택한다.
 
 완료 기준:
 
-- [ ] Dynamic Prompt에 last_action, unresolved_beats, mood, distance를 넣을 수 있다.
-- [ ] Context Planner가 Memory, SNS, Secret, Goals 등을 매 턴 무조건 켜지 않는다.
-- [ ] 현재 location/participants 기준으로 필요한 context 조회 범위를 줄일 수 있다.
+- [x] Dynamic Prompt에 last_action, unresolved_beats, mood, distance를 넣을 수 있다.
+- [x] Context Planner가 Memory, SNS, Secret, Goals 등을 매 턴 무조건 켜지 않는다.
+- [x] 현재 location/participants 기준으로 필요한 context 조회 범위를 줄일 수 있다.
 
 주의:
 
@@ -435,12 +435,12 @@ Dynamic Prompt 블록 목표:
 
 작업 항목:
 
-- [ ] 블록별 기본 예산 상수를 만든다.
-- [ ] 예산 초과 시 자르는 규칙을 정한다.
-- [ ] 중요도, 최근성, scene relevance 기준으로 항목을 정렬한다.
-- [ ] Memory / Event / Relationship / Goal / Item / Secret 렌더러를 분리한다.
-- [ ] 각 렌더러는 JSON dump가 아니라 Actor용 힌트 문장을 반환한다.
-- [ ] PromptBuilder는 렌더링된 블록을 조립하는 역할에 가깝게 바꾼다.
+- [x] 블록별 기본 예산 상수를 만든다.
+- [x] 예산 초과 시 자르는 규칙을 정한다.
+- [x] 중요도, 최근성, scene relevance 기준으로 항목을 정렬한다.
+- [x] Memory / Event / Relationship / Goal / Item / Secret 렌더러를 분리한다.
+- [x] 각 렌더러는 JSON dump가 아니라 Actor용 힌트 문장을 반환한다.
+- [x] PromptBuilder는 렌더링된 블록을 조립하는 역할에 가깝게 바꾼다.
 
 렌더링 예시:
 
@@ -454,10 +454,10 @@ Dynamic Prompt 블록 목표:
 
 완료 기준:
 
-- [ ] 각 Dynamic Prompt 블록의 최대 크기를 설명할 수 있다.
-- [ ] DB raw JSON이 Actor Prompt에 그대로 들어가는 비율이 줄어든다.
-- [ ] 현재 장면과 관련 없는 SNS/Secret/Goal/Memory가 기본 삽입되지 않는다.
-- [ ] Fixed Prompt에는 동적 정보가 들어가지 않는다.
+- [x] 각 Dynamic Prompt 블록의 최대 크기를 설명할 수 있다.
+- [x] DB raw JSON이 Actor Prompt에 그대로 들어가는 비율이 줄어든다.
+- [x] 현재 장면과 관련 없는 SNS/Secret/Goal/Memory가 기본 삽입되지 않는다.
+- [x] Fixed Prompt에는 동적 정보가 들어가지 않는다.
 
 주의:
 
@@ -569,16 +569,16 @@ Retrieval 규칙 초안:
 
 작업 항목:
 
-- [ ] 각 후보 노드가 필요한 world/use case를 적는다.
-- [ ] 기본 스키마에 넣을지, world 확장 스키마에 둘지 결정한다.
-- [ ] `prompt_hint` 없이 raw data만 늘어나는 노드는 보류한다.
-- [ ] 노드 추가 전 retrieval 조건과 renderer를 먼저 설계한다.
+- [x] 각 후보 노드가 필요한 world/use case를 적는다.
+- [x] 기본 스키마에 넣을지, world 확장 스키마에 둘지 결정한다.
+- [x] `prompt_hint` 없이 raw data만 늘어나는 노드는 보류한다.
+- [x] 노드 추가 전 retrieval 조건과 renderer를 먼저 설계한다.
 
 완료 기준:
 
-- [ ] 어떤 노드를 지금 하지 않을지 명확하다.
-- [ ] 기본 스키마가 과도하게 비대해지지 않는다.
-- [ ] world별 확장 여지를 남긴다.
+- [x] 어떤 노드를 지금 하지 않을지 명확하다.
+- [x] 기본 스키마가 과도하게 비대해지지 않는다.
+- [x] world별 확장 여지를 남긴다.
 
 주의:
 
@@ -617,18 +617,18 @@ Retrieval 규칙 초안:
 
 작업 항목:
 
-- [ ] Memory Type은 2~3개부터 시작한다.
-- [ ] 오래된 턴은 Narrative Summary로 압축한다.
-- [ ] 중요한 사실은 State Summary로 보존한다.
-- [ ] SNS/Secret/Scheduler는 Context Planner가 필요하다고 판단할 때만 실행한다.
-- [ ] Branch/Rollback 전체 구현은 마지막 단계로 미룬다.
+- [x] Memory Type은 2~3개부터 시작한다.
+- [x] 오래된 턴은 Narrative Summary로 압축한다.
+- [x] 중요한 사실은 State Summary로 보존한다.
+- [x] SNS/Secret/Scheduler는 Context Planner가 필요하다고 판단할 때만 실행한다.
+- [x] Branch/Rollback 전체 구현은 마지막 단계로 미룬다.
 
 완료 기준:
 
-- [ ] 장기 기능이 매 턴 기본 실행되지 않는다.
-- [ ] Summary와 Memory가 서로 역할을 침범하지 않는다.
-- [ ] Secret private 정보가 Actor Prompt에 직접 들어가지 않는다.
-- [ ] NPC 자율행동이 유저 선택권을 빼앗지 않는다.
+- [x] 장기 기능이 매 턴 기본 실행되지 않는다.
+- [x] Summary와 Memory가 서로 역할을 침범하지 않는다.
+- [x] Secret private 정보가 Actor Prompt에 직접 들어가지 않는다.
+- [x] NPC 자율행동이 유저 선택권을 빼앗지 않는다.
 
 주의:
 

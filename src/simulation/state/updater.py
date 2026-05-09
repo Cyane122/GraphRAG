@@ -11,6 +11,8 @@
 #   - commit_time_plan(time_plan: dict, pc_id: str, npc_id: str) -> datetime : 계산된 시간 계획을 DB에 반영
 #   - apply_time_updates(plan, base_time, pc_id, npc_id) -> datetime : 시간 계획을 DB에 반영
 #   - delegate_complex_update(actor_response, npc_id, pc_id, initial_changes, event_only, world_config, scene_chars) -> str | None : event_only 경로 전용 복합 업데이트
+#   - _normalize_memory_type(value: object, summary: str, impact: str, importance: int) -> str : 이벤트를 1차 Memory Type으로 정규화
+#   - _prepare_event_summaries(event_data: dict) -> dict : Event/Memory summary 역할 필드 보강
 #
 # 관계 깊이 파이프라인 (process_actor_response 내부에서 호출):
 #   - reputation.propagate_gossip : 중요 이벤트 후 주변 NPC에게 소문 전파
@@ -232,6 +234,37 @@ def _safe_int(value: object, default: int = 0) -> int:
         return default
 
 
+def _normalize_memory_type(value: object, summary: str, impact: str, importance: int) -> str:
+    """Return one of the first-pass long-term memory types."""
+    if isinstance(value, str) and value.strip().lower() in {"episodic", "emotional", "relational"}:
+        return value.strip().lower()
+
+    text = f"{summary}\n{impact}".lower()
+    if importance >= 7 or re.search(r"confess|reconcile|breakup|trust|affinity|관계|고백|화해|갈등|신뢰", text):
+        return "relational"
+    if re.search(r"fear|hurt|relief|shame|anxious|sad|angry|감정|불안|상처|안도|분노|슬픔", text):
+        return "emotional"
+    return "episodic"
+
+
+def _prepare_event_summaries(event_data: dict) -> dict:
+    """Fill Event summary roles without requiring another LLM call."""
+    summary = str(event_data.get("summary") or "").strip()
+    impact = str(event_data.get("impact") or "").strip()
+    importance = _safe_int(event_data.get("importance"), 0)
+    memory_type = _normalize_memory_type(event_data.get("memory_type"), summary, impact, importance)
+    narrative_summary = str(event_data.get("narrative_summary") or summary).strip()
+    state_summary = str(event_data.get("state_summary") or impact or summary).strip()
+    return {
+        "summary": summary,
+        "impact": impact,
+        "importance": importance,
+        "memory_type": memory_type,
+        "narrative_summary": narrative_summary,
+        "state_summary": state_summary,
+    }
+
+
 def _audit_state_updates(state: dict, actor_response: str, npc_id: str) -> tuple[dict, list[dict]]:
     """DynamicState 후보에 confidence/evidence를 붙이고 commit 가능한 필드만 반환합니다."""
     accepted: dict = {}
@@ -438,6 +471,9 @@ When creating an event replace new_event with:
 {{
   "id": "string",
   "summary": "1–2 sentence Korean summary",
+  "memory_type": "episodic|emotional|relational",
+  "narrative_summary": "Actor-facing story continuity, 1 sentence",
+  "state_summary": "Fact/state preservation summary, 1 sentence",
   "importance": 0,
   "impact": "brief description"
 }}
@@ -801,6 +837,11 @@ ID format: {{location}}_{{description}}_{{YYYYMMDD_HHMM}}
 When importance ≥ 7 add "new_relationship_status" to new_event:
   1–3 sentences English describing the current relationship state after this event.
 
+When creating new_event include:
+- memory_type: one of episodic, emotional, relational.
+- narrative_summary: Actor-facing story continuity, 1 sentence.
+- state_summary: factual state/relationship preservation, 1 sentence.
+
 Return ONLY valid JSON:
 {{
   "new_event": null
@@ -860,13 +901,15 @@ async def _create_event(event_data: dict, npc_id: str, pc_id: str) -> None:
 
     timestamp_fmt = await get_in_universe_time()
     timestamp_iso = await _get_current_iso_time()
-    summary       = event_data.get("summary", "")
-    importance    = event_data.get("importance", 5)
+    prepared = _prepare_event_summaries(event_data)
+    summary = prepared["summary"]
+    importance = prepared["importance"] or 5
 
     embedding = None
-    if summary:
+    embedding_text = prepared["narrative_summary"] or summary
+    if embedding_text:
         try:
-            embedding = await embed_async(summary)
+            embedding = await embed_async(embedding_text)
         except Exception as e:
             print(f"[Updater] 임베딩 생성 실패 (무시): {e}")
 
@@ -878,13 +921,19 @@ async def _create_event(event_data: dict, npc_id: str, pc_id: str) -> None:
                 timestamp:     $timestamp,
                 importance:    $importance,
                 impact:        $impact,
+                memory_type:   $memory_type,
+                narrative_summary: $narrative_summary,
+                state_summary: $state_summary,
                 decay_rate:    0.1,
                 summary_level: 0,
                 embedding:     $embedding
             })
         """,
             id=event_data["id"], summary=summary, timestamp=timestamp_fmt,
-            importance=importance, impact=event_data.get("impact", ""),
+            importance=importance, impact=prepared["impact"],
+            memory_type=prepared["memory_type"],
+            narrative_summary=prepared["narrative_summary"],
+            state_summary=prepared["state_summary"],
             embedding=embedding,
         )
 
@@ -910,6 +959,9 @@ async def _create_event(event_data: dict, npc_id: str, pc_id: str) -> None:
         char_ids   = [npc_id, pc_id],
         timestamp  = timestamp_iso,
         embedding  = embedding,
+        memory_type=prepared["memory_type"],
+        narrative_summary=prepared["narrative_summary"],
+        state_summary=prepared["state_summary"],
     )
 
 

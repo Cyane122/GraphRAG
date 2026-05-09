@@ -9,6 +9,7 @@
 # Functions
 #   - build_genre_section(genres: list[str], world_config: dict | None) -> str : 씬 타입별 Genre 섹션 조립
 #   - _render_state_line(dyn_state: dict, world_config: dict | None) -> str : DynamicState → STATE 한 줄 문자열
+#   - _join_rendered_context(rendered_context: dict[str, str]) -> str : pre-rendered dynamic context blocks 조립
 # ================================
 
 from datetime import datetime
@@ -615,6 +616,13 @@ def _clean_prompt_dict(data: dict) -> dict:
     return cleaned
 
 
+def _join_rendered_context(rendered_context: dict[str, str]) -> str:
+    """Join pre-rendered dynamic context blocks in stable prompt order."""
+    order = ("scene", "relationship", "npcs", "events", "memories", "world")
+    blocks = [rendered_context.get(key, "") for key in order]
+    return "<world_context>\n" + "\n\n".join(block for block in blocks if block) + "\n</world_context>"
+
+
 class PromptBuilder:
 
     def __init__(
@@ -833,11 +841,22 @@ class PromptBuilder:
         goals         = world_context.get("life_goals", [])
         item_memories = world_context.get("object_memories", [])
         secrets       = world_context.get("secret_hints", [])
+        scene_state   = world_context.get("scene_state", {})
+        context_plan  = world_context.get("context_plan", {})
 
-        if not static_events and not nearby and not sns and not goals and not item_memories and not secrets:
+        if (
+            not static_events and not nearby and not sns and not goals
+            and not item_memories and not secrets and not scene_state and not context_plan
+        ):
             return ""
 
         parts: list[str] = []
+
+        if scene_state:
+            parts.append(_render_scene_state_hint(scene_state))
+
+        if context_plan:
+            parts.append(_render_context_plan_hint(context_plan))
 
         if static_events:
             lines = []
@@ -925,6 +944,7 @@ class PromptBuilder:
             recall_events:    Optional[list[dict]] = None,
             memory_conflicts: Optional[list[str]] = None,
             world_context:    Optional[dict]       = None,
+            rendered_context: Optional[dict[str, str]] = None,
     ) -> tuple[str, str, str]:
         """
         Returns:
@@ -984,15 +1004,25 @@ class PromptBuilder:
         state_line = _render_state_line(dyn_state, self.world_config)
         checklist = checklist.replace("{state_line}", state_line)
 
+        if rendered_context:
+            context_block = _join_rendered_context(rendered_context)
+        else:
+            context_block = "\n\n".join(
+                part for part in (
+                    self.build_relationship_section(relationship),
+                    self.build_npc_section(npcs or []),
+                    self.build_events_section(events),
+                    self.build_recall_events_section(recall_events or [], memory_conflicts or []),
+                    self.build_world_section(world_context or {}),
+                )
+                if part
+            )
+
         dynamic_parts = [
             self.world_config.get("alteration_section", ""),
             self.build_header(location, dt),
             self.build_character_section(char_data, scene_types),
-            self.build_relationship_section(relationship),
-            self.build_npc_section(npcs or []),
-            self.build_events_section(events),
-            self.build_recall_events_section(recall_events or [], memory_conflicts or []),
-            self.build_world_section(world_context or {}),
+            context_block,
             self.build_dialogue_examples(scene_types),
             f"<context>\n{recent_story}\n</context>" if recent_story else "",
             f"<user_input>\n{user_input}\n</user_input>",
