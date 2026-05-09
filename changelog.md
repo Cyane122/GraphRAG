@@ -367,3 +367,30 @@
     - 비유 표현 기반 physical update는 `reject`
     - 실제 부상 evidence가 있는 physical update는 `commit`
   - `TODO.md` 1.1~1.3 작업 항목과 완료 기준 체크 완료
+
+## 2026-05-09
+- [버그픽스] Actor 히스토리 컨텍스트 과다 주입 수정
+  - `app.py`
+    - `conversation_history`에 사용자 메시지로 `dynamic_prompt` 전체를 저장하던 문제 수정
+    - 이제 history에는 실제 `user_input`만 저장하고, 현재 턴의 graph/dynamic context는 별도 `dynamic_prompt`로만 전달
+    - 최근 10턴 히스토리 제한은 유지하되, 이전 턴마다 `<character>`, `<world_context>`, dialogue examples가 중복 주입되는 문제 제거
+- [버그픽스] Relationship context 방향 및 렌더링 수정
+  - `src/agents/manager_pipeline.py`
+    - 관계 조회 방향을 실제 DB 구조에 맞춰 `npc_id -> pc_id`로 수정
+    - social context 생성 시 generic prompt context를 덮어쓰지 않고 병합하도록 수정
+    - recall memory에 `memory_type`을 유지해 renderer까지 전달
+  - `src/agents/context_renderer.py`
+    - relationship renderer가 `current_status`, `type`, `trust`, `last_interaction`을 출력하도록 수정
+    - secondary NPC 관계 힌트도 `current_status`를 우선 사용할 수 있도록 수정
+- [버그픽스] 채팅 종료 시 마지막 pending 후처리 유실 가능성 완화
+  - `app.py`
+    - `on_chat_end()`에서 `process_actor_response()`를 `asyncio.create_task()`로 fire-and-forget 처리하던 부분을 `await`로 변경
+    - 마지막 응답 직후 세션 종료 시 state update가 누락될 가능성 감소
+- [문서] 아키텍처 분석 문서 추가
+  - `docs/architecture_analysis.md`
+    - `.gitignore` 대상 제외 후 현재 코드베이스의 주요 아키텍처, 노드, 파이프라인, 모듈 책임 정리
+- [검증]
+  - `python -m compileall -q app.py src` 통과
+  - 주요 import smoke 통과
+  - relationship/current_status 및 memory_type renderer smoke 확인
+  - Kuzu DB는 단일 프로세스 lock이 있어 Chainlit 실행 중 별도 import/DB 검증이 실패할 수 있음을 확인
