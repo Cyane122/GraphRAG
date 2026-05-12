@@ -87,7 +87,7 @@ class World:
         "vulnerable":  "A character's weakness is exposed — emotional breakdown, exhaustion, confession",
         "aggressive":  "Verbal confrontation: arguments, threats, power struggles, psychological pressure",
         "physical":    "Combat, chase, training, or any scene driven by bodily exertion and kinetic energy",
-        "atmospheric.md": "Environment or mood takes center stage; setting description, sensory immersion",
+        "atmospheric": "Environment or mood takes center stage; setting description, sensory immersion",
     }
 
     def get_scene_types(self) -> list[str]:
@@ -369,7 +369,6 @@ class World:
             "CREATE REL TABLE IF NOT EXISTS HAS_PROFILE(FROM Character TO StaticProfile)",
             "CREATE REL TABLE IF NOT EXISTS HAS_PERSONALITY(FROM Character TO Personality)",
             "CREATE REL TABLE IF NOT EXISTS HAS_STATE(FROM Character TO DynamicState)",
-            "CREATE REL TABLE IF NOT EXISTS HAS_DYNAMIC_STATE(FROM Character TO DynamicState)",
             "CREATE REL TABLE IF NOT EXISTS HAS_INTIMATE(FROM Character TO IntimateProfile)",
             "CREATE REL TABLE IF NOT EXISTS HAS_WORKPLACE(FROM Character TO WorkplaceProfile)",
             "CREATE REL TABLE IF NOT EXISTS HAS_DIALOGUE_EXAMPLES(FROM Character TO DialogueExamples)",

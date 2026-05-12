@@ -2,7 +2,7 @@
 # src/assets/worlds/default/schema.py
 #
 # Default 세계 구현체. 새 세계관을 만들 때 복사·수정하는 템플릿.
-# 최소한의 노드(Location, PC, NPC, DynamicState, Relationship)만 포함.
+# 최소한의 노드(Location, PC, NPC, DynamicState, Relationship, generic prompt nodes)만 포함.
 #
 # Classes
 #   - DefaultWorld : 기본 세계 구현체
@@ -17,6 +17,28 @@ from src.assets.worlds.base import World, insert_static_inline
 from src.assets.worlds.utils import read_md, parse_few_shot
 
 _PROMPT_DIR = Path(__file__).parent / "prompt"
+
+
+def _read_optional_md(path: Path) -> str:
+    return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
+def _read_md_map(directory: Path, keys: list[str], suffix: str = ".md") -> dict[str, str]:
+    result: dict[str, str] = {}
+    for key in keys:
+        text = _read_optional_md(directory / f"{key}{suffix}")
+        if text:
+            result[key] = text
+    return result
+
+
+def _read_few_shot_map(directory: Path, keys: list[str], suffix: str = "") -> dict:
+    result = {}
+    for key in keys:
+        entry = parse_few_shot(directory / f"{key}{suffix}.md")
+        if entry["good"] or entry["bad"]:
+            result[key] = entry
+    return result
 
 
 class DefaultWorld(World):
@@ -49,13 +71,37 @@ class DefaultWorld(World):
                 result[scene] = entry
         return result
 
+    def get_prompt_config(self, perspective: int = 3) -> dict:
+        scene_keys = ["daily", "emotional", "physical", "intimate"]
+        suffix = "_1p" if perspective == 1 else "_3p"
+        return {
+            "pov": {
+                "mode": "1p_char" if perspective == 1 else "3p_char",
+            },
+            "sections": {
+                "world": self.get_world_section(),
+                "prose": self.get_specific_prose_rules(perspective),
+            },
+            "characters": {
+                "focus": {},
+                "blacklist": {},
+            },
+            "scenes": {
+                "prompt": {},
+                "blacklist": {},
+            },
+            "blacklist": {
+                "world": self.get_blacklist(),
+                "unified": True,
+            },
+            "few_shot": _read_few_shot_map(_PROMPT_DIR / "few_shot", scene_keys, suffix),
+        }
+
     def get_full_config(self, perspective: int = 3) -> dict:
         res = super().get_full_config(perspective)
-        res["additional_blacklist"] = self.get_blacklist()
-        res["start_time"]           = self.get_default_time()
-        res["prose_rules"]          = self.get_specific_prose_rules(perspective)
-        res["few_shot_examples"]    = self.get_few_shot_examples(perspective)
-        res["rating"]               = "r18"
+        res["start_time"] = self.get_default_time()
+        res["rating"]     = "r18"
+        res["prompt"]     = self.get_prompt_config(perspective)
         return res
 
     def get_npc_name_map(self) -> dict[str, str]:
@@ -72,7 +118,11 @@ class DefaultWorld(World):
                 name:          "집",
                 description:   "두 사람의 공간.",
                 atmosphere:    "comfortable+private",
-                current_chars: ["char", "player"]
+                current_chars: ["char", "player"],
+                summary:       "A quiet shared home for low-stakes daily scenes.",
+                prompt_hint:   "집은 사적인 공간이다. 캐릭터는 긴장을 낮추고 자연스럽게 움직이며, 큰 사건보다 생활감 있는 물건과 작은 행동으로 반응한다.",
+                prompt_priority: 10,
+                tags:          ["home", "private", "daily"]
             })
         """)
 
@@ -145,6 +195,62 @@ class DefaultWorld(World):
                 affinity: 70,
                 trust:    70
             }]->(b)
+        """)
+
+        # ── Generic prompt nodes ──────────────────────────────
+        conn.execute("""
+            CREATE (:Rule {
+                id:              "default_home_privacy",
+                name:            "집의 사적 분위기",
+                summary:         "집에서는 과장된 사건보다 일상적 반응과 편안한 거리감이 우선이다.",
+                prompt_hint:     "집 장면에서는 캐릭터가 갑자기 극적인 사건을 만들지 않는다. 작은 생활 행동, 시선, 말끝으로 관계 변화를 보여준다.",
+                prompt_priority: 10,
+                tags:            ["home", "daily"],
+                location_id:     "home",
+                owner_id:        "char",
+                scene_type:      "daily",
+                status:          "active"
+            })
+        """)
+        conn.execute("""
+            CREATE (:SpeechProfile {
+                id:              "char_speech_player_daily",
+                name:            "캐릭터 기본 말투",
+                summary:         "플레이어에게 편하게 반말하는 자연스러운 구어체.",
+                prompt_hint:     "캐릭터는 플레이어에게 반말을 쓴다. 설명조보다 짧고 자연스러운 구어체로 말하고, 감정은 말보다 행동에 먼저 실린다.",
+                prompt_priority: 10,
+                tags:            ["daily", "casual"],
+                char_id:         "char",
+                audience_id:     "player",
+                scene_type:      ""
+            })
+        """)
+        conn.execute("""
+            CREATE (:RelationshipProfile {
+                id:              "char_player_comfortable_friend",
+                name:            "편한 친구 관계",
+                summary:         "서로 편하지만 아직 큰 갈등이나 고백이 없는 안정적 관계.",
+                prompt_hint:     "캐릭터는 플레이어에게 편하게 기대되, 플레이어의 행동을 대신 만들지 않는다. 친밀감은 농담, 작은 배려, 익숙한 거리감으로 드러낸다.",
+                prompt_priority: 10,
+                tags:            ["friend", "comfortable"],
+                source_id:       "char",
+                target_id:       "player",
+                scene_type:      ""
+            })
+        """)
+        conn.execute("""
+            MATCH (c:Character {id: "char"}), (s:SpeechProfile {id: "char_speech_player_daily"})
+            CREATE (c)-[:HAS_SPEECH_PROFILE]->(s)
+        """)
+        conn.execute("""
+            MATCH (c:Character {id: "char"}), (rp:RelationshipProfile {id: "char_player_comfortable_friend"}), (p:Character {id: "player"})
+            CREATE (c)-[:HAS_RELATIONSHIP_PROFILE]->(rp)
+            CREATE (rp)-[:PROFILE_TARGET]->(p)
+        """)
+        conn.execute("""
+            MATCH (r:Rule {id: "default_home_privacy"}), (l:Location {id: "home"}), (c:Character {id: "char"})
+            CREATE (r)-[:APPLIES_AT]->(l)
+            CREATE (r)-[:RULE_FOR_CHARACTER]->(c)
         """)
 
         print("✅ Default 스키마 초기화 완료")

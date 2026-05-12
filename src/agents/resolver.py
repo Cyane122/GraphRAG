@@ -39,6 +39,20 @@ NEED_ACTION_HINTS = {
 }
 
 
+async def _unique_event_id(base_id: str) -> str:
+    """Return an Event id that does not collide with an existing node."""
+    async with async_driver.session() as session:
+        for idx in range(100):
+            candidate = base_id if idx == 0 else f"{base_id}_{idx + 1}"
+            rec = await session.run(
+                "MATCH (e:Event {id: $eid}) RETURN e.id AS id",
+                eid=candidate,
+            )
+            if await rec.single() is None:
+                return candidate
+    return f"{base_id}_{datetime.now().strftime('%H%M%S%f')}"
+
+
 async def _fetch_valid_locations() -> list[tuple[str, str]]:
     """DB에서 유효한 Location ID + 이름 목록 반환."""
     async with async_driver.session() as session:
@@ -139,7 +153,8 @@ Return ONLY valid JSON. Never use "..." as a value — always write the complete
             prompt,
             generation_config={
                 "max_output_tokens": 1024,
-                "temperature": 0.7
+                "temperature": 0.7,
+                "response_mime_type": "application/json",
             }
         )
         parsed = extract_json_from_llm(resp.text)
@@ -160,7 +175,8 @@ async def _create_event(
     valid_loc_ids:  set[str] | None = None,
 ) -> str:
     ts         = overflow_time.strftime("%Y%m%d_%H%M")
-    event_id   = f"{origin_loc_id}_{npc_id}_auto_{ts}"
+    need_part  = need_name or "need"
+    event_id   = await _unique_event_id(f"{origin_loc_id}_{npc_id}_{need_part}_auto_{ts}")
     summary    = action.get("action_summary", "")
     target_loc = action.get("target_location_id", "") or origin_loc_id
     if valid_loc_ids and target_loc not in valid_loc_ids:

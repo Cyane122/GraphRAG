@@ -97,9 +97,10 @@ async def set_flag(key: str, value: bool) -> None:
 
     flags[key] = value
 
+    # KuzuDB SET + $param 버그 우회 — GlobalState 쓰기는 리터럴 삽입 방식 사용
+    _flags_json = json.dumps(flags, ensure_ascii=False).replace("\\", "\\\\").replace("'", "\\'")
     async with async_driver.session() as session:
         await session.run(
-            "MATCH (gs:GlobalState {id: 'singleton'}) SET gs.flags = $flags",
-            flags=json.dumps(flags, ensure_ascii=False),
+            f"MATCH (gs:GlobalState {{id: 'singleton'}}) SET gs.flags = '{_flags_json}'"
         )
     print(f"[StaticEvent] flag '{key}' = {value}")

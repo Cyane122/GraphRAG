@@ -224,8 +224,6 @@
   - `src/agents/manager.py`
     - Memory recall 벡터 검색을 Neo4j 문법 `db.index.vector.queryNodes()`에서 Kuzu 문법 `QUERY_VECTOR_INDEX()`로 교체
     - Kuzu의 `distance` 값을 기존 prompt score 의미에 맞게 `1 - distance` 형태로 변환
-- [검증] `.venv` Python 기준 `compileall` 통과
-- [검증] 임시 Kuzu DB에서 `NeedsState` 생성, `StaticProfile.props` 조회, acceptance score 갱신, vector recall 쿼리 실행 확인
 - [신규] TODO-4 **삶은 넓어지며 또한 깊어진다** 2차 구현
   - `src/simulation/systems/goals.py` 신규: NPC 장기 목표 시스템
     - `fetch_goal_hints()`: active `Goal`을 Dynamic prompt용 은근한 행동/일정 압박 힌트로 반환
@@ -248,7 +246,6 @@
     - Fixed prompt가 아니라 Dynamic prompt에만 넣어 Gemini implicit cache 안정성 유지
   - `src/simulation/state/updater.py`
     - Actor 응답 확정 후 `apply_goal_updates()`, `apply_item_updates()`, `apply_secret_updates()` 후처리 호출
-  - [검증] `py_compile` 및 life-depth public import 확인 통과
 - [신규] TODO 문서 전면 재작성
   - `TODO.md`: 단순 TODO-4 목록에서 엔진 안정화 로드맵 문서로 확장
   - 1차 작업: Turn Router, Deferred Commit / State Diff, State Update Guard 정리
@@ -331,7 +328,6 @@
   - `app.py`
     - `_run_generation()`이 `manager_effects`, `time_plan`, `pending_effects`, `pending_state_diff`를 `pending_commit`에 저장
     - `_commit_pending()`과 `on_chat_end()`가 Actor 응답 후처리 전에 `commit_manager_effects()`를 실행
-  - [검증] `py_compile` 통과 및 `build_time_plan()` 단위 확인
 - [신규] 최종 프롬프트 디버그 로그 저장
   - `app.py`
     - `_write_turn_debug_snapshot()` 추가
@@ -352,21 +348,6 @@
     - 물리 상태 필드는 실제 부상/질병 evidence가 없거나 비유 표현만 있으면 `hold`/`reject`
     - `_audit_relationship_delta()`, `_audit_event_candidate()` 추가로 관계 delta와 Event 후보도 confidence/evidence 기반으로 commit 여부 결정
     - `logs/state_audit/<timestamp>.json`에 guard 결과, state 후보, relationship 후보, event 후보 저장
-  - [검증] `py_compile` 통과
-- [검증] 1.1~1.3 통합 검증
-  - 대상: `app.py`, `src/agents/manager.py`, `src/simulation/state/updater.py`, `src/simulation/events/manager.py`, `src/agents/prompt_factory/builder.py`
-  - `py_compile` 통과
-  - `route_user_input()` 단위 확인: empty / system_command / reroll / edit / ooc_patch / lore_qa / roleplay 분기 확인
-  - `build_time_plan()` 단위 확인: 시간/날씨/위치 계획이 DB write 없이 계산됨
-  - `guard_actor_response()` 단위 확인
-    - 정상 문장 통과
-    - PC 조작 문장 reject
-    - 시스템/secret 누출 reject
-    - 비유적 신체 표현 warning
-  - `_audit_state_updates()` 단위 확인
-    - 비유 표현 기반 physical update는 `reject`
-    - 실제 부상 evidence가 있는 physical update는 `commit`
-  - `TODO.md` 1.1~1.3 작업 항목과 완료 기준 체크 완료
 
 ## 2026-05-09
 - [버그픽스] Actor 히스토리 컨텍스트 과다 주입 수정
@@ -386,11 +367,100 @@
   - `app.py`
     - `on_chat_end()`에서 `process_actor_response()`를 `asyncio.create_task()`로 fire-and-forget 처리하던 부분을 `await`로 변경
     - 마지막 응답 직후 세션 종료 시 state update가 누락될 가능성 감소
-- [문서] 아키텍처 분석 문서 추가
-  - `docs/architecture_analysis.md`
-    - `.gitignore` 대상 제외 후 현재 코드베이스의 주요 아키텍처, 노드, 파이프라인, 모듈 책임 정리
-- [검증]
-  - `python -m compileall -q app.py src` 통과
-  - 주요 import smoke 통과
-  - relationship/current_status 및 memory_type renderer smoke 확인
-  - Kuzu DB는 단일 프로세스 lock이 있어 Chainlit 실행 중 별도 import/DB 검증이 실패할 수 있음을 확인
+
+## 2026-05-10
+- [신규] ContextRenderer numeric state band 렌더링 추가
+  - `src/agents/context_renderer.py`
+    - `DynamicState`의 `mood`, `stress_level`, `ts_acceptance`, `needs` 계열 수치를 Actor용 band 힌트로 렌더링
+    - `RELATIONSHIP.affinity`, `RELATIONSHIP.trust`를 `distant/cautious/comfortable/intimate/deeply bonded`, `guarded/uncertain/trusting/secure/unwavering` 계열 band로 해석
+    - `RelationshipProfile` 렌더링에 현재 affinity/trust band를 함께 붙여, 원본 `prompt_hint`를 수정하지 않고 이번 턴 표현 강도만 조절
+    - 0~1 스케일의 needs와 0~10 스케일의 stress를 각각 별도 정규화해 band 오해를 방지
+  - `src/agents/manager_prompting.py`
+    - `char_data.dynamic_state`를 `build_rendered_dynamic_context()`에 전달해 dynamic context 단계에서 수치 band를 만들 수 있게 변경
+  - `src/agents/prompt_factory/renderers.py`
+    - pre-rendered `<world_context>` 조립 순서에 `state` 블록 추가
+  - `TODO.md`
+    - numeric state band renderer, RelationshipProfile affinity/trust band, DynamicState stress/mood/needs band 항목 완료 처리
+- [리팩토링] 비대 파일 분리 및 패키지 경계 정리
+  - `src/agents/prompt_factory/builder.py`
+    - 프롬프트 상수와 렌더링 세부 구현을 builder 밖으로 분리
+    - `PromptBuilder`는 Fixed / Genre / Dynamic 프롬프트 조립 흐름 중심으로 축소
+    - `prompt_sections.py`, `fixed.py`, `checklist.py`, `renderers.py` 추가
+  - `src/agents/manager_pipeline.py`
+    - 파이프라인 파일을 orchestration 전용으로 축소
+    - `manager_models.py`, `manager_planning.py`, `manager_core_context.py`, `manager_prompting.py`, `manager_world_context.py` 추가
+  - `src/agents/manager.py`
+    - scene classifier, graph query, world loader, effect commit 책임을 전용 모듈로 분리
+    - `manager_classifier.py`, `manager_queries.py`, `manager_world_loader.py`, `manager_effects.py` 추가
+  - `app.py`
+    - Chainlit helper 로직을 `src/ui/`로 분리
+    - `input_routing.py`, `turn_debug.py`, `actor_stream.py`, `time_state.py`, `response_editing.py`, `status.py`, `deferred_commit.py` 추가
+  - `src/simulation/state/updater.py`
+    - audit, time planning, event update 책임을 `audit.py`, `time_plan.py`, `events.py`로 분리
+  - `src/simulation/systems`
+    - flat module 구조를 `items/`, `memory/`, `needs/`, `social/`, `goals/`, `secrets/` 하위 패키지로 재구성
+    - 기존 public import 경로는 각 패키지 `__init__.py`에서 유지
+  - [정리] 깨진 파일 헤더 주석 정리 및 UTF-8 확인
+    - Python 파일 121개 UTF-8 디코딩 확인
+    - mojibake가 남은 분리 파일 27개의 헤더 주석 교체
+    - 함수 이동 후 stale private symbol reference 검색 완료
+  - Priority 0 안정화:
+    - OOC 시간 패치 결과에 `time_before`, `time_after`, `applied_time_delta_minutes`, `applied_time_set` 반환 추가.
+    - OOC+RP 혼합 입력에서 OOC로 이미 적용된 시간을 Manager time plan이 다시 증가시키지 않도록 no-op planning 처리.
+    - Chainlit OOC step과 turn debug metadata에서 OOC 시간 변경 내용을 확인할 수 있게 정리.
+    - 신규 schema에서 `HAS_DYNAMIC_STATE` 생성 중단, 기존 legacy 관계는 시작 migration에서 `HAS_STATE`로 backfill.
+    - `AGENTS.md` schema 초기화 명령과 주요 모듈 경로를 현재 Kuzu 기반 구조로 동기화.
+
+## 2026-05-12
+- [신규] **prompt_factory 프롬프트 마크다운 파일 외부화**
+  - `src/agents/prompt_factory/builder.py`
+    - 빌더 내 인라인 상수(BLACKLIST, EMOTION_ENGINE, CHECKLIST, 운영자 정책 등)를 모두 외부 `.md` 파일로 분리
+    - 빌더는 조립 흐름만 담당하고 실제 텍스트는 파일에서 읽도록 변경
+  - 신규 프롬프트 파일 목록
+    - `prompts/blacklist/BLACKLIST.md` — 금지어·금지 패턴 섹션
+    - `prompts/checklist/CHECKLIST_{1P,3P}_{CHAR,USER}_NARRATOR.md` — POV별 응답 체크리스트
+    - `prompts/core/CORE_{1P,3P}.md` — Fixed 프롬프트 핵심 지시
+    - `prompts/core/NPC_BEHAVIOR.md` — NPC 행동·자율성 규칙
+    - `prompts/core/USER_IMPERSONATION_ALLOWED.md` — PC 묘사 허용 지침 (오타 파일 `FORBIDDEEN.md` 삭제)
+    - `prompts/emotion/EMOTION.md` — Show-Don't-Tell 감정 엔진
+    - `prompts/genre_specific/{daily,atmospheric,physical,tense,intimate}.md` — 씬 타입별 산문 규칙 스텁
+    - `prompts/pov/POV_{1P,3P}_{CHAR,USER}_ANCHOR.md` — 시점별 서술 앵커 규칙
+    - `prompts/style/STYLE_{1P,3P}.md` — 시점별 문체 스타일 가이드
+- [신규] **actor.py 프롬프트 지문(fingerprint) 로깅 추가**
+  - `src/agents/actor.py`
+    - 매 턴 Actor 호출 전 `build_prompt_fingerprint()` / `format_prompt_fingerprint()` 호출
+    - Fixed / Genre / Dynamic 프롬프트 길이와 히스토리 턴 수를 콘솔에 요약 출력
+    - Gemini implicit cache 히트 여부를 디버깅할 때 Fixed 섹션 변경 여부를 즉시 확인 가능
+- [버그픽스] **resolver.py Event ID 충돌 방지 및 LLM 응답 안정화**
+  - `src/agents/resolver.py`
+    - `_unique_event_id()` 추가: 같은 ID의 Event 노드가 이미 존재하면 `_2`, `_3` … 접미사를 붙여 충돌 회피. 100회 시도 실패 시 타임스탬프 접미사 폴백
+    - LLM 호출에 `response_mime_type: "application/json"` 추가로 JSON 이외 출력 방지
+    - event_id에 `need_name` 포함해 로그 식별성 향상 (`{loc}_{npc}_{need}_auto_{ts}` 형식)
+- [신규] **default 세계관 범용 프롬프트 노드 추가**
+  - `src/assets/worlds/default/schema.py`
+    - `get_prompt_config()` 메서드 추가: perspective 인자를 받아 POV·섹션·씬별 설정 dict 반환
+    - `get_full_config()` 반환값을 `prompt` 키 중심으로 재구성
+    - 스키마 초기화 시 `Rule`, `SpeechProfile`, `RelationshipProfile` 예시 노드 + 관계 생성
+    - `Location.home`에 `summary`, `prompt_hint`, `prompt_priority`, `tags` 필드 추가
+- [개선] **DynamicState 타입 정규화 강화**
+  - `src/core/database/helpers.py`
+    - `DYNAMIC_STATE_INT_FIELDS`, `DYNAMIC_STATE_FLOAT_FIELDS`, `DYNAMIC_STATE_BOOL_FIELDS` 집합 추가
+    - `_normalize_dynamic_state_updates()` 추가: 각 필드를 Kuzu 스키마 타입에 맞게 int / float / bool로 강제 변환. 변환 불가 값은 write 생략
+    - `stress_level`, `workplace_stress_level`은 `normalize_stress_level()` 경유해 문자열 레이블도 정수로 매핑
+- [개선] **extract_json_from_llm() JSON 파싱 강건성 향상**
+  - `src/core/llm/client.py`
+    - `_parse_json_candidate()` / `_iter_json_candidates()` 헬퍼 추가
+    - 응답 전체에서 `{` / `[` 위치부터 JSON 후보를 순차 탐색해 첫 번째 유효 구조 반환
+    - `JSONDecoder.raw_decode()` 우선 시도 후 실패 시 `rfind` 방식으로 폴백해 중첩 오류 복원
+    - trailing comma / 미종결 문자열 보정은 기존과 동일하게 유지
+- [버그픽스] **KuzuDB SET + $param 버그 우회 — events/manager.py**
+  - `src/simulation/events/manager.py`
+    - `set_flag()`: `SET gs.flags = $flags` 파라미터 방식 → JSON 리터럴 직접 삽입 방식으로 교체 (ooc_handler · time_plan과 동일 방식)
+- [개선] **state/classifier.py stress_level 정규화 위임**
+  - `src/simulation/state/classifier.py`
+    - `_sanitize_stress_level()`: 인라인 매핑 로직 제거, `normalize_stress_level()` 위임으로 단순화
+    - LLM 분류 프롬프트에 "JSON number from 0 to 10 ONLY" 문구 추가, 예시에 잘못된 경우 보완
+- [정리] **assets/worlds/base.py 오타·legacy DDL 제거**
+  - `"atmospheric.md"` 오타 키 → `"atmospheric"` 수정 (씬 타입 매핑 오류 해결)
+  - `HAS_DYNAMIC_STATE` 관계 테이블 DDL 제거 — migration 기반 backfill(`HAS_STATE`)로 완전 대체
+

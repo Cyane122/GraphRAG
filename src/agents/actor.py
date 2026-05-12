@@ -8,6 +8,7 @@
 # ================================
 
 from src.config import MODEL_ACTOR as ACTOR_MODEL, MAX_TOKEN
+from src.core.logging.prompt_debug import build_prompt_fingerprint, format_prompt_fingerprint
 from src.core.llm.client import get_model, get_response_text
 
 MAX_TOKENS = round(MAX_TOKEN * 0.65 / 100) * 100
@@ -30,6 +31,14 @@ def run_actor(
     """
 
     system_text = f"{fixed_prompt}\n\n{genre_prompt}"
+    prompt_fingerprint = build_prompt_fingerprint(
+        fixed_prompt=fixed_prompt,
+        genre_prompt=genre_prompt,
+        dynamic_prompt=dynamic_prompt,
+        history=conversation_history or [],
+    )
+    print(format_prompt_fingerprint(prompt_fingerprint))
+
     model = get_model(model_name=ACTOR_MODEL, system_prompt=system_text)
 
     gemini_msgs = []
@@ -73,15 +82,17 @@ def run_actor(
 
 # ── 단독 테스트 ───────────────────────────────────────────
 if __name__ == "__main__":
+    import asyncio
+
     from src.agents.manager import run_manager
 
-    fixed, dynamic, scene_types = run_manager(
+    fixed, genre, dynamic, scene_types = asyncio.run(run_manager(
         user_input="(소파에 앉아서 은서를 바라본다)",
         pc_id="sian",
         npc_id="eun_seo",
         recent_story="은서가 퇴근 후 막 집에 들어왔다. 오늘 헬스장에서 진상 손님이 있었다.",
         world_id="babe_univ"
-    )
+    ))
 
     print(f"[씬 타입] {scene_types}\n[모델] {ACTOR_MODEL}\n")
-    print(run_actor(fixed, dynamic))
+    print(run_actor(fixed, genre, dynamic))

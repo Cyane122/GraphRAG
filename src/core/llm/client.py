@@ -190,37 +190,16 @@ def extract_json_from_llm(raw_text, source: str = "unknown") -> dict | list:
         clean = re.sub(r"```(?:json)?\s*", "", raw_text)
         clean = clean.replace("```", "").strip()
 
-        start_obj = clean.find('{')
-        start_arr = clean.find('[')
+        parsed = _parse_json_candidate(clean)
+        if parsed is not None:
+            return parsed
 
-        if start_obj == -1 and start_arr == -1:
-            raise ValueError("No JSON structure found")
+        for json_str in _iter_json_candidates(clean):
+            parsed = _parse_json_candidate(json_str)
+            if parsed is not None:
+                return parsed
 
-        if start_obj != -1 and (start_arr == -1 or start_obj < start_arr):
-            start = start_obj
-            end   = clean.rfind('}')
-        else:
-            start = start_arr
-            end   = clean.rfind(']')
-
-        if end != -1 and end >= start:
-            json_str = _fix_trailing_comma(clean[start:end + 1])
-            try:
-                parsed = json.loads(json_str)
-                return parsed if isinstance(parsed, (dict, list)) else {}
-            except json.JSONDecodeError:
-                json_str = _fix_unterminated_string(json_str)
-                parsed = json.loads(json_str)
-                return parsed if isinstance(parsed, (dict, list)) else {}
-
-        json_str      = _fix_trailing_comma(clean[start:].rstrip(', \n.'))
-        open_braces   = json_str.count('{') - json_str.count('}')
-        open_brackets = json_str.count('[') - json_str.count(']')
-        json_str     += ']' * max(0, open_brackets)
-        json_str     += '}' * max(0, open_braces)
-
-        parsed = json.loads(json_str)
-        return parsed if isinstance(parsed, (dict, list)) else {}
+        raise ValueError("No JSON structure found")
 
     except Exception as e:
         preview_limit = 1000
@@ -232,6 +211,48 @@ def extract_json_from_llm(raw_text, source: str = "unknown") -> dict | list:
             suffix = ""
         print(f"[LLM Parser Error:{source}] 파싱 실패: {e}\nRaw Text: {preview}{suffix}")
         return {}
+
+
+def _parse_json_candidate(json_str: str) -> dict | list | None:
+    """JSON 후보 문자열을 보정한 뒤 dict/list로 파싱한다."""
+    if not json_str:
+        return None
+
+    for candidate in (
+        json_str,
+        _fix_trailing_comma(json_str),
+        _fix_unterminated_string(_fix_trailing_comma(json_str)),
+    ):
+        try:
+            parsed = json.loads(candidate)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(parsed, (dict, list)):
+            return parsed
+    return None
+
+
+def _iter_json_candidates(clean: str) -> list[str]:
+    """응답 문자열 안에서 실제로 파싱 가능한 JSON 후보들을 앞에서부터 만든다."""
+    decoder = json.JSONDecoder()
+    candidates: list[str] = []
+
+    for idx, ch in enumerate(clean):
+        if ch not in "{[":
+            continue
+        try:
+            _, end = decoder.raw_decode(clean[idx:])
+            candidates.append(clean[idx:idx + end])
+            continue
+        except json.JSONDecodeError:
+            pass
+
+        close_ch = "}" if ch == "{" else "]"
+        end = clean.rfind(close_ch)
+        if end >= idx:
+            candidates.append(clean[idx:end + 1])
+
+    return candidates
 
 
 def _fix_trailing_comma(json_str: str) -> str:

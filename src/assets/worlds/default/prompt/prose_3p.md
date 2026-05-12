@@ -1,4 +1,3 @@
-<world_prose>
 # DEFAULT — PROSE NOTES (3인칭)
 
 ## Narrative Voice
@@ -24,4 +23,3 @@ Tense:
 
 Comfortable:
 > 컵을 두 손으로 감싸 쥐고 창 쪽을 바라봤다. 별다른 말이 없었다. 그냥 그 자리에 있는 것으로 충분한 것 같았다.
-</world_prose>

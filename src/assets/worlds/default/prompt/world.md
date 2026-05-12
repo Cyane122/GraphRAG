@@ -1,4 +1,3 @@
-<world>
 # WORLD TITLE
 
 ## Setting
@@ -10,4 +9,3 @@
 
 ## Side Characters
 조연 캐릭터가 있다면 여기에 간략히 기술합니다.
-</world>

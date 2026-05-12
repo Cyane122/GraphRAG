@@ -11,6 +11,7 @@
 
 from src.config import MODEL_STATE_UPDATER as CLASSIFIER_MODEL
 from src.core.llm.client import get_model, extract_json_from_llm
+from src.core.state_normalization import normalize_stress_level
 
 SAFE_FIELDS = {
     "mood", "mental_condition", "stress_level",
@@ -27,21 +28,7 @@ def _sanitize_stress_level(value=None) -> int | None:
     - "low", "medium", "high" 같은 문자열이면 미리 정의된 값으로 매핑
     - 그 외의 경우는 None을 반환하여 해당 필드를 무시하도록 함
     """
-    if isinstance(value, int) and 0 <= value <= 10:
-        return value
-    if isinstance(value, str):
-        try:
-            num_val = int(value)
-            if 0 <= num_val <= 10:
-                return num_val
-        except (ValueError, TypeError):
-            mapping = {
-                "none": 0, "very low": 1, "low": 2,
-                "medium-low": 4, "medium": 5, "mid": 5,
-                "medium-high": 6, "high": 8, "very high": 9, "max": 10
-            }
-            return mapping.get(value.lower().strip())
-    return None
+    return normalize_stress_level(value)
 
 async def classify_and_extract(actor_response: str) -> dict:
     """Actor 응답 텍스트를 분석해 변경된 DynamicState 필드를 dict로 반환한다."""
@@ -60,8 +47,8 @@ FIGURATIVE: Emotional or metaphorical — never update physical fields
 ### Always extractable
 - mood: calm/happy/sad/angry/anxious/tired/annoyed/excited
 - mental_condition: stable/stressed/anxious/depressed/exhausted
-- stress_level: 0–10 integer
-- workplace_stress_level: 0–10 integer
+- stress_level: JSON number from 0 to 10 ONLY. Never return strings like "high", "low", or "5".
+- workplace_stress_level: JSON number from 0 to 10 ONLY. Never return strings like "high", "low", or "5".
 - outfit: current clothing description IF explicitly mentioned or visibly changed.
     Only update when clothing is directly described in narration.
     Keep concise (≤25 chars Korean). Examples:
@@ -81,6 +68,7 @@ FIGURATIVE: Emotional or metaphorical — never update physical fields
 "파자마 바지를 입은 채로 소파에 앉아" → outfit: "파자마 바지"
 "허리를 누르며 병원에서 통증 언급" → LITERAL → physical_condition: injured, injury_detail: "허리 염좌", injury_marks: "허리 염좌"
 Only extract fields that ACTUALLY CHANGED in this scene. Omit unchanged fields entirely.
+Numeric fields must be JSON numbers, not quoted strings. Correct: {{"stress_level": 8}}. Wrong: {{"stress_level": "high"}}.
 
 ## Scale Calibration
 ### stress_level (General life stress)

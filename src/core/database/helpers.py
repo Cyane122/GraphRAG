@@ -15,6 +15,7 @@
 from datetime import datetime
 
 from src.core.database.driver import async_driver
+from src.core.state_normalization import normalize_stress_level
 
 
 DYNAMIC_STATE_FIELDS = {
@@ -31,12 +32,95 @@ DYNAMIC_STATE_FIELDS = {
     "emotional_state", "attachment_risk", "expectation_gap", "penis_size",
 }
 
+DYNAMIC_STATE_INT_FIELDS = {
+    "stress_level", "cycle_day", "workplace_stress_level",
+    "pregnancy_day", "cum_shots_this_cycle",
+    "ts_acceptance", "northern_attachment",
+}
+
+DYNAMIC_STATE_FLOAT_FIELDS = {
+    "energy", "stress", "hygiene", "appearance", "nervousness",
+    "social_skill", "consideration", "stamina", "attachment_risk",
+    "expectation_gap",
+}
+
+DYNAMIC_STATE_BOOL_FIELDS = {"pregnant"}
+
+
+def _coerce_int(value: object) -> int | None:
+    """Kuzu INT64 필드에 바인딩할 값을 int로 변환합니다."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        try:
+            return int(text)
+        except ValueError:
+            return None
+    return None
+
+
+def _coerce_float(value: object) -> float | None:
+    """Kuzu DOUBLE 필드에 바인딩할 값을 float로 변환합니다."""
+    if isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_bool(value: object) -> bool | None:
+    """Kuzu BOOLEAN 필드에 바인딩할 값을 bool로 변환합니다."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"true", "1", "yes", "y"}:
+            return True
+        if text in {"false", "0", "no", "n"}:
+            return False
+    return None
+
+
+def _normalize_dynamic_state_updates(updates: dict) -> dict:
+    """DynamicState 업데이트 값을 Kuzu 스키마 타입에 맞게 정규화합니다."""
+    normalized = {}
+    for field, value in updates.items():
+        if field not in DYNAMIC_STATE_FIELDS or field == "id":
+            continue
+        if field in DYNAMIC_STATE_INT_FIELDS:
+            int_value = (
+                normalize_stress_level(value)
+                if field in {"stress_level", "workplace_stress_level"}
+                else _coerce_int(value)
+            )
+            if int_value is not None:
+                normalized[field] = int_value
+            continue
+        if field in DYNAMIC_STATE_FLOAT_FIELDS:
+            float_value = _coerce_float(value)
+            if float_value is not None:
+                normalized[field] = float_value
+            continue
+        if field in DYNAMIC_STATE_BOOL_FIELDS:
+            bool_value = _coerce_bool(value)
+            if bool_value is not None:
+                normalized[field] = bool_value
+            continue
+        normalized[field] = value
+    return normalized
+
 
 async def update_dynamic_state(char_id: str, updates: dict) -> None:
     """DynamicState 노드 속성 공통 업데이트."""
     if not updates:
         return
-    updates = {k: v for k, v in updates.items() if k in DYNAMIC_STATE_FIELDS and k != "id"}
+    updates = _normalize_dynamic_state_updates(updates)
     if not updates:
         return
     set_clause = ", ".join(f"d.{k} = ${k}" for k in updates)

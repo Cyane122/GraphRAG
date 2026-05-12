@@ -1,4 +1,3 @@
-<world_prose>
 # DEFAULT — PROSE NOTES (1인칭)
 
 ## Narrative Voice
@@ -24,4 +23,3 @@ Tense:
 
 Comfortable:
 > 소파에 반쯤 누워 천장을 봤다. 창문으로 빛이 기울어져 들어왔다. 딱히 아무 말도 하기 싫었다.
-</world_prose>

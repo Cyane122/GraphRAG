@@ -16,16 +16,19 @@
 # ================================
 
 import asyncio
+from importlib import import_module
 from pathlib import Path
 
 import kuzu
 from kuzu import QueryResult
 
+from src.assets.worlds.base import World
 from src.config import WORLD_ID
 
 # 스키마 업데이트로 추가된 테이블/컬럼이 기존 DB에 없을 수 있으므로 시작 시 마이그레이션 시도
 # Kuzu ALTER 문법은 "ADD COLUMN"이 아니라 "ADD"를 사용한다.
 _TABLE_MIGRATIONS: list[str] = [
+    "CREATE REL TABLE IF NOT EXISTS HAS_STATE(FROM Character TO DynamicState)",
     """CREATE NODE TABLE IF NOT EXISTS NeedsState(
         id STRING,
         hunger DOUBLE, rest DOUBLE, social DOUBLE,
@@ -222,14 +225,52 @@ class KuzuAsyncDriver:
         self._db   = kuzu.Database(db_path)
         self._conn = kuzu.Connection(self._db)
         self._lock = asyncio.Lock()
+        self._bootstrap_schema_if_needed()
         self._run_migrations()
 
     def session(self) -> KuzuSession:
         """KuzuSession을 반환합니다 (async context manager로 사용)."""
         return KuzuSession(self._conn, self._lock)
 
+    def _table_names(self) -> set[str]:
+        """현재 Kuzu DB에 존재하는 테이블 이름을 반환합니다."""
+        qr = self._conn.execute("CALL show_tables() RETURN name")
+        tables: set[str] = set()
+        while qr.has_next():
+            row = qr.get_next()
+            if row:
+                tables.add(row[0])
+        return tables
+
+    def _bootstrap_schema_if_needed(self) -> None:
+        """기준 테이블이 없으면 현재 WORLD_ID의 schema.py로 기본 스키마를 먼저 생성합니다."""
+        try:
+            required_base_tables = {"Character", "DynamicState", "Location", "GlobalState"}
+            missing = required_base_tables - self._table_names()
+            if not missing:
+                return
+        except Exception as exc:
+            print(f"[KuzuBootstrap] table scan failed; continuing with migrations: {exc}")
+            return
+
+        try:
+            module = import_module(f"src.assets.worlds.{WORLD_ID}.schema")
+            world = module.world_instance
+        except (ModuleNotFoundError, AttributeError):
+            world = World()
+
+        print(f"[KuzuBootstrap] base schema missing for '{WORLD_ID}' ({', '.join(sorted(missing))}). Initializing schema.")
+        world.build_schema(self._conn)
+
     def _run_migrations(self) -> None:
         """기존 DB에 누락된 테이블과 컬럼을 추가한다."""
+        tables = self._table_names()
+        required_base_tables = {"Character", "DynamicState", "Location", "GlobalState"}
+        if not required_base_tables.issubset(tables):
+            missing = ", ".join(sorted(required_base_tables - tables))
+            print(f"[KuzuMigration] skipped: base schema is missing ({missing}).")
+            return
+
         for ddl in [*_TABLE_MIGRATIONS, *_COLUMN_MIGRATIONS]:
             try:
                 self._conn.execute(ddl)
@@ -243,6 +284,59 @@ class KuzuAsyncDriver:
                 ):
                     continue
                 print(f"[KuzuMigration] skipped failed migration: {ddl} ({exc})")
+        self._migrate_has_dynamic_state_to_has_state()
+
+    def _migrate_has_dynamic_state_to_has_state(self) -> None:
+        """Legacy HAS_DYNAMIC_STATE 관계만 있는 캐릭터에 HAS_STATE 관계를 보강합니다."""
+        try:
+            qr = self._conn.execute("""
+                MATCH (c:Character)-[:HAS_DYNAMIC_STATE]->(d:DynamicState)
+                RETURN c.id AS char_id, d.id AS state_id
+            """)
+        except Exception as exc:
+            message = str(exc).lower()
+            if "has_dynamic_state" not in message and "cannot find" not in message:
+                print(f"[KuzuMigration] HAS_DYNAMIC_STATE scan skipped: {exc}")
+            return
+
+        col_names = qr.get_column_names()
+        migrated = 0
+        already_standard = 0
+        while qr.has_next():
+            row = dict(zip(col_names, qr.get_next()))
+            char_id = row.get("char_id")
+            state_id = row.get("state_id")
+            if not char_id or not state_id:
+                continue
+            if self._has_state_relationship(char_id, state_id):
+                already_standard += 1
+                continue
+            try:
+                self._conn.execute(
+                    """
+                    MATCH (c:Character {id: $char_id}), (d:DynamicState {id: $state_id})
+                    CREATE (c)-[:HAS_STATE]->(d)
+                    """,
+                    {"char_id": char_id, "state_id": state_id},
+                )
+                migrated += 1
+            except Exception as exc:
+                print(f"[KuzuMigration] HAS_STATE backfill failed for {char_id}: {exc}")
+        if migrated:
+            print(f"[KuzuMigration] HAS_DYNAMIC_STATE -> HAS_STATE backfilled {migrated} relationship(s)")
+        if already_standard:
+            print(f"[KuzuMigration] HAS_DYNAMIC_STATE legacy overlap found for {already_standard} relationship(s)")
+
+    def _has_state_relationship(self, char_id: str, state_id: str) -> bool:
+        """HAS_STATE 관계 중복 생성을 방지합니다."""
+        qr = self._conn.execute(
+            """
+            MATCH (c:Character {id: $char_id})-[:HAS_STATE]->(d:DynamicState {id: $state_id})
+            RETURN d.id AS state_id
+            """,
+            {"char_id": char_id, "state_id": state_id},
+        )
+        return bool(qr.has_next())
 
     def execute_sync(self, query: str, params: dict | None = None) -> QueryResult | list[QueryResult]:
         """동기 쿼리 실행. 스키마 초기화 CLI 전용."""
