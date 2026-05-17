@@ -63,8 +63,8 @@ from src.ui.time_state import (
 from src.simulation.state.multi_character import apply_multi_character_state_updates
 from src.simulation.state.updater import delegate_complex_update
 from src.simulation.systems.needs import ensure_traits_for_characters
+from src.core.database import KuzuAsyncDriver, async_driver
 from src.core.database.helpers import load_graph_info
-from src.core.database.driver import KuzuAsyncDriver, async_driver
 from src.core.llm.client import get_client
 from src.core.data_layer import JsonDataLayer
 
@@ -529,6 +529,9 @@ async def _run_generation(
     cl.user_session.set("narrative_turns", narrative_turns)
 
     # 6. 다음 턴에서 확정될 pending 등록
+    # scene_chars에는 Actor 사고에서 추출한 한국어 이름과 manager가 감지한 NPC ID를 함께 넣는다.
+    # run_needs_update는 npc_id(영문)로 scene_set을 조회하므로 ID가 반드시 포함되어야 한다.
+    scene_chars = list(set(scene_chars or []) | set(manager_effects.get("scene_npc_ids") or []))
     pending_commit = PendingCommit(
         user_input=user_input,
         ai_response=full_response,

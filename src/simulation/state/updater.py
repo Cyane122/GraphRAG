@@ -188,13 +188,13 @@ async def _run_event_creation(
     )
 
     prompt = f"""## Event Importance Scale
-9-10: Life-altering: hospitalization after accident, first confession, surgery, death, marriage
-6-8: Significant: first meeting, major fight + real reconciliation, first intimacy, near-breakup, public humiliation
-3-5: Noteworthy: new injury encountered for the first time, new named character met, argument that leaves lasting tension
-0-2: DO NOT create: routine chat, follow-up visit for existing injury, daily interaction with no lasting change
+8-10: Major: hospitalization after accident, first confession, surgery, death, marriage
+5-7: Significant: first meeting, major fight + real reconciliation, first intimacy, near-breakup, public humiliation
+2-4: Minor but memorable: new injury encountered for the first time, new named character met, promise, secret revealed, gift/item exchanged, meaningful location transition, or small durable relationship beat
+0-1: DO NOT create: routine chat, pure atmosphere, repeated follow-up, daily interaction with no lasting change
 
-Create an Event ONLY if importance >= 3.
-Default to null when uncertain.
+Create an Event if importance >= 2.
+When uncertain between null and a minor durable beat, prefer an importance 2 Event.
 
 ## When creating an event
 - id format: {{location}}_{{description}}_{{YYYYMMDD_HHMM}}
@@ -202,7 +202,7 @@ Default to null when uncertain.
 - memory_type: one of: episodic (something that happened), emotional (a felt moment/shift), relational (relationship milestone)
 - narrative_summary: 1 sentence, Actor-facing story continuity hook
 - state_summary: 1 sentence, factual state/relationship preservation (who did what to whom)
-- importance: integer 3-10
+- importance: integer 2-10
 - impact: brief phrase describing the lasting effect
 
 When importance >= 7, also add:
@@ -251,6 +251,24 @@ async def _run_combined_update(
         _run_event_creation(actor_response, npc_id, pc_id),
     )
     return {**state_plan, "new_event": event_plan.get("new_event")}
+
+
+_EVENT_CREATION_SIGNAL_RE = re.compile(
+    r"(처음|만났|마주쳤|소개|약속|비밀|고백|선물|건넸|받았|다툼|싸움|갈등|"
+    r"떠났|도착|이동|장소|병원|다쳤|부상|키스|관계|소문|공개|"
+    r"first|met|promise|secret|confession|gift|fight|arrived|left|hospital)",
+    re.IGNORECASE,
+)
+
+
+def _has_event_creation_signal(actor_response: str, participant_ids: list[str]) -> bool:
+    """Return whether a low-state-change scene is still worth asking the Event model about."""
+    text = actor_response.strip()
+    if not text:
+        return False
+    if len(participant_ids) > 2:
+        return True
+    return bool(_EVENT_CREATION_SIGNAL_RE.search(text))
 
 
 # State update main path
@@ -307,6 +325,23 @@ async def process_actor_response(
                 participant_ids,
                 primary_pair=(npc_id, pc_id),
             )
+        if npc_id != pc_id and _has_event_creation_signal(actor_response, participant_ids):
+            try:
+                event_plan = await _run_event_creation(actor_response, npc_id, pc_id)
+                new_event, event_candidate = _audit_event_candidate(event_plan.get("new_event"), actor_response)
+                if event_candidate:
+                    print(f"[EventDiff] {json.dumps(event_candidate, ensure_ascii=False)}")
+                _write_state_audit_snapshot(
+                    actor_response=actor_response,
+                    npc_id=npc_id,
+                    pc_id=pc_id,
+                    guard=guard,
+                    event_candidate=event_candidate,
+                )
+                if new_event:
+                    await _create_event(new_event, npc_id, pc_id)
+            except Exception as e:
+                print(f"[StateUpdater] low-change event creation failed (ignored): {e}")
         return None
 
     await apply_multi_character_state_updates(actor_response, pc_id, participant_ids=participant_ids)

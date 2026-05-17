@@ -11,8 +11,10 @@
 # Functions
 #   - _read_optional_prompt(relative_path: str) -> str : prompts/ 하위 Markdown 파일 읽기
 #   - _format_prompt_vars(text: str, *, char_name: str, user_name: str, for_add: str) -> str : 프롬프트 변수 치환
+#   - _label_mixed_input(user_input: str, user_name: str) -> str : *...* 상황설명과 PC 대사를 레이블링
 # ================================
 
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -305,7 +307,7 @@ class PromptBuilder:
                 self.build_scene_specific_prompt(scene_types),
                 context_block,
                 self.build_dialogue_examples(scene_types),
-                _render_prompt_block("user_input", user_input),
+                _render_prompt_block("user_input", _label_mixed_input(user_input, self.user_name)),
                 checklist,
                 (
                     "Fill out the <analyze> template from the checklist above. "
@@ -366,3 +368,29 @@ def _format_prompt_vars(text: str, *, char_name: str, user_name: str, for_add: s
             for_add=for_add,
         )
     )
+
+
+_OOC_SPAN_RE = re.compile(r"(?<!\*)\*(?!\*)(.*?)(?<!\*)\*(?!\*)", re.DOTALL)
+
+
+def _label_mixed_input(user_input: str, user_name: str) -> str:
+    """*...* 상황설명과 PC 대사가 섞인 입력을 레이블링합니다.
+
+    *PC가 손을 잡는다* 왜 그래요?
+    →
+    [상황] PC가 손을 잡는다
+    [PC] 왜 그래요?
+
+    OOC 없이 순수 대사만 있으면 원본 반환.
+    """
+    ooc_spans = _OOC_SPAN_RE.findall(user_input)
+    if not ooc_spans:
+        return user_input
+
+    rp_text = _OOC_SPAN_RE.sub("", user_input).strip()
+    if not rp_text:
+        return user_input
+
+    parts = [f"[상황] {span.strip()}" for span in ooc_spans if span.strip()]
+    parts.append(f"[{user_name}] {rp_text}")
+    return "\n".join(parts)

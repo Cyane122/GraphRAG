@@ -5,6 +5,12 @@
 # Exports the driver and helper functions lazily so tools such as the schema
 # builder can import package submodules without opening the active Kuzu store.
 #
+# Classes
+#   - KuzuAsyncDriver : Lazy export for concrete per-session Kuzu drivers.
+#   - KuzuRecord : Lazy export for Kuzu row wrappers.
+#   - KuzuResult : Lazy export for eager Kuzu result wrappers.
+#   - KuzuSession : Lazy export for async Kuzu sessions.
+#
 # Functions
 #   - __getattr__(name: str) : Lazily resolves public database exports.
 #   - update_dynamic_information(char_id: str, updates: dict) -> None : Lazy export for DynamicInformation updates.
@@ -14,6 +20,10 @@
 
 __all__ = [
     "async_driver",
+    "KuzuAsyncDriver",
+    "KuzuRecord",
+    "KuzuResult",
+    "KuzuSession",
     "get_dynamic_state_field_types",
     "update_dynamic_state",
     "update_dynamic_information",
@@ -29,10 +39,16 @@ __all__ = [
 
 def __getattr__(name: str):
     """Resolve public database exports on first attribute access."""
-    if name == "async_driver":
-        from src.core.database.driver import async_driver
+    if name in {
+        "async_driver",
+        "KuzuAsyncDriver",
+        "KuzuRecord",
+        "KuzuResult",
+        "KuzuSession",
+    }:
+        from src.core.database import driver
 
-        return async_driver
+        return getattr(driver, name)
 
     if name in {
         "update_dynamic_state",

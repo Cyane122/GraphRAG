@@ -71,6 +71,153 @@ def insert_static_inline(conn: kuzu.Connection, char_id: str, rel: str, label: s
     )
 
 
+def insert_schedule(conn: kuzu.Connection, owner_id: str, schedule_id: str, **props) -> None:
+    """Create a Schedule node and attach it to the owning Character."""
+    values = {
+        "id": schedule_id,
+        "owner_id": owner_id,
+        "name": "",
+        "activity": "",
+        "summary": "",
+        "prompt_hint": "",
+        "prompt_priority": 0,
+        "material": "",
+        "recurrence": "weekly",
+        "day_of_week": -1,
+        "day_of_weeks": [],
+        "date": "",
+        "start_time": "",
+        "end_time": "",
+        "start_minute": -1,
+        "end_minute": -1,
+        "location_id": "",
+        "status": "active",
+        "tags": [],
+    }
+    values.update(props)
+    day_values = _normalize_weekdays(values.get("day_of_weeks") or values.get("day_of_week"))
+    values["day_of_weeks"] = day_values
+    values["day_of_week"] = day_values[0] if day_values else -1
+    values["start_minute"] = _normalize_minute(values.get("start_minute"), values.get("start_time"))
+    values["end_minute"] = _normalize_minute(values.get("end_minute"), values.get("end_time"))
+    create_values = {
+        key: values[key]
+        for key in (
+            "id",
+            "owner_id",
+            "name",
+            "activity",
+            "summary",
+            "prompt_hint",
+            "prompt_priority",
+            "material",
+            "recurrence",
+            "day_of_week",
+            "date",
+            "start_time",
+            "end_time",
+            "start_minute",
+            "end_minute",
+            "location_id",
+            "status",
+        )
+    }
+    conn.execute(
+        """
+        MATCH (c:Character {id: $owner_id})
+        CREATE (c)-[:HAS_SCHEDULE]->(:Schedule {
+            id: $id,
+            owner_id: $owner_id,
+            name: $name,
+            activity: $activity,
+            summary: $summary,
+            prompt_hint: $prompt_hint,
+            prompt_priority: $prompt_priority,
+            material: $material,
+            recurrence: $recurrence,
+            day_of_week: $day_of_week,
+            day_of_weeks: $day_of_weeks,
+            date: $date,
+            start_time: $start_time,
+            end_time: $end_time,
+            start_minute: $start_minute,
+            end_minute: $end_minute,
+            location_id: $location_id,
+            status: $status
+        })
+        """,
+        create_values,
+    )
+    conn.execute(
+        """
+        MATCH (s:Schedule {id: $id})
+        SET s.day_of_weeks = $day_of_weeks,
+            s.tags = $tags
+        """,
+        {
+            "id": values["id"],
+            "day_of_weeks": values["day_of_weeks"],
+            "tags": values["tags"],
+        },
+    )
+    if values["location_id"]:
+        conn.execute(
+            """
+            MATCH (s:Schedule {id: $id}), (l:Location {id: $location_id})
+            CREATE (s)-[:SCHEDULED_AT]->(l)
+            """,
+            {
+                "id": values["id"],
+                "location_id": values["location_id"],
+            },
+        )
+
+
+def _normalize_weekdays(raw: object) -> list[int]:
+    """Normalize one weekday or many weekdays into sorted Python weekday numbers."""
+    if raw in (None, "", -1):
+        return []
+    if isinstance(raw, int):
+        return [raw] if 0 <= raw <= 6 else []
+    if isinstance(raw, (set, tuple, list)):
+        days: set[int] = set()
+        for value in raw:
+            try:
+                day = int(value)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= day <= 6:
+                days.add(day)
+        return sorted(days)
+    try:
+        day = int(raw)
+    except (TypeError, ValueError):
+        return []
+    return [day] if 0 <= day <= 6 else []
+
+
+def _normalize_minute(raw_minute: object, raw_time: object) -> int:
+    """Use an explicit minute value or derive it from an HH:MM string."""
+    try:
+        minute = int(raw_minute)
+    except (TypeError, ValueError):
+        minute = -1
+    if minute >= 0:
+        return minute
+    text = str(raw_time or "").strip()
+    parts = text.split(":")
+    if len(parts) != 2:
+        return -1
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1])
+    except ValueError:
+        return -1
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        return -1
+    return hour * 60 + minute
+
+
 class World:
     WORLD_ID = "default"
 
@@ -381,6 +528,30 @@ class World:
                 PRIMARY KEY(id)
             )""",
 
+            # Schedule: recurring or one-off character routines rendered into dynamic context.
+            """CREATE NODE TABLE IF NOT EXISTS Schedule(
+                id STRING,
+                owner_id STRING,
+                name STRING,
+                activity STRING,
+                summary STRING,
+                prompt_hint STRING,
+                prompt_priority INT64,
+                material STRING,
+                recurrence STRING,
+                day_of_week INT64,
+                day_of_weeks INT64[],
+                date STRING,
+                start_time STRING,
+                end_time STRING,
+                start_minute INT64,
+                end_minute INT64,
+                location_id STRING,
+                status STRING,
+                tags STRING[],
+                PRIMARY KEY(id)
+            )""",
+
             # StaticEvent: 조건 기반 이벤트. foreshadow → trigger 두 단계 조건으로 복선과 발화를 분리
             """CREATE NODE TABLE IF NOT EXISTS StaticEvent(
                 id STRING,
@@ -445,8 +616,11 @@ class World:
             "CREATE REL TABLE IF NOT EXISTS OWNS(FROM Character TO Item)",
             "CREATE REL TABLE IF NOT EXISTS GAVE(FROM Character TO Item)",
             "CREATE REL TABLE IF NOT EXISTS ANCHORS_MEMORY(FROM Item TO Memory)",
+            "CREATE REL TABLE IF NOT EXISTS HAS_SECRET(FROM Character TO Secret)",
             "CREATE REL TABLE IF NOT EXISTS ROOTED_IN(FROM Secret TO Event)",
             "CREATE REL TABLE IF NOT EXISTS TRIGGERED_BY(FROM Secret TO Item)",
+            "CREATE REL TABLE IF NOT EXISTS HAS_SCHEDULE(FROM Character TO Schedule)",
+            "CREATE REL TABLE IF NOT EXISTS SCHEDULED_AT(FROM Schedule TO Location)",
             "CREATE REL TABLE IF NOT EXISTS PART_OF(FROM Location TO Location)",
             "CREATE REL TABLE IF NOT EXISTS KNOWS_FACT(FROM Character TO PersonalFact)",
         ]

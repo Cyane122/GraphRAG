@@ -6,14 +6,10 @@
 # 수정 없이 재사용할 수 있게 합니다.
 #
 # Classes
-#   - KuzuRecord     : record["key"] 접근 + dict() 변환을 지원하는 행 래퍼
-#   - KuzuResult     : single() / fetch_all() 을 제공하는 결과 래퍼
-#   - KuzuSession    : Neo4j AsyncSession과 동일한 인터페이스
 #   - KuzuAsyncDriver : session() 팩토리 및 동기 execute_sync() 제공
-#   - _ProxyDriver   : Chainlit 세션 드라이버를 동적으로 조회하는 프록시
 #
 # (module-level)
-#   - async_driver : _ProxyDriver 인스턴스 — 세션 드라이버가 있으면 위임, 없으면 기본 드라이버
+#   - async_driver : ProxyDriver 인스턴스 — 세션 드라이버가 있으면 위임, 없으면 기본 드라이버
 # ================================
 
 import asyncio
@@ -26,6 +22,9 @@ from kuzu import QueryResult
 
 from src.assets.worlds.base import World
 from src.config import WORLD_ID
+from src.core.database.proxy import ProxyDriver
+from src.core.database.records import KuzuRecord, KuzuResult
+from src.core.database.session import KuzuSession
 
 # 스키마 업데이트로 추가된 테이블/컬럼이 기존 DB에 없을 수 있으므로 시작 시 마이그레이션 시도
 # Kuzu ALTER 문법은 "ADD COLUMN"이 아니라 "ADD"를 사용한다.
@@ -88,6 +87,7 @@ _TABLE_MIGRATIONS: list[str] = [
     "CREATE REL TABLE IF NOT EXISTS OWNS(FROM Character TO Item)",
     "CREATE REL TABLE IF NOT EXISTS GAVE(FROM Character TO Item)",
     "CREATE REL TABLE IF NOT EXISTS ANCHORS_MEMORY(FROM Item TO Memory)",
+    "CREATE REL TABLE IF NOT EXISTS HAS_SECRET(FROM Character TO Secret)",
     "CREATE REL TABLE IF NOT EXISTS ROOTED_IN(FROM Secret TO Event)",
     "CREATE REL TABLE IF NOT EXISTS TRIGGERED_BY(FROM Secret TO Item)",
     "CREATE REL TABLE IF NOT EXISTS EVENT_INVOLVES(FROM StaticEvent TO Character)",
@@ -129,6 +129,30 @@ _TABLE_MIGRATIONS: list[str] = [
         last_hinted_at STRING,
         PRIMARY KEY(id)
     )""",
+    """CREATE NODE TABLE IF NOT EXISTS Schedule(
+        id STRING,
+        owner_id STRING,
+        name STRING,
+        activity STRING,
+        summary STRING,
+        prompt_hint STRING,
+        prompt_priority INT64,
+        material STRING,
+        recurrence STRING,
+        day_of_week INT64,
+        day_of_weeks INT64[],
+        date STRING,
+        start_time STRING,
+        end_time STRING,
+        start_minute INT64,
+        end_minute INT64,
+        location_id STRING,
+        status STRING,
+        tags STRING[],
+        PRIMARY KEY(id)
+    )""",
+    "CREATE REL TABLE IF NOT EXISTS HAS_SCHEDULE(FROM Character TO Schedule)",
+    "CREATE REL TABLE IF NOT EXISTS SCHEDULED_AT(FROM Schedule TO Location)",
     """CREATE NODE TABLE IF NOT EXISTS StaticEvent(
         id STRING,
         name STRING,
@@ -203,6 +227,8 @@ _COLUMN_MIGRATIONS: list[str] = [
     "ALTER TABLE Memory ADD narrative_summary STRING DEFAULT ''",
     "ALTER TABLE Memory ADD state_summary STRING DEFAULT ''",
     "ALTER TABLE RELATIONSHIP ADD summary STRING DEFAULT ''",
+    "ALTER TABLE Schedule ADD day_of_weeks INT64[] DEFAULT []",
+    "ALTER TABLE Schedule ADD material STRING DEFAULT ''",
 ]
 
 
@@ -211,99 +237,8 @@ _COLUMN_MIGRATIONS: list[str] = [
 _DATA_PATCHES: list[str] = [
     # eun_seo — 양측 난소 제거로 생리 주기 없음
     "MATCH (d:DynamicState {id: 'eun_seo_state'}) WHERE d.has_menstrual_cycle = true SET d.has_menstrual_cycle = false",
+    "MATCH (c:Character), (s:Secret) WHERE c.id = s.owner_id MERGE (c)-[:HAS_SECRET]->(s)",
 ]
-
-
-class KuzuRecord:
-    """Kuzu 결과 행을 dict처럼 접근할 수 있게 감쌉니다."""
-
-    def __init__(self, col_names: list[str], values: list) -> None:
-        self._data = dict(zip(col_names, values))
-
-    def __getitem__(self, key: str):
-        return self._data[key]
-
-    def keys(self):
-        """dict() 변환 호환을 위해 키 목록을 반환합니다."""
-        return self._data.keys()
-
-    def get(self, key: str, default=None):
-        """키가 없으면 default를 반환합니다."""
-        return self._data.get(key, default)
-
-    def __bool__(self) -> bool:
-        return bool(self._data)
-
-
-class KuzuResult:
-    """Kuzu QueryResult를 Neo4j AsyncResult와 유사한 인터페이스로 감쌉니다.
-
-    생성 시 모든 행을 즉시 읽고 QueryResult를 닫아 C++ 리소스를 즉시 해제합니다.
-    """
-
-    def __init__(self, qr: kuzu.QueryResult) -> None:
-        self._col_names: list[str] = []
-        self._rows: list[list] = []
-        if qr:
-            try:
-                self._col_names = qr.get_column_names()
-                while qr.has_next():
-                    self._rows.append(qr.get_next())
-            finally:
-                try:
-                    qr.close()
-                except Exception:
-                    pass
-
-    async def single(self) -> KuzuRecord | None:
-        """첫 번째 행을 KuzuRecord로 반환하고, 결과가 없으면 None을 반환합니다."""
-        if self._rows:
-            return KuzuRecord(self._col_names, self._rows[0])
-        return None
-
-    async def fetch_all(self) -> list[KuzuRecord]:
-        """모든 행을 KuzuRecord 리스트로 반환합니다."""
-        return [KuzuRecord(self._col_names, row) for row in self._rows]
-
-    async def data(self) -> list[dict]:
-        """모든 행을 dict 리스트로 반환합니다. Neo4j AsyncResult.data()와 호환."""
-        return [dict(zip(self._col_names, row)) for row in self._rows]
-
-
-class KuzuSession:
-    """
-    Neo4j AsyncSession과 동일한 async context manager + run() 인터페이스를 제공합니다.
-
-    기존 코드 패턴:
-        async with async_driver.session() as session:
-            await session.run(query, key=value)
-    가 수정 없이 동작합니다.
-    """
-
-    def __init__(self, conn: kuzu.Connection, lock: asyncio.Lock) -> None:
-        self._conn = conn
-        self._lock = lock
-
-    async def run(
-        self,
-        query: str,
-        parameters: dict | None = None,
-        **kwargs,
-    ) -> KuzuResult:
-        """쿼리를 실행하고 KuzuResult를 반환합니다."""
-        params = {**(parameters or {}), **kwargs}
-
-        # 드라이버 전역 락으로 직렬화 — kuzu.Connection은 스레드 안전하지 않음
-        async with self._lock:
-            qr = await asyncio.to_thread(self._conn.execute, query, params)
-
-        return KuzuResult(qr)
-
-    async def __aenter__(self) -> "KuzuSession":
-        return self
-
-    async def __aexit__(self, *_) -> None:
-        pass
 
 
 class KuzuAsyncDriver:
@@ -566,27 +501,6 @@ class KuzuAsyncDriver:
         """동기 쿼리 실행. 스키마 초기화 CLI 전용."""
         return self._conn.execute(query, params or {})
 
-
-
-class _ProxyDriver:
-    """Chainlit 세션 드라이버를 동적으로 조회하는 프록시.
-
-    세션에 db_driver가 설정돼 있으면 그 드라이버를 사용하고,
-    스크립트·CLI 환경처럼 세션이 없으면 기본 드라이버(_default_driver)로 폴백한다.
-    """
-
-    def session(self) -> KuzuSession:
-        """현재 세션의 KuzuSession을 반환합니다."""
-        return _resolve_driver().session()
-
-    def execute_sync(self, query: str, params: dict | None = None):
-        """동기 쿼리 실행을 현재 세션 드라이버에 위임합니다."""
-        return _resolve_driver().execute_sync(query, params)
-
-    async def close(self) -> None:
-        """프록시는 실제 리소스를 보유하지 않습니다."""
-
-
 def _resolve_driver() -> KuzuAsyncDriver:
     """현재 Chainlit 세션의 드라이버를 반환합니다. 세션이 없으면 기본 드라이버를 반환합니다."""
     try:
@@ -601,6 +515,6 @@ def _resolve_driver() -> KuzuAsyncDriver:
 
 _db_path        = str(Path("graph") / WORLD_ID)
 _default_driver = KuzuAsyncDriver(_db_path)
-async_driver    = _ProxyDriver()
+async_driver    = ProxyDriver(_resolve_driver)
 
 atexit.register(_default_driver.close)
