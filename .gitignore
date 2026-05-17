@@ -15,7 +15,6 @@ chat/
 .files/
 .venv/
 __pycache__/
-*.py[cod]
 
 *.zip
 *.json
