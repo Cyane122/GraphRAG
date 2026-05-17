@@ -49,7 +49,7 @@ async def run_needs_update(
         }
     """
     if elapsed_minutes <= 0:
-        return {"libido_hints": {}, "events_created": []}
+        return {"libido_hints": {}, "scene_need_hints": {}, "events_created": []}
 
     _scene_set = set(scene_chars or [])
     npcs = await _fetch_all_npcs(exclude_id=pc_id)
@@ -92,7 +92,10 @@ async def run_needs_update(
 
             multiplier = _calc_multiplier(need_name, traits, needs, profile)
             eff_rate   = base_rate * multiplier
-            overflow_cnt, settled_val = _count_overflows(old_val, elapsed_minutes, eff_rate)
+            overflow_cnt, settled_val = _count_overflows(
+                old_val, elapsed_minutes, eff_rate,
+                SETTLE_LEVELS.get(need_name, 0.2),
+            )
 
             if need_name == "libido":
                 if overflow_cnt == 0:

@@ -4,7 +4,7 @@
 # Need value, overflow, multiplier, and libido hint calculations.
 #
 # Functions
-#   - _count_overflows(old_val: float, elapsed_min: float, effective_rate: float) -> tuple[int, float] : Count threshold overflows
+#   - _count_overflows(old_val: float, elapsed_min: float, effective_rate: float, settle_base: float = 0.2) -> tuple[int, float] : Count threshold overflows
 #   - _as_float(value: object, default: float = 0.0) -> float : Convert to float
 #   - _as_int(value: object, default: int = 0) -> int : Convert to int
 #   - _calc_multiplier(need: str, traits: dict, needs: dict, profile: dict) -> float : Calculate need-specific trait multiplier
@@ -31,9 +31,11 @@ def _count_overflows(
     old_val:        float,
     elapsed_min:    float,
     effective_rate: float,
+    settle_base:    float = 0.2,
 ) -> tuple[int, float]:
     """
     elapsed_min 동안 욕구가 THRESHOLD를 몇 번 초과했는지 계산.
+    settle_base: 초과 정산 직후 앉히는 기준값 — 호출부에서 SETTLE_LEVELS[need] 전달.
     반환: (초과 횟수, 마지막 정산 후 현재 수치 추정값)
     """
     if effective_rate <= 0:
@@ -50,7 +52,6 @@ def _count_overflows(
     overflows             = 1 + additional_overflows
 
     time_in_last_cycle = remaining_after_first - additional_overflows * cycle_time
-    settle_base        = 0.2
     settled_val        = min(1.0, settle_base + effective_rate * time_in_last_cycle)
 
     return overflows, settled_val

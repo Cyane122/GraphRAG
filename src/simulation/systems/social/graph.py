@@ -4,8 +4,9 @@
 # Character identity resolution, transient NPC creation, and event linking for the Social system.
 #
 # Functions
-#   - _get_known_chars() -> dict[str, str] : Fetch character names and aliases
-#   - _invalidate_cache() -> None : Invalidate the character cache
+#   - _cache_key() -> str : Return the current session's cache key (db_path or '__global__')
+#   - _get_known_chars() -> dict[str, str] : Fetch character names and aliases (per-session cached)
+#   - _invalidate_cache() -> None : Invalidate the current session's character cache
 #   - _resolve_identity(name: str, known: dict[str, str]) -> str | None : Resolve a name to char_id
 #   - _create_stub(name_kor: str, main_npc_id: str, pc_id: str, world_config: dict) -> str | None : Create a transient NPC
 #   - _normalize_relation_descriptor_for_family(name_kor: str) -> str | None : Validate sibling descriptors against StaticProfile.family
@@ -23,7 +24,8 @@ from src.core.database import async_driver
 from src.core.database.helpers import ensure_relationship
 from src.core.llm.client import get_model, extract_json_from_llm
 
-_known_chars_cache: dict[str, str] | None = None
+# db_path → {name/alias/id: char_id}. 세션별로 격리해 멀티세션 오염을 방지한다.
+_known_chars_cache: dict[str, dict[str, str]] = {}
 _KINSHIP_DESCRIPTOR_RE = re.compile(
     "|".join(
         [
@@ -105,11 +107,20 @@ _NO_SIBLING_MARKERS: tuple[str, ...] = (
     "\uc790\ub9e4\uac00 \uc5c6",
 )
 
+def _cache_key() -> str:
+    """현재 Chainlit 세션의 db_path를 캐시 키로 반환한다. 세션 외부면 '__global__'."""
+    try:
+        import chainlit as cl
+        return cl.user_session.get("db_path") or "__global__"
+    except Exception:
+        return "__global__"
+
+
 async def _get_known_chars() -> dict[str, str]:
-    """전체 캐릭터 이름→id 캐시를 반환한다. 최초 호출 시 DB 조회."""
-    global _known_chars_cache
-    if _known_chars_cache is not None:
-        return _known_chars_cache
+    """현재 세션의 캐릭터 이름→id 캐시를 반환한다. 최초 호출 시 DB 조회."""
+    key = _cache_key()
+    if key in _known_chars_cache:
+        return _known_chars_cache[key]
 
     async with async_driver.session() as session:
         rec = await session.run("""
@@ -127,14 +138,13 @@ async def _get_known_chars() -> dict[str, str]:
         for alias in (r["aliases"] or []):
             result[alias] = r["id"]
 
-    _known_chars_cache = result
+    _known_chars_cache[key] = result
     return result
 
 
 def _invalidate_cache() -> None:
-    """캐릭터 캐시를 무효화한다."""
-    global _known_chars_cache
-    _known_chars_cache = None
+    """현재 세션의 캐릭터 캐시를 무효화한다."""
+    _known_chars_cache.pop(_cache_key(), None)
 
 
 def _resolve_identity(name: str, known: dict[str, str]) -> str | None:

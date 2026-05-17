@@ -17,6 +17,7 @@
 import asyncio
 import json
 import re
+from types import SimpleNamespace
 
 from google import genai
 from google.genai import types
@@ -60,20 +61,32 @@ class _SafeResponse:
 def get_response_text(response) -> str:
     """
     response.text가 None인 경우(thinking 전용 반환, 콘텐츠 차단 등)
-    candidates → parts를 순회해 text 파트를 직접 수집한다.
+    candidates → parts를 순회해 사용자에게 보여줄 text 파트를 직접 수집한다.
     모든 경로에서 실패하면 빈 문자열을 반환한다.
     """
     if response is None:
         return ""
-    text = getattr(response, "text", None)
-    if text is not None:
-        return text
+
     try:
         parts = response.candidates[0].content.parts
-        texts = [p.text for p in parts if getattr(p, "text", None) is not None]
+        texts = [
+            p.text
+            for p in parts
+            if getattr(p, "text", None) is not None
+            and not (getattr(p, "thought", False) or getattr(p, "is_thought", False))
+        ]
         return "".join(texts)
     except Exception:
-        return ""
+        pass
+
+    try:
+        text = getattr(response, "text", None)
+    except Exception:
+        text = None
+    if text is not None:
+        return text
+
+    return ""
 
 
 # ════════════════════════════════════════════════════════════
@@ -145,11 +158,15 @@ class _GeminiModel:
             return _SafeResponse(resp)
 
         text_parts: list[str] = []
+        usage_metadata = None
         async for chunk in await _client.aio.models.generate_content_stream(
             model=self._model,
             contents=contents,
             config=config,
         ):
+            chunk_usage = getattr(chunk, "usage_metadata", None)
+            if chunk_usage is not None:
+                usage_metadata = chunk_usage
             if not chunk.candidates:
                 continue
             candidate = chunk.candidates[0]
@@ -160,10 +177,12 @@ class _GeminiModel:
                 if not is_thought and part.text:
                     text_parts.append(part.text)
 
-        class _StreamedResponse:
-            text = "".join(text_parts)
-
-        return _SafeResponse(_StreamedResponse())
+        return _SafeResponse(
+            SimpleNamespace(
+                text="".join(text_parts),
+                usage_metadata=usage_metadata,
+            )
+        )
 
 
 def get_model(model_name: str, system_prompt: str | None = None) -> _GeminiModel:

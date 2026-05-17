@@ -191,7 +191,8 @@ async def tick_cycle_day(npc_id: str, days_passed: int) -> None:
 
     new_cycle_day = ((state["cycle_day"] - 1 + days_passed) % 28) + 1
     updates: dict = {"cycle_day": new_cycle_day}
-    if new_cycle_day < state["cycle_day"]:
+    # days_passed >= 28이면 날짜 비교와 무관하게 완전한 주기가 경과했으므로 반드시 리셋
+    if new_cycle_day < state["cycle_day"] or days_passed >= 28:
         updates["cum_shots_this_cycle"] = 0
     await update_dynamic_state(npc_id, updates)
     print(f"[PregnancyMgr] {npc_id} cycle_day → {new_cycle_day}")
@@ -230,7 +231,8 @@ async def tick_all_cycles(days_passed: int) -> None:
         else:
             new_cycle_day = ((cycle_day - 1 + days_passed) % 28) + 1
             updates: dict = {"cycle_day": new_cycle_day}
-            if new_cycle_day < cycle_day:
+            # days_passed >= 28이면 날짜 비교와 무관하게 완전한 주기가 경과했으므로 반드시 리셋
+            if new_cycle_day < cycle_day or days_passed >= 28:
                 updates["cum_shots_this_cycle"] = 0
             await update_dynamic_state(char_id, updates)
             print(f"[PregnancyMgr] {char_id} cycle_day {cycle_day} → {new_cycle_day}")

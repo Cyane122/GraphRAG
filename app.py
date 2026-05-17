@@ -41,6 +41,7 @@ from chainlit.types import ThreadDict
 from src.config import PERSPECTIVE, WORLD_ID, MODEL_ACTOR, MAX_TOKEN
 from src.agents.manager import run_manager, load_world_instance
 from src.agents.prompt_factory.ooc_handler import is_ooc, parse_ooc
+from src.agents.prompt_factory.usernote import build_usernote_block, load_usernote
 from src.ui.history import build_history_from_steps
 from src.ui.input_routing import TurnInputType, route_user_input
 from src.ui.session_models import PendingCommit
@@ -339,7 +340,8 @@ async def _handle_system_command(user_input: str) -> None:
                 "- `*...*`: OOC 상태 패치\n"
                 "- `/help`: 명령 도움말\n"
                 "- `/debug graph`: 현재 장면 중심 그래프 보기\n"
-                "- 사이드바: 채팅방 목록 / 이전 대화 재개"
+                "- 사이드바: 채팅방 목록 / 이전 대화 재개\n"
+                "- `data/threads/{thread_id}/usernote.md`: 유저노트 (파일 직접 편집, 매 턴 자동 반영)"
             ),
             author="시스템",
         ).send()
@@ -464,6 +466,12 @@ async def _run_generation(
             effect for effect in manager_effects.get("pending_effects", [])
             if effect.get("type") not in {"global_time_update", "global_weather_update", "location_update"}
         ]
+
+    # 유저노트를 매 턴마다 파일에서 직접 읽어 dynamic 프롬프트 최상단에 삽입
+    thread_id = cl.context.session.thread_id
+    note_block = build_usernote_block(load_usernote(thread_id))
+    if note_block:
+        dynamic = note_block + dynamic
 
     debug_dir = write_turn_debug_snapshot(
         user_input      = user_input,

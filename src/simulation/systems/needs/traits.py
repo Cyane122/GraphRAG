@@ -6,6 +6,8 @@
 # Functions
 #   - ensure_traits(char_id: str) -> dict : Generate and save missing trait_* fields with the LLM
 #   - ensure_traits_for_characters(characters: list[dict]) -> dict : Initialize traits from a character list
+#   - _default_traits() -> dict : Return all trait keys set to 0.0
+#   - _as_float(value, default: float = 0.0) -> float : Safe float conversion
 # ================================
 import json
 
@@ -256,38 +258,6 @@ async def _write_traits_to_db(char_id: str, source_label: str, traits: dict) -> 
 def _default_traits() -> dict:
     """모든 trait 키를 0.0으로 초기화한 기본값 딕셔너리를 반환한다."""
     return {k: 0.0 for k in ALL_TRAIT_KEYS}
-
-
-# ════════════════════════════════════════════════════════════
-# 욕구 상수 (구 needs_manager.py)
-# ════════════════════════════════════════════════════════════
-
-THRESHOLD = 0.8
-
-NEED_BASE_RATES: dict[str, float] = {
-    "hunger": 0.0033,
-    "rest":   0.0011,
-    "social": 0.00035,
-    "fun":    0.00069,
-    "safety": 0.001,
-    "libido": 0.00017,
-}
-
-NEED_DEFAULTS: dict[str, float] = {
-    "hunger": 0.3,
-    "rest":   0.2,
-    "social": 0.1,
-    "fun":    0.4,
-    "safety": 0.05,
-    "libido": 0.2,
-}
-
-AUTONOMOUS_NEEDS = {"hunger", "rest", "social", "fun"}
-
-
-# ════════════════════════════════════════════════════════════
-# 퍼블릭 진입점
-# ════════════════════════════════════════════════════════════
 
 
 def _as_float(value, default: float = 0.0) -> float:

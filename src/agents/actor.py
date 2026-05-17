@@ -4,6 +4,7 @@
 # PromptBuilder가 조립한 3-파트 프롬프트를 Gemini Actor 모델에 전달합니다.
 #
 # Functions
+#   - _log_usage_metadata(response: object) -> None : Gemini usage metadata가 있으면 토큰 사용량 출력
 #   - run_actor(fixed_prompt: str, genre_prompt: str, dynamic_prompt: str, conversation_history: list[dict] | None) -> str : Gemini에 프롬프트 전달 후 응답 텍스트 반환 (async)
 # ================================
 
@@ -12,6 +13,26 @@ from src.core.logging.prompt_debug import build_prompt_fingerprint, format_promp
 from src.core.llm.client import get_model, get_response_text
 
 MAX_TOKENS = round(MAX_TOKEN * 0.65 / 100) * 100
+
+
+def _log_usage_metadata(response: object) -> None:
+    """Gemini 응답에 usage metadata가 있으면 토큰 사용량을 출력한다."""
+    usage = getattr(response, "usage_metadata", None)
+    if usage is None:
+        print(f"[{ACTOR_MODEL}] usage metadata unavailable")
+        return
+
+    prompt_tokens = getattr(usage, "prompt_token_count", None)
+    candidate_tokens = getattr(usage, "candidates_token_count", None)
+    cached_tokens = getattr(usage, "cached_content_token_count", 0) or 0
+    total_tokens = getattr(usage, "total_token_count", None)
+
+    print(
+        f"[{ACTOR_MODEL}] in={prompt_tokens} | "
+        f"cached={cached_tokens} | "
+        f"out={candidate_tokens} | "
+        f"total={total_tokens}"
+    )
 
 
 async def run_actor(
@@ -65,17 +86,7 @@ async def run_actor(
         }
     )
 
-    usage = response.usage_metadata
-    prompt_tokens    = usage.prompt_token_count
-    candidate_tokens = usage.candidates_token_count
-    cached_tokens    = getattr(usage, "cached_content_token_count", 0)
-
-    print(
-        f"[{ACTOR_MODEL}] in={prompt_tokens} | "
-        f"cached={cached_tokens} | "
-        f"out={candidate_tokens} | "
-        f"total={usage.total_token_count}"
-    )
+    _log_usage_metadata(response)
 
     return get_response_text(response)
 
