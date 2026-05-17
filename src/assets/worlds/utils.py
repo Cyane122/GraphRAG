@@ -6,6 +6,9 @@
 #
 # Functions
 #   - read_md(prompt_dir: Path, path: str) -> str : prompt/ 하위 .md 파일을 문자열로 반환
+#   - read_optional_md(path: Path) -> str : 파일이 있으면 Markdown 문자열을 반환
+#   - read_md_map(directory: Path, keys: list[str], suffix: str = ".md") -> dict[str, str] : key별 Markdown 파일 로드
+#   - read_few_shot_map(directory: Path, keys: list[str]) -> dict : key별 few-shot 파일 로드
 #   - parse_few_shot(path: Path) -> dict : # GOOD / # BAD 섹션을 파싱
 # ================================
 
@@ -16,6 +19,31 @@ from pathlib import Path
 def read_md(prompt_dir: Path, path: str) -> str:
     """prompt/ 하위 .md 파일을 읽어 문자열로 반환합니다."""
     return (prompt_dir / path).read_text(encoding="utf-8")
+
+
+def read_optional_md(path: Path) -> str:
+    """파일이 있으면 읽고, 없으면 빈 문자열을 반환합니다."""
+    return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
+def read_md_map(directory: Path, keys: list[str], suffix: str = ".md") -> dict[str, str]:
+    """디렉터리에서 key 목록에 대응하는 Markdown 파일들을 읽습니다."""
+    result: dict[str, str] = {}
+    for key in keys:
+        text = read_optional_md(directory / f"{key}{suffix}")
+        if text:
+            result[key] = text
+    return result
+
+
+def read_few_shot_map(directory: Path, keys: list[str]) -> dict:
+    """디렉터리에서 key 목록에 대응하는 few-shot 파일들을 읽습니다."""
+    result = {}
+    for key in keys:
+        entry = parse_few_shot(directory / f"{key}.md")
+        if entry["good"] or entry["bad"]:
+            result[key] = entry
+    return result
 
 
 def parse_few_shot(path: Path) -> dict:

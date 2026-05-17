@@ -215,29 +215,6 @@ async def _create_event(
     return event_id
 
 
-async def _settle_need_legacy(npc_id: str, need_name: str) -> None:
-    """욕구 수치를 해소 후 안착값으로 내림."""
-    settle_val = SETTLE_LEVELS.get(need_name, 0.2)
-
-    # DynamicState가 있는 경우 (main NPC)
-    async with async_driver.session() as session:
-        rec = await session.run("""
-            MATCH (c:Character {id: $cid})-[:HAS_STATE]->(d:DynamicState)
-            RETURN d.id AS did
-        """, cid=npc_id)
-        row = await rec.single()
-
-    if row:
-        return
-
-    # NeedsState가 있는 경우 (secondary NPC)
-    async with async_driver.session() as session:
-        await session.run(f"""
-            MATCH (c:Character {{id: $cid}})-[:HAS_NEEDS]->(n:NeedsState)
-            SET n.{need_name} = $val
-        """, cid=npc_id, val=settle_val)
-
-
 async def _settle_need(npc_id: str, need_name: str) -> None:
     """Settle a need value on the character's NeedsState node."""
     settle_val = SETTLE_LEVELS.get(need_name, 0.2)

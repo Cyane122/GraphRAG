@@ -22,6 +22,7 @@ MODEL_ACTOR           = os.getenv("MODEL_ACTOR",           "gemini-3.1-pro-previ
 MODEL_CLASSIFIER      = os.getenv("MODEL_CLASSIFIER",      "gemini-3-flash-preview")
 MODEL_STATE_UPDATER   = os.getenv("MODEL_STATE_UPDATER",   "gemini-3-flash-preview")
 MODEL_COMPLEX_UPDATER = os.getenv("MODEL_COMPLEX_UPDATER", "gemini-3-flash-preview")
+MODEL_EVENT_CREATOR   = os.getenv("MODEL_EVENT_CREATOR",   "gemini-3.1-pro-preview")
 
 # ── Google Cloud ────────────────────────────────────────────
 GOOGLE_PROJECT_ID = os.getenv("GOOGLE_PROJECT_ID")

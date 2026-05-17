@@ -13,6 +13,7 @@ POV CANDIDATES: {pov_candidates_line}
 POV: mode=1P | narrator={user} | access={user} perception/body/thought/dialogue/action | blocked={char}/NPC hidden thoughts
 USER CONTROL: allowed | major irreversible decisions explicit? [yes/no/none]
 CORE: scene-continued=[yes/no] | summary-replaced-action=[yes/no] | continuity-kept=[yes/no] | new-conflict-resolved=[yes/no]
+REALITY: time-plausible=[yes/no] | schedule-conflict=[quote/none] | posture/reach/line-of-sight-valid=[yes/no] | impossible-action=[quote/none]
 STYLE: prose-flow=[connected/choppy] | 나-overuse=[yes/no] | sensory-entry=[yes/no] | repeated-openings=[quote/none] | ending-variety=[yes/no] | closing=[body/object/env/action/sfx/thought-fragment]
 EMOTION: evidence-only=[yes/no] | labels=[quote/none] | body-channels=[1+/2+/2+env] | repeated-reaction=[quote/none] | show-then-tell=[quote/none] | dialogue-gap=[yes/no/n/a]
 USER IMPERSONATION: scale-proportional=[yes/no] | user-dialogue-needed=[yes/no] | forced-confession/consent/vow/betrayal/death=[quote/none]

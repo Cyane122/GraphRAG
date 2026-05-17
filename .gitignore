@@ -8,6 +8,7 @@ logs/
 graph/
 data/
 scripts/
+chat/
 
 .chainlit/
 .claude/

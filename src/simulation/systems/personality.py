@@ -13,7 +13,7 @@ import json
 from datetime import datetime
 
 from src.config import MODEL_COMPLEX_UPDATER as DRIFT_MODEL
-from src.core.database.driver import async_driver
+from src.core.database import async_driver
 from src.core.llm.client import get_model, extract_json_from_llm
 
 _MICRO_DRIFT_AFFINITY_THRESHOLD = 65

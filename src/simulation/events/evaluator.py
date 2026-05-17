@@ -12,7 +12,7 @@ import json
 import operator as _op
 from datetime import datetime
 
-from src.core.database.driver import async_driver
+from src.core.database import async_driver
 
 _OPS: dict = {
     ">=": _op.ge,

@@ -6,17 +6,21 @@
 # blacklist / npc_name_map / start_time 및 _build_tables / build_schema 정의.
 #
 # Classes
+#   - Scenario : 한 세계 내의 시작 설정 (시간, 장소, 오프닝 씬 경로).
 #   - World : 세계 구현체 베이스 클래스
+#             SCENARIOS: dict[str, Scenario] — 시나리오 ID → Scenario. 비어있으면 단일 세계.
 #             SCENE_TYPES: dict[str, str] — 씬 타입 이름 → 영문 설명 (classifier 프롬프트에 주입)
 #             get_scene_types() -> list[str]           : 타입 이름 목록 (내부 키 조회용)
 #             get_scene_descriptions() -> dict[str, str] : 전체 dict (classifier 주입용)
 #             _build_tables(conn) -> None              : DDL 전용 (노드·관계 테이블, 벡터 인덱스, GlobalState)
-#             build_schema(conn) -> None               : 기본 구현은 _build_tables만 호출; 서브클래스에서 확장
+#             build_schema(conn, scenario_id) -> None  : 기본 구현은 _build_tables + build_scenario_data 호출
+#             build_scenario_data(conn, scenario_id) -> None : 시나리오별 초기 데이터 훅 (no-op)
 # ================================
 
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -26,6 +30,18 @@ from src.core.embedding.encoder import EMBEDDING_DIM
 
 if TYPE_CHECKING:
     from src.assets.worlds.base_character import Character
+
+
+# ── 시나리오 ───────────────────────────────────────────────────────
+
+@dataclass
+class Scenario:
+    """한 세계 내의 시작 설정. SCENARIOS dict에 등록하면 ChatProfile 드롭다운에 노출됩니다."""
+    scenario_id: str
+    display_name: str
+    default_time: datetime
+    default_location_id: str
+    opening_scene_path: str = "opening_scene.md"
 
 
 # ── 정적 노드 헬퍼 ─────────────────────────────────────────────────
@@ -57,6 +73,10 @@ def insert_static_inline(conn: kuzu.Connection, char_id: str, rel: str, label: s
 
 class World:
     WORLD_ID = "default"
+
+    # 비어 있으면 이 세계는 단일 ChatProfile로 노출됩니다.
+    # 항목이 있으면 각 Scenario가 별도 ChatProfile ('{world_id}/{scenario_id}')로 노출됩니다.
+    SCENARIOS: dict[str, Scenario] = {}
 
     def __init__(
         self,
@@ -128,19 +148,23 @@ class World:
         """블랙리스트 항목 문자열을 반환합니다."""
         return ""
 
-    def get_full_config(self, perspective: int = 3) -> dict:
+    def get_full_config(self, perspective: int = 3, scenario_id: str | None = None) -> dict:
         """프롬프트 조립에 필요한 전체 설정 딕셔너리를 반환합니다."""
+        scenario = self.SCENARIOS.get(scenario_id) if scenario_id and self.SCENARIOS else None
+        start_time       = scenario.default_time        if scenario else self.get_default_time()
+        default_location = scenario.default_location_id if scenario else self.get_default_location_id()
         return {
             "world_section":        self.get_world_section(),
             "specific_prose_rules": self.get_specific_prose_rules(perspective),
             "prose_rules":          self.get_specific_prose_rules(perspective),
             "few_shot_examples":    self.get_few_shot_examples(perspective),
             "additional_blacklist": self.get_blacklist(),
-            "start_time":           self.get_default_time(),
+            "start_time":           start_time,
             "pc_id":                self.get_pc_id(),
             "npc_id":               self.get_npc_id(),
             "npc_name_kor":         self.npc_name_kor(),
-            "default_location_id":  self.get_default_location_id(),
+            "default_location_id":  default_location,
+            "scenario_id":          scenario_id,
         }
 
     def get_default_location_id(self) -> str:
@@ -169,9 +193,16 @@ class World:
         서브클래스에서 필요 시 오버라이드합니다. 기본 구현은 no-op.
         """
 
-    def build_schema(self, conn: kuzu.Connection) -> None:
-        """DDL만 실행합니다. 캐릭터·관계 삽입은 서브클래스에서 직접 처리합니다."""
+    def build_scenario_data(self, conn: kuzu.Connection, scenario_id: str | None) -> None:
+        """시나리오별 초기 데이터를 삽입합니다. 기본 구현은 no-op.
+
+        GlobalState 업데이트, 캐릭터 초기 위치 설정 등 시나리오 고유 초기화를 여기서 처리합니다.
+        """
+
+    def build_schema(self, conn: kuzu.Connection, scenario_id: str | None = None) -> None:
+        """DDL + 시나리오 초기 데이터를 실행합니다."""
         self._build_tables(conn)
+        self.build_scenario_data(conn, scenario_id)
 
     def _build_tables(self, conn: kuzu.Connection) -> None:
         """
@@ -196,17 +227,17 @@ class World:
                 stress_level INT64, mood STRING, cycle_day INT64,
                 location_id STRING, workplace_stress_level INT64,
                 knee_condition STRING, injury_detail STRING,
-                condition STRING, energy DOUBLE, stress DOUBLE, current_task STRING,
-                current_location STRING,
+                energy DOUBLE, stress DOUBLE, current_task STRING,
                 outfit STRING, injury_marks STRING,
+                has_menstrual_cycle BOOLEAN,
                 pregnant BOOLEAN, pregnancy_day INT64, cum_shots_this_cycle INT64,
-                ts_acceptance INT64, northern_attachment INT64,
                 body_perception STRING, behavioral_facade STRING,
                 hygiene DOUBLE, appearance DOUBLE, physique STRING,
                 age_presentation STRING, nervousness DOUBLE, attitude STRING,
                 social_skill DOUBLE, consideration DOUBLE, stamina DOUBLE,
                 odor STRING, emotional_state STRING, attachment_risk DOUBLE,
                 expectation_gap DOUBLE, penis_size STRING,
+                age INT64, circle_level INT64, robe_grade STRING,
                 PRIMARY KEY(id)
             )""",
 
@@ -215,7 +246,6 @@ class World:
                 name STRING,
                 description STRING,
                 atmosphere STRING,
-                current_chars STRING[],
                 district STRING,
                 summary STRING,
                 prompt_hint STRING,
@@ -305,6 +335,7 @@ class World:
 
             # 정적 프로파일 노드: 세계별로 속성 구조가 달라 JSON blob으로 저장
             "CREATE NODE TABLE IF NOT EXISTS StaticProfile(id STRING, props STRING, age INT64, gender STRING, role STRING, PRIMARY KEY(id))",
+            "CREATE NODE TABLE IF NOT EXISTS DynamicInformation(id STRING, props STRING, PRIMARY KEY(id))",
             "CREATE NODE TABLE IF NOT EXISTS Personality(id STRING, props STRING, PRIMARY KEY(id))",
             "CREATE NODE TABLE IF NOT EXISTS IntimateProfile(id STRING, props STRING, PRIMARY KEY(id))",
             "CREATE NODE TABLE IF NOT EXISTS WorkplaceProfile(id STRING, props STRING, PRIMARY KEY(id))",
@@ -360,6 +391,23 @@ class World:
                 status STRING,
                 PRIMARY KEY(id)
             )""",
+
+            """CREATE NODE TABLE IF NOT EXISTS PersonalFact(
+                id STRING,
+                subject_id STRING,
+                audience_id STRING,
+                category STRING,
+                fact_text STRING,
+                normalized_key STRING,
+                status STRING,
+                valid_from STRING,
+                valid_until STRING,
+                confidence DOUBLE,
+                source STRING,
+                created_at STRING,
+                updated_at STRING,
+                PRIMARY KEY(id)
+            )""",
         ]
         for ddl in node_tables:
             conn.execute(ddl)
@@ -367,6 +415,7 @@ class World:
         # ── 관계 테이블 ────────────────────────────────────────
         rel_tables = [
             "CREATE REL TABLE IF NOT EXISTS HAS_PROFILE(FROM Character TO StaticProfile)",
+            "CREATE REL TABLE IF NOT EXISTS HAS_INFO(FROM Character TO DynamicInformation)",
             "CREATE REL TABLE IF NOT EXISTS HAS_PERSONALITY(FROM Character TO Personality)",
             "CREATE REL TABLE IF NOT EXISTS HAS_STATE(FROM Character TO DynamicState)",
             "CREATE REL TABLE IF NOT EXISTS HAS_INTIMATE(FROM Character TO IntimateProfile)",
@@ -382,6 +431,7 @@ class World:
                 FROM Character TO Character,
                 type STRING, affinity INT64, trust INT64,
                 duration STRING, origin STRING, current_status STRING,
+                summary STRING,
                 eun_seo_desire STRING, shared_events STRING[], last_interaction STRING
             )""",
             "CREATE REL TABLE IF NOT EXISTS INVOLVED_IN(FROM Character TO Event)",
@@ -397,6 +447,8 @@ class World:
             "CREATE REL TABLE IF NOT EXISTS ANCHORS_MEMORY(FROM Item TO Memory)",
             "CREATE REL TABLE IF NOT EXISTS ROOTED_IN(FROM Secret TO Event)",
             "CREATE REL TABLE IF NOT EXISTS TRIGGERED_BY(FROM Secret TO Item)",
+            "CREATE REL TABLE IF NOT EXISTS PART_OF(FROM Location TO Location)",
+            "CREATE REL TABLE IF NOT EXISTS KNOWS_FACT(FROM Character TO PersonalFact)",
         ]
         for ddl in rel_tables:
             conn.execute(ddl)

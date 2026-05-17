@@ -17,6 +17,7 @@ SAFE_FIELDS = {
     "mood", "mental_condition", "stress_level",
     "workplace_stress_level", "cycle_day", "location_id",
     "outfit", "injury_marks",
+    "age", "circle_level", "robe_grade",
 }
 PHYSICAL_FIELDS = {"physical_condition", "injury_detail"}
 
@@ -61,6 +62,11 @@ FIGURATIVE: Emotional or metaphorical — never update physical fields
 ### LITERAL only
 - physical_condition: healthy/fatigued/injured/ill/hospitalized
 - injury_detail: string (body part + type) — LITERAL only
+
+### Rare growth events
+- age: JSON integer. Increment ONLY when narration explicitly confirms time has passed (e.g., "생일이 지났다", "일 년이 지나"). Never infer.
+- circle_level: JSON integer. Update ONLY when a character explicitly breaks through to a new mana circle. Never infer from combat intensity.
+- robe_grade: string. Update ONLY on confirmed Academy promotion ceremony. Values: "bronze"/"silver"/"gold"/"platinum"/"crimson".
 
 ## Rules
 "심장이 부서질 것 같아" → FIGURATIVE → mental_condition only, no physical

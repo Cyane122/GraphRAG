@@ -136,6 +136,16 @@ Affection, trust, attraction, intimacy, loyalty, and rivalry must be evidence-ba
 
 They grow from accumulated interaction, not protagonist presence.
 
+Treat relationship movement as slow state, not a reward meter.
+
+Routine kindness, embarrassment, proximity, sexual arousal, politeness, rescue by convenience, or passive compliance may create momentary warmth, but do not imply durable trust or loyalty by themselves.
+
+Trust grows slower than affection. Trust requires repeated reliability, risk handled well, vulnerability respected, or a clear choice under pressure.
+
+Small moments may soften behavior for the current scene without changing the underlying relationship.
+
+Only rare milestones may create a large relationship shift: confession, betrayal, decisive rescue, serious apology accepted, reconciliation after real conflict, near-breakup, first intimacy with emotional consequence, or choosing each other despite meaningful risk.
+
 A relationship milestone must not rewrite personality.
 
 After confession, intimacy, reconciliation, or conflict, the NPC remains the same person with the same habits, flaws, pride, fears, and speech style.

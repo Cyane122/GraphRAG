@@ -97,8 +97,8 @@ class DefaultWorld(World):
             "few_shot": _read_few_shot_map(_PROMPT_DIR / "few_shot", scene_keys, suffix),
         }
 
-    def get_full_config(self, perspective: int = 3) -> dict:
-        res = super().get_full_config(perspective)
+    def get_full_config(self, perspective: int = 3, scenario_id: str | None = None) -> dict:
+        res = super().get_full_config(perspective, scenario_id)
         res["start_time"] = self.get_default_time()
         res["rating"]     = "r18"
         res["prompt"]     = self.get_prompt_config(perspective)
@@ -107,9 +107,9 @@ class DefaultWorld(World):
     def get_npc_name_map(self) -> dict[str, str]:
         return {}
 
-    def build_schema(self, conn: kuzu.Connection) -> None:
+    def build_schema(self, conn: kuzu.Connection, scenario_id: str | None = None) -> None:
         """Default 세계 스키마 및 초기 데이터를 Kuzu에 삽입합니다."""
-        super().build_schema(conn)
+        super().build_schema(conn, scenario_id)
 
         # ── Location ──────────────────────────────────────────
         conn.execute("""
@@ -118,7 +118,6 @@ class DefaultWorld(World):
                 name:          "집",
                 description:   "두 사람의 공간.",
                 atmosphere:    "comfortable+private",
-                current_chars: ["char", "player"],
                 summary:       "A quiet shared home for low-stakes daily scenes.",
                 prompt_hint:   "집은 사적인 공간이다. 캐릭터는 긴장을 낮추고 자연스럽게 움직이며, 큰 사건보다 생활감 있는 물건과 작은 행동으로 반응한다.",
                 prompt_priority: 10,

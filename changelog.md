@@ -464,3 +464,53 @@
   - `"atmospheric.md"` 오타 키 → `"atmospheric"` 수정 (씬 타입 매핑 오류 해결)
   - `HAS_DYNAMIC_STATE` 관계 테이블 DDL 제거 — migration 기반 backfill(`HAS_STATE`)로 완전 대체
 
+## 2026-05-17
+- [버그픽스] **OOC 시간 처리 안정화**
+  - `src/agents/prompt_factory/ooc_handler.py`
+    - `_apply_time_change()` 반환값을 표준화해 시간 변경이 없을 때도 `time_before`, `time_after`, `elapsed_minutes`, `days_passed`를 항상 반환.
+    - `new_datetime` 직접 지정, `time_delta_minutes`, `time_set` 처리 결과 모두 실제 적용된 경과 분과 날짜 경과 수를 계산하도록 정리.
+    - `parse_ooc()` 결과에 `elapsed_minutes`, `days_passed`를 포함해 Manager 후속 시스템이 OOC 시간 이동을 재사용할 수 있게 변경.
+  - `app.py`
+    - OOC+RP 입력에서 Manager의 시간 DB write는 계속 억제하되, OOC로 이미 경과한 시간은 `needs_update`, `daily_systems`, static event 평가에 전달.
+    - OOC step 출력에 `elapsed_minutes`, `days_passed`를 추가해 디버그에서 실제 시간 이동량을 확인 가능하게 변경.
+    - 순수 `*OOC*` 입력은 OOC 적용 후 빈 RP 턴으로 Actor를 호출하지 않고 종료하도록 수정.
+  - `src/agents/manager/effects.py`
+    - `time_plan`이 없는 OOC 시간 패치에서도 `ooc_time_after`를 `current_dt`로 복원해 needs/daily/static event 처리 기준 시각으로 사용.
+    - `elapsed_minutes=0`을 `1.0`으로 잘못 대체하지 않도록 needs update 경과 시간 처리 보정.
+
+- [버그픽스] **OOC 위치 이동 일관성 보강**
+  - `src/agents/prompt_factory/ooc_handler.py`
+    - OOC 위치 이동 시 기존 `move_location()` 경로를 사용해 `LOCATED_AT` 관계와 `DynamicState.location_id`가 함께 갱신되도록 유지.
+    - 이동 성공 시 `_set_global_location()`으로 `GlobalState.currentLocationId`까지 같은 위치로 동기화.
+    - `moved_character_ids`를 OOC 결과에 포함해 그룹 이동 대상과 후속 보조 상태 업데이트 대상을 추적 가능하게 유지.
+
+- [버그픽스] **Scene type downstream key 정규화**
+  - `src/agents/context/scene_keys.py`
+    - `normalize_scene_type()`, `normalize_scene_types()` 추가.
+    - 매핑 규칙: `aggressive -> tense`, `vulnerable/bonding -> emotional`, `aegyo -> daily`, `formal -> formal`, 그 외는 자기 자신.
+  - `src/agents/manager/planning.py`
+    - classifier/rule 결과 scene type을 Manager downstream 진입 전에 정규화.
+  - `src/agents/manager/queries.py`
+    - `SCENE_REL_MAP`에 `formal` 기본 관계 매핑 추가.
+    - 알 수 없는 scene key도 `_BASE_RELS`를 기본값으로 사용해 캐릭터 기본 정보가 누락되지 않도록 보강.
+  - `src/agents/context/planner.py`
+    - `ContextPlan.scene_type` 계산 시 정규화된 scene key 사용.
+  - `src/agents/context/generic.py`
+    - `Rule`, `SpeechProfile`, `RelationshipProfile` 조회 시 정규화된 scene key를 사용.
+
+- [버그픽스] **Actor streaming fallback 복구**
+  - `src/ui/actor_stream.py`
+    - `recover_missing_analyze_prose()` 추가.
+    - Actor 응답에서 `</analyze>`가 누락되어도 날짜 헤더가 있으면 헤더부터 본문으로 복구.
+    - 날짜 헤더가 없으면 `<analyze>` 태그와 `CHARACTERS`, `PLAN`, `SCENE` 등 메타 지시문 라인을 제거한 뒤 남은 본문을 반환.
+    - fallback 복구 여부를 `logs/actor_recovery.json`에 기록하고 콘솔 로그에도 `recovered_missing_analyze`로 출력.
+    - `_extract_prose()`가 누락된 closing tag 상황에서도 빈 문자열 대신 복구된 본문을 반환하도록 변경.
+
+- [검증] **안정화 smoke check 추가**
+  - `scripts/smoke_arch_stabilization.py`
+    - DB를 건드리지 않는 순수 smoke script 추가.
+    - scene key 정규화, `*3시간 후*`, `*다음 날 아침*` OOC 시간 보정, Actor `</analyze>` 정상/누락 fallback 케이스를 검증.
+  - 검증 완료
+    - `python -m py_compile app.py src\agents\prompt_factory\ooc_handler.py src\agents\manager\planning.py src\agents\manager\queries.py src\agents\manager\effects.py src\agents\context\scene_keys.py src\agents\context\planner.py src\agents\context\generic.py src\ui\actor_stream.py scripts\smoke_arch_stabilization.py`
+    - `python scripts\smoke_arch_stabilization.py`
+

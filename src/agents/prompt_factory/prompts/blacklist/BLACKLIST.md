@@ -133,6 +133,25 @@ Examples:
 * Description: 남은 긴장이 빠져나갔다. -> Description: 어깨에서 힘이 빠졌다.
 * Description: 오래된 피로가 서려 있었다. -> Description: 눈꺼풀이 무거웠다.
 
+### Body Part Euphemism
+
+Do not use metaphors or euphemisms for sexual body parts in descriptive narration.
+
+Forbidden:
+
+* 비밀스러운 곳, 은밀한 곳, 그곳, 아래
+* 남성의 상징, 중심, 기둥
+* 여성의 꽃, 샘, 중요 부위
+
+Replace with:
+
+Use direct anatomical terms. The choice between colloquial or clinical language should match the tone.
+
+* 자지, 음경 (penis)
+* 보지, 질 (vagina)
+* 가슴, 유방 (breasts/chest)
+* 항문 (anus)
+
 ### Sensation Abstraction
 
 Forbidden:

@@ -21,10 +21,12 @@ from src.config import WORLD_ID
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--world_id", type=str, default=WORLD_ID, help="초기화할 세계 ID")
+    parser.add_argument("--world_id",    type=str, default=WORLD_ID, help="초기화할 세계 ID")
+    parser.add_argument("--scenario_id", type=str, default=None,     help="초기화할 시나리오 ID (없으면 기본값)")
     args = parser.parse_args()
 
-    world_id = args.world_id
+    world_id    = args.world_id
+    scenario_id = args.scenario_id
     try:
         module = import_module(f"src.assets.worlds.{world_id}.schema")
         world  = module.world_instance
@@ -45,9 +47,9 @@ if __name__ == "__main__":
     db   = kuzu.Database(str(db_path))
     conn = kuzu.Connection(db)
 
-    print(f"현재 World: [{world_id}]")
+    print(f"현재 World: [{world_id}] / Scenario: [{scenario_id or 'default'}]")
     try:
-        world.build_schema(conn)
+        world.build_schema(conn, scenario_id)
     finally:
         # Kuzu는 명시적 close 불필요
         pass

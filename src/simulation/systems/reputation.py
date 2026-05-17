@@ -12,7 +12,7 @@
 import json
 
 from src.config import MODEL_STATE_UPDATER as GOSSIP_MODEL
-from src.core.database.driver import async_driver
+from src.core.database import async_driver
 from src.core.database import update_relationship_affinity
 from src.core.llm.client import get_model, extract_json_from_llm
 from src.core.embedding.encoder import embed_async

@@ -14,6 +14,7 @@
 #   - extract_json_from_llm(raw_text, source: str) -> dict | list : LLM 응답에서 JSON 안전 추출
 # ================================
 
+import asyncio
 import json
 import re
 
@@ -21,6 +22,8 @@ from google import genai
 from google.genai import types
 
 from src.config import GOOGLE_PROJECT_ID as PROJECT_ID
+
+_LLM_TIMEOUT_SEC = 90  # 비스트리밍 JSON 호출 최대 대기 시간
 
 _client = genai.Client(
     vertexai=True,
@@ -131,10 +134,13 @@ class _GeminiModel:
         config = self._build_config(generation_config)
 
         if config_dict.get("response_mime_type") == "application/json":
-            resp = await _client.aio.models.generate_content(
-                model=self._model,
-                contents=contents,
-                config=config,
+            resp = await asyncio.wait_for(
+                _client.aio.models.generate_content(
+                    model=self._model,
+                    contents=contents,
+                    config=config,
+                ),
+                timeout=_LLM_TIMEOUT_SEC,
             )
             return _SafeResponse(resp)
 

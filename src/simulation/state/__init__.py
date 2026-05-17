@@ -5,6 +5,10 @@
 # ================================
 
 from src.simulation.state.classifier import classify_and_extract, _sanitize_stress_level
+from src.simulation.state.dynamic_information import (
+    apply_dynamic_information_update,
+    apply_multi_character_dynamic_information_updates,
+)
 from src.simulation.state.updater import (
     process_actor_response,
     apply_time_updates,
@@ -13,5 +17,7 @@ from src.simulation.state.updater import (
 
 __all__ = [
     "classify_and_extract", "_sanitize_stress_level",
+    "apply_dynamic_information_update",
+    "apply_multi_character_dynamic_information_updates",
     "process_actor_response", "apply_time_updates", "delegate_complex_update",
 ]

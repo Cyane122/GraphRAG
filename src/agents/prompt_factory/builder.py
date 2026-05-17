@@ -31,6 +31,7 @@ from src.agents.prompt_factory.renderers import (
     render_character_section,
     render_events_section,
     render_header,
+    render_location_context,
     render_npc_section,
     render_recall_events_section,
     render_relationship_section,
@@ -50,6 +51,14 @@ def _read_optional_prompt(relative_path: str) -> str:
     """Read a tagless Markdown prompt file from prompt_factory/prompt/."""
     path = PROMPT_DIR / relative_path
     return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
+def _render_scene_need_hints(hints: dict[str, str]) -> str:
+    """씬 내 캐릭터의 욕구 오버플로우 힌트를 프롬프트 블록으로 렌더링."""
+    if not hints:
+        return ""
+    lines = "\n".join(hints.values())
+    return _render_prompt_block("scene_need_hints", lines)
 
 
 def _read_default_scene_prompt(scene_type: str) -> str:
@@ -108,6 +117,7 @@ class PromptBuilder:
 
     def infer_genres(self, scene_types: list[str]) -> list[str]:
         """Infer additional genre prompt sections from scene types."""
+        # genre overlay는 r18 intimate 씬에만 적용; 다른 씬에서 빈 genre 세그먼트는 정상
         if self.world_config.get("rating", "r18") != "r18":
             return []
         genres = []
@@ -254,6 +264,8 @@ class PromptBuilder:
         world_context: Optional[dict] = None,
         rendered_context: Optional[dict[str, str]] = None,
         current_pov: Optional[dict] = None,
+        location_nodes: Optional[list[dict]] = None,
+        scene_need_hints: Optional[dict[str, str]] = None,
     ) -> tuple[str, str, str]:
         """Return fixed, genre, and dynamic prompt sections for the current turn."""
         fixed_prompt = self.build_fixed_section()
@@ -267,6 +279,7 @@ class PromptBuilder:
             self.world_config,
             char_data,
             current_pov,
+            npcs or [],
         )
         context_block = self._build_context_block(
             relationship,
@@ -277,18 +290,21 @@ class PromptBuilder:
             world_context or {},
             rendered_context,
         )
+        need_hints_block = _render_scene_need_hints(scene_need_hints or {})
         dynamic_prompt = "\n\n".join(
             part
             for part in [
                 _render_prompt_block("alteration", self.world_config.get("alteration_section", "")),
                 self.build_header(location, dt),
+                render_location_context(location_nodes or []),
                 self.build_unified_blacklist(char_data, scene_types),
                 render_character_section(char_data, scene_types),
+                render_npc_section(npcs or [], self.char_name),
+                need_hints_block,
                 self.build_character_focus_prompt(char_data),
                 self.build_scene_specific_prompt(scene_types),
                 context_block,
                 self.build_dialogue_examples(scene_types),
-                _render_prompt_block("context", recent_story),
                 _render_prompt_block("user_input", user_input),
                 checklist,
                 (

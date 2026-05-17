@@ -13,6 +13,7 @@ POV CANDIDATES: {pov_candidates_line}
 POV: mode=3P-limited | anchor={char} | access={char} perception/body/thought/dialogue/action | blocked={user} inner/action/dialogue + NPC hidden thoughts
 USER CONTROL: forbidden | first beat after user input={char} perception/reaction/action/env consequence? [yes/no]
 CORE: scene-continued=[yes/no] | summary-replaced-action=[yes/no] | continuity-kept=[yes/no] | new-conflict-resolved=[yes/no]
+REALITY: time-plausible=[yes/no] | schedule-conflict=[quote/none] | posture/reach/line-of-sight-valid=[yes/no] | impossible-action=[quote/none]
 STYLE: prose-flow=[connected/choppy] | sensory-entry=[yes/no] | designation-clear=[yes/no] | body-part-as-person=[quote/none] | repeated-openings=[quote/none] | ending-variety=[yes/no] | closing=[body/object/env/action/sfx]
 EMOTION: evidence-only=[yes/no] | labels=[quote/none] | body-channels=[1+/2+/2+env] | repeated-reaction=[quote/none] | show-then-tell=[quote/none] | dialogue-gap=[yes/no/n/a]
 USER IMPERSONATION: {user}-generated-action=[quote/none] | {user}-generated-dialogue=[quote/none] | {user}-inner/sensation/decision=[quote/none] | scale-boost=[quote/none]

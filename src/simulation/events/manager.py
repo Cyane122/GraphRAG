@@ -13,7 +13,7 @@
 import json
 from datetime import datetime
 
-from src.core.database.driver import async_driver
+from src.core.database import async_driver
 from src.simulation.events.evaluator import evaluate_conditions
 
 

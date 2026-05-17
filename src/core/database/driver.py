@@ -6,16 +6,18 @@
 # 수정 없이 재사용할 수 있게 합니다.
 #
 # Classes
-#   - KuzuRecord  : record["key"] 접근 + dict() 변환을 지원하는 행 래퍼
-#   - KuzuResult  : single() / fetch_all() 을 제공하는 결과 래퍼
-#   - KuzuSession : Neo4j AsyncSession과 동일한 인터페이스
+#   - KuzuRecord     : record["key"] 접근 + dict() 변환을 지원하는 행 래퍼
+#   - KuzuResult     : single() / fetch_all() 을 제공하는 결과 래퍼
+#   - KuzuSession    : Neo4j AsyncSession과 동일한 인터페이스
 #   - KuzuAsyncDriver : session() 팩토리 및 동기 execute_sync() 제공
+#   - _ProxyDriver   : Chainlit 세션 드라이버를 동적으로 조회하는 프록시
 #
 # (module-level)
-#   - async_driver : src.config.WORLD_ID 기반 Kuzu DB를 가리키는 KuzuAsyncDriver 싱글톤
+#   - async_driver : _ProxyDriver 인스턴스 — 세션 드라이버가 있으면 위임, 없으면 기본 드라이버
 # ================================
 
 import asyncio
+import atexit
 from importlib import import_module
 from pathlib import Path
 
@@ -29,6 +31,8 @@ from src.config import WORLD_ID
 # Kuzu ALTER 문법은 "ADD COLUMN"이 아니라 "ADD"를 사용한다.
 _TABLE_MIGRATIONS: list[str] = [
     "CREATE REL TABLE IF NOT EXISTS HAS_STATE(FROM Character TO DynamicState)",
+    "CREATE NODE TABLE IF NOT EXISTS DynamicInformation(id STRING, props STRING, PRIMARY KEY(id))",
+    "CREATE REL TABLE IF NOT EXISTS HAS_INFO(FROM Character TO DynamicInformation)",
     """CREATE NODE TABLE IF NOT EXISTS NeedsState(
         id STRING,
         hunger DOUBLE, rest DOUBLE, social DOUBLE,
@@ -78,9 +82,83 @@ _TABLE_MIGRATIONS: list[str] = [
     "CREATE REL TABLE IF NOT EXISTS PROFILE_TARGET(FROM RelationshipProfile TO Character)",
     "CREATE REL TABLE IF NOT EXISTS APPLIES_AT(FROM Rule TO Location)",
     "CREATE REL TABLE IF NOT EXISTS RULE_FOR_CHARACTER(FROM Rule TO Character)",
+    "CREATE REL TABLE IF NOT EXISTS PART_OF(FROM Location TO Location)",
+    "CREATE REL TABLE IF NOT EXISTS PURSUES(FROM Character TO Goal)",
+    "CREATE REL TABLE IF NOT EXISTS GOAL_RELATED_EVENT(FROM Goal TO Event)",
+    "CREATE REL TABLE IF NOT EXISTS OWNS(FROM Character TO Item)",
+    "CREATE REL TABLE IF NOT EXISTS GAVE(FROM Character TO Item)",
+    "CREATE REL TABLE IF NOT EXISTS ANCHORS_MEMORY(FROM Item TO Memory)",
+    "CREATE REL TABLE IF NOT EXISTS ROOTED_IN(FROM Secret TO Event)",
+    "CREATE REL TABLE IF NOT EXISTS TRIGGERED_BY(FROM Secret TO Item)",
+    "CREATE REL TABLE IF NOT EXISTS EVENT_INVOLVES(FROM StaticEvent TO Character)",
+    """CREATE NODE TABLE IF NOT EXISTS Item(
+        id STRING,
+        name STRING,
+        description STRING,
+        owner_id STRING,
+        location_id STRING,
+        emotional_weight INT64,
+        visibility STRING,
+        last_seen_at STRING,
+        PRIMARY KEY(id)
+    )""",
+    """CREATE NODE TABLE IF NOT EXISTS Goal(
+        id STRING,
+        owner_id STRING,
+        title STRING,
+        description STRING,
+        status STRING,
+        progress INT64,
+        subtlety INT64,
+        next_hint STRING,
+        trigger_conditions STRING,
+        completion_conditions STRING,
+        last_progressed_at STRING,
+        PRIMARY KEY(id)
+    )""",
+    """CREATE NODE TABLE IF NOT EXISTS Secret(
+        id STRING,
+        owner_id STRING,
+        title STRING,
+        private_summary STRING,
+        public_hint STRING,
+        status STRING,
+        sensitivity INT64,
+        reveal_conditions STRING,
+        current_reveal_level INT64,
+        last_hinted_at STRING,
+        PRIMARY KEY(id)
+    )""",
+    """CREATE NODE TABLE IF NOT EXISTS StaticEvent(
+        id STRING,
+        name STRING,
+        foreshadow_conditions STRING,
+        foreshadow_hint STRING,
+        trigger_conditions STRING,
+        status STRING,
+        PRIMARY KEY(id)
+    )""",
+    """CREATE NODE TABLE IF NOT EXISTS PersonalFact(
+        id STRING,
+        subject_id STRING,
+        audience_id STRING,
+        category STRING,
+        fact_text STRING,
+        normalized_key STRING,
+        status STRING,
+        valid_from STRING,
+        valid_until STRING,
+        confidence DOUBLE,
+        source STRING,
+        created_at STRING,
+        updated_at STRING,
+        PRIMARY KEY(id)
+    )""",
+    "CREATE REL TABLE IF NOT EXISTS KNOWS_FACT(FROM Character TO PersonalFact)",
 ]
 
 _COLUMN_MIGRATIONS: list[str] = [
+    "ALTER TABLE DynamicState ADD has_menstrual_cycle BOOLEAN DEFAULT true",
     "ALTER TABLE DynamicState ADD outfit STRING DEFAULT ''",
     "ALTER TABLE DynamicState ADD injury_marks STRING DEFAULT ''",
     "ALTER TABLE DynamicState ADD pregnant BOOLEAN DEFAULT false",
@@ -124,6 +202,15 @@ _COLUMN_MIGRATIONS: list[str] = [
     "ALTER TABLE Memory ADD memory_type STRING DEFAULT 'episodic'",
     "ALTER TABLE Memory ADD narrative_summary STRING DEFAULT ''",
     "ALTER TABLE Memory ADD state_summary STRING DEFAULT ''",
+    "ALTER TABLE RELATIONSHIP ADD summary STRING DEFAULT ''",
+]
+
+
+# 특정 노드의 속성값을 보정하는 일회성 데이터 패치.
+# WHERE 조건으로 이미 값이 있으면 스킵하므로 재실행 안전.
+_DATA_PATCHES: list[str] = [
+    # eun_seo — 양측 난소 제거로 생리 주기 없음
+    "MATCH (d:DynamicState {id: 'eun_seo_state'}) WHERE d.has_menstrual_cycle = true SET d.has_menstrual_cycle = false",
 ]
 
 
@@ -149,31 +236,38 @@ class KuzuRecord:
 
 
 class KuzuResult:
-    """Kuzu QueryResult를 Neo4j AsyncResult와 유사한 인터페이스로 감쌉니다."""
+    """Kuzu QueryResult를 Neo4j AsyncResult와 유사한 인터페이스로 감쌉니다.
+
+    생성 시 모든 행을 즉시 읽고 QueryResult를 닫아 C++ 리소스를 즉시 해제합니다.
+    """
 
     def __init__(self, qr: kuzu.QueryResult) -> None:
-        self._qr = qr
-        self._col_names: list[str] = qr.get_column_names() if qr else []
+        self._col_names: list[str] = []
+        self._rows: list[list] = []
+        if qr:
+            try:
+                self._col_names = qr.get_column_names()
+                while qr.has_next():
+                    self._rows.append(qr.get_next())
+            finally:
+                try:
+                    qr.close()
+                except Exception:
+                    pass
 
     async def single(self) -> KuzuRecord | None:
         """첫 번째 행을 KuzuRecord로 반환하고, 결과가 없으면 None을 반환합니다."""
-        if self._qr and self._qr.has_next():
-            return KuzuRecord(self._col_names, self._qr.get_next())
+        if self._rows:
+            return KuzuRecord(self._col_names, self._rows[0])
         return None
 
     async def fetch_all(self) -> list[KuzuRecord]:
         """모든 행을 KuzuRecord 리스트로 반환합니다."""
-        records = []
-        while self._qr and self._qr.has_next():
-            records.append(KuzuRecord(self._col_names, self._qr.get_next()))
-        return records
+        return [KuzuRecord(self._col_names, row) for row in self._rows]
 
     async def data(self) -> list[dict]:
         """모든 행을 dict 리스트로 반환합니다. Neo4j AsyncResult.data()와 호환."""
-        records = []
-        while self._qr and self._qr.has_next():
-            records.append(dict(zip(self._col_names, self._qr.get_next())))
-        return records
+        return [dict(zip(self._col_names, row)) for row in self._rows]
 
 
 class KuzuSession:
@@ -220,13 +314,29 @@ class KuzuAsyncDriver:
     스키마 초기화(sync): execute_sync() → kuzu.Connection.execute()
     """
 
-    def __init__(self, db_path: str) -> None:
+    def __init__(self, db_path: str, world_id: str | None = None, scenario_id: str | None = None) -> None:
+        self._world_id   = world_id or WORLD_ID
+        self._scenario_id = scenario_id
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._db   = kuzu.Database(db_path)
         self._conn = kuzu.Connection(self._db)
         self._lock = asyncio.Lock()
         self._bootstrap_schema_if_needed()
         self._run_migrations()
+
+    def close(self) -> None:
+        """연결과 DB를 명시적으로 닫아 파일 락을 해제합니다."""
+        try:
+            self._conn.close()
+        except Exception:
+            pass
+        try:
+            self._db.close()
+        except Exception:
+            pass
+
+    def __del__(self) -> None:
+        self.close()
 
     def session(self) -> KuzuSession:
         """KuzuSession을 반환합니다 (async context manager로 사용)."""
@@ -236,14 +346,20 @@ class KuzuAsyncDriver:
         """현재 Kuzu DB에 존재하는 테이블 이름을 반환합니다."""
         qr = self._conn.execute("CALL show_tables() RETURN name")
         tables: set[str] = set()
-        while qr.has_next():
-            row = qr.get_next()
-            if row:
-                tables.add(row[0])
+        try:
+            while qr.has_next():
+                row = qr.get_next()
+                if row:
+                    tables.add(row[0])
+        finally:
+            try:
+                qr.close()
+            except Exception:
+                pass
         return tables
 
     def _bootstrap_schema_if_needed(self) -> None:
-        """기준 테이블이 없으면 현재 WORLD_ID의 schema.py로 기본 스키마를 먼저 생성합니다."""
+        """기준 테이블이 없으면 self._world_id의 schema.py로 기본 스키마를 먼저 생성합니다."""
         try:
             required_base_tables = {"Character", "DynamicState", "Location", "GlobalState"}
             missing = required_base_tables - self._table_names()
@@ -254,13 +370,13 @@ class KuzuAsyncDriver:
             return
 
         try:
-            module = import_module(f"src.assets.worlds.{WORLD_ID}.schema")
+            module = import_module(f"src.assets.worlds.{self._world_id}.schema")
             world = module.world_instance
         except (ModuleNotFoundError, AttributeError):
             world = World()
 
-        print(f"[KuzuBootstrap] base schema missing for '{WORLD_ID}' ({', '.join(sorted(missing))}). Initializing schema.")
-        world.build_schema(self._conn)
+        print(f"[KuzuBootstrap] base schema missing for '{self._world_id}' ({', '.join(sorted(missing))}). Initializing schema.")
+        world.build_schema(self._conn, self._scenario_id)
 
     def _run_migrations(self) -> None:
         """기존 DB에 누락된 테이블과 컬럼을 추가한다."""
@@ -285,6 +401,20 @@ class KuzuAsyncDriver:
                     continue
                 print(f"[KuzuMigration] skipped failed migration: {ddl} ({exc})")
         self._migrate_has_dynamic_state_to_has_state()
+        self._backfill_located_at_from_dynamic_state()
+        self._run_data_patches()
+
+    def _run_data_patches(self) -> None:
+        """특정 노드 속성값을 보정하는 데이터 패치를 실행합니다."""
+        for query in _DATA_PATCHES:
+            try:
+                qr = self._conn.execute(query)
+                try:
+                    qr.close()
+                except Exception:
+                    pass
+            except Exception as exc:
+                print(f"[KuzuMigration] data patch skipped: {exc}")
 
     def _migrate_has_dynamic_state_to_has_state(self) -> None:
         """Legacy HAS_DYNAMIC_STATE 관계만 있는 캐릭터에 HAS_STATE 관계를 보강합니다."""
@@ -299,11 +429,20 @@ class KuzuAsyncDriver:
                 print(f"[KuzuMigration] HAS_DYNAMIC_STATE scan skipped: {exc}")
             return
 
-        col_names = qr.get_column_names()
+        try:
+            col_names = qr.get_column_names()
+            rows = []
+            while qr.has_next():
+                rows.append(dict(zip(col_names, qr.get_next())))
+        finally:
+            try:
+                qr.close()
+            except Exception:
+                pass
+
         migrated = 0
         already_standard = 0
-        while qr.has_next():
-            row = dict(zip(col_names, qr.get_next()))
+        for row in rows:
             char_id = row.get("char_id")
             state_id = row.get("state_id")
             if not char_id or not state_id:
@@ -336,17 +475,132 @@ class KuzuAsyncDriver:
             """,
             {"char_id": char_id, "state_id": state_id},
         )
-        return bool(qr.has_next())
+        try:
+            return bool(qr.has_next())
+        finally:
+            try:
+                qr.close()
+            except Exception:
+                pass
+
+    def _has_located_at_relationship(self, char_id: str) -> bool:
+        """캐릭터에 LOCATED_AT 관계가 이미 있는지 확인합니다."""
+        qr = self._conn.execute(
+            """
+            MATCH (c:Character {id: $char_id})-[:LOCATED_AT]->(l:Location)
+            RETURN l.id AS location_id
+            """,
+            {"char_id": char_id},
+        )
+        try:
+            return bool(qr.has_next())
+        finally:
+            try:
+                qr.close()
+            except Exception:
+                pass
+
+    def _location_exists(self, location_id: str) -> bool:
+        """Location 노드 존재 여부를 확인합니다."""
+        qr = self._conn.execute(
+            "MATCH (l:Location {id: $location_id}) RETURN l.id AS location_id",
+            {"location_id": location_id},
+        )
+        try:
+            return bool(qr.has_next())
+        finally:
+            try:
+                qr.close()
+            except Exception:
+                pass
+
+    def _backfill_located_at_from_dynamic_state(self) -> None:
+        """DynamicState.location_id만 있는 기존 DB에 LOCATED_AT 관계를 보강합니다."""
+        try:
+            qr = self._conn.execute(
+                """
+                MATCH (c:Character)-[:HAS_STATE]->(d:DynamicState)
+                RETURN c.id AS char_id, d.location_id AS location_id
+                """
+            )
+        except Exception as exc:
+            message = str(exc).lower()
+            if "location_id" not in message and "cannot find" not in message:
+                print(f"[KuzuMigration] LOCATED_AT backfill scan skipped: {exc}")
+            return
+
+        try:
+            col_names = qr.get_column_names()
+            rows = []
+            while qr.has_next():
+                rows.append(dict(zip(col_names, qr.get_next())))
+        finally:
+            try:
+                qr.close()
+            except Exception:
+                pass
+
+        migrated = 0
+        for row in rows:
+            char_id = row.get("char_id")
+            location_id = row.get("location_id")
+            if not char_id or not location_id:
+                continue
+            if self._has_located_at_relationship(char_id) or not self._location_exists(location_id):
+                continue
+            try:
+                self._conn.execute(
+                    """
+                    MATCH (c:Character {id: $char_id}), (l:Location {id: $location_id})
+                    CREATE (c)-[:LOCATED_AT]->(l)
+                    """,
+                    {"char_id": char_id, "location_id": location_id},
+                )
+                migrated += 1
+            except Exception as exc:
+                print(f"[KuzuMigration] LOCATED_AT backfill failed for {char_id}: {exc}")
+        if migrated:
+            print(f"[KuzuMigration] LOCATED_AT backfilled {migrated} relationship(s)")
 
     def execute_sync(self, query: str, params: dict | None = None) -> QueryResult | list[QueryResult]:
         """동기 쿼리 실행. 스키마 초기화 CLI 전용."""
         return self._conn.execute(query, params or {})
 
+
+
+class _ProxyDriver:
+    """Chainlit 세션 드라이버를 동적으로 조회하는 프록시.
+
+    세션에 db_driver가 설정돼 있으면 그 드라이버를 사용하고,
+    스크립트·CLI 환경처럼 세션이 없으면 기본 드라이버(_default_driver)로 폴백한다.
+    """
+
+    def session(self) -> KuzuSession:
+        """현재 세션의 KuzuSession을 반환합니다."""
+        return _resolve_driver().session()
+
+    def execute_sync(self, query: str, params: dict | None = None):
+        """동기 쿼리 실행을 현재 세션 드라이버에 위임합니다."""
+        return _resolve_driver().execute_sync(query, params)
+
     async def close(self) -> None:
-        """Kuzu는 명시적 close가 필요 없지만 인터페이스 통일을 위해 유지합니다."""
+        """프록시는 실제 리소스를 보유하지 않습니다."""
+
+
+def _resolve_driver() -> KuzuAsyncDriver:
+    """현재 Chainlit 세션의 드라이버를 반환합니다. 세션이 없으면 기본 드라이버를 반환합니다."""
+    try:
+        import chainlit as cl
+        driver = cl.user_session.get("db_driver")
+        if isinstance(driver, KuzuAsyncDriver):
+            return driver
+    except Exception:
         pass
+    return _default_driver
 
 
-_db_path  = str(Path("graph") / WORLD_ID)
+_db_path        = str(Path("graph") / WORLD_ID)
+_default_driver = KuzuAsyncDriver(_db_path)
+async_driver    = _ProxyDriver()
 
-async_driver = KuzuAsyncDriver(_db_path)
+atexit.register(_default_driver.close)
