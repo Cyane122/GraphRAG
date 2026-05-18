@@ -7,7 +7,7 @@
 # in src/simulation/state/multi_character.py.
 #
 # Functions
-#   - process_actor_response(actor_response: str, npc_id: str, pc_id: str, scene_types: list[str] | None, scene_chars: list[str] | None, world_config: dict | None) -> str | None : Apply accepted actor response side effects.
+#   - process_actor_response(actor_response: str, npc_id: str, pc_id: str, scene_types: list[str] | None, scene_chars: list[str] | None, world_config: dict | None, manager_effects: dict | None) -> str | None : Apply accepted actor response side effects.
 #   - guard_actor_response(actor_response: str, npc_id: str, pc_id: str, world_config: dict | None) -> dict : Validate actor response before DB writes.
 #   - build_time_plan(plan: dict, base_time: datetime) -> dict : Compute time changes without DB writes.
 #   - commit_time_plan(time_plan: dict, pc_id: str, npc_id: str) -> datetime : Persist a computed time plan.
@@ -34,6 +34,7 @@ from src.simulation.state.audit import (
     _audit_event_candidate,
     _audit_relationship_delta,
     _audit_state_updates,
+    _audit_time_location_schedule,
     _needs_classification,
     _safe_int,
     _sanitize_stress_level,
@@ -41,7 +42,6 @@ from src.simulation.state.audit import (
     guard_actor_response,
 )
 from src.simulation.state.dynamic_information import (
-    apply_dynamic_information_update,
     apply_multi_character_dynamic_information_updates,
 )
 from src.simulation.state.events import (
@@ -62,6 +62,29 @@ from src.simulation.state.time_plan import (
 
 
 # Combined LLM workers for state classification, relationship deltas, and events.
+
+
+async def _run_auxiliary_character_updates(
+    actor_response: str,
+    pc_id: str,
+    scene_types: list[str] | None,
+    participant_ids: list[str],
+) -> None:
+    """Run auxiliary multi-character extractors without blocking main state writes."""
+    results = await asyncio.gather(
+        apply_multi_character_state_updates(actor_response, pc_id, participant_ids=participant_ids),
+        apply_multi_character_dynamic_information_updates(
+            actor_response,
+            pc_id,
+            scene_types=scene_types,
+            participant_ids=participant_ids,
+        ),
+        return_exceptions=True,
+    )
+    labels = ("multi-character state", "dynamic information")
+    for label, result in zip(labels, results):
+        if isinstance(result, Exception):
+            print(f"[StateUpdater] auxiliary {label} update failed (ignored): {result}")
 
 
 async def _run_state_update(
@@ -246,10 +269,21 @@ async def _run_combined_update(
         {dynamic_state, relationship_delta, new_event,
          ts_acceptance_delta?, northern_attachment_delta?}
     """
-    state_plan, event_plan = await asyncio.gather(
+    state_result, event_result = await asyncio.gather(
         _run_state_update(actor_response, npc_id, pc_id, world_config),
         _run_event_creation(actor_response, npc_id, pc_id),
+        return_exceptions=True,
     )
+    if isinstance(state_result, Exception):
+        print(f"[StateUpdater] state update worker failed (ignored): {state_result}")
+        state_plan = {}
+    else:
+        state_plan = state_result
+    if isinstance(event_result, Exception):
+        print(f"[StateUpdater] event creation worker failed (ignored): {event_result}")
+        event_plan = {}
+    else:
+        event_plan = event_result
     return {**state_plan, "new_event": event_plan.get("new_event")}
 
 
@@ -281,6 +315,7 @@ async def process_actor_response(
     scene_types:    list[str] | None = None,
     scene_chars:    list[str] | None = None,
     world_config:   dict | None = None,
+    manager_effects: dict | None = None,
 ) -> str | None:
     """
     Analyze an accepted Actor response and apply persistent state side effects.
@@ -289,9 +324,16 @@ async def process_actor_response(
     from src.simulation.systems.social import ensure_scene_relationships, resolve_and_update as wb_resolve
 
     guard = guard_actor_response(actor_response, npc_id, pc_id, world_config)
+    feasibility_audit = _audit_time_location_schedule(manager_effects)
     if not guard["passed"]:
         print(f"[StateGuard] rejected: {json.dumps(guard, ensure_ascii=False)}")
-        _write_state_audit_snapshot(actor_response, npc_id, pc_id, guard)
+        _write_state_audit_snapshot(
+            actor_response,
+            npc_id,
+            pc_id,
+            guard,
+            feasibility_audit=feasibility_audit,
+        )
         return None
     if guard["issues"]:
         print(f"[StateGuard] warning: {json.dumps(guard, ensure_ascii=False)}")
@@ -312,12 +354,12 @@ async def process_actor_response(
 
     if scene_types and not _needs_classification(actor_response, scene_types):
         print("[StateUpdater] skipped (no state-relevant change)")
-        await apply_multi_character_state_updates(actor_response, pc_id, participant_ids=participant_ids)
-        await apply_multi_character_dynamic_information_updates(
+        # 두 추출 작업은 서로 독립적이므로 병렬 실행
+        await _run_auxiliary_character_updates(
             actor_response,
             pc_id,
-            scene_types=scene_types,
-            participant_ids=participant_ids,
+            scene_types,
+            participant_ids,
         )
         if len(participant_ids) > 2:
             await apply_scene_relationship_updates(
@@ -337,6 +379,7 @@ async def process_actor_response(
                     pc_id=pc_id,
                     guard=guard,
                     event_candidate=event_candidate,
+                    feasibility_audit=feasibility_audit,
                 )
                 if new_event:
                     await _create_event(new_event, npc_id, pc_id)
@@ -344,17 +387,16 @@ async def process_actor_response(
                 print(f"[StateUpdater] low-change event creation failed (ignored): {e}")
         return None
 
-    await apply_multi_character_state_updates(actor_response, pc_id, participant_ids=participant_ids)
-    await apply_multi_character_dynamic_information_updates(
-        actor_response,
-        pc_id,
-        scene_types=scene_types,
-        participant_ids=participant_ids,
-    )
-
     if npc_id == pc_id:
         # NPC=PC self-state path: update DynamicState only and skip relationship/event/gossip.
+        # multi_character 와 dynamic_info 는 독립적이므로 병렬 실행
         print("[StateUpdater] NPC=PC: DynamicState update only")
+        await _run_auxiliary_character_updates(
+            actor_response,
+            pc_id,
+            scene_types,
+            participant_ids,
+        )
         try:
             state_plan = await _run_state_update(actor_response, npc_id, pc_id, world_config)
             state = dict(state_plan.get("dynamic_state") or {})
@@ -385,11 +427,20 @@ async def process_actor_response(
             print(f"[PregnancyMgr] processing failed (continuing): {e}")
         return None
 
+    # multi_character / dynamic_info / combined_update 는 서로 독립적이므로 병렬 실행
+    auxiliary_task = asyncio.create_task(_run_auxiliary_character_updates(
+        actor_response,
+        pc_id,
+        scene_types,
+        participant_ids,
+    ))
     try:
         plan = await _run_combined_update(actor_response, npc_id, pc_id, world_config)
     except Exception as e:
         print(f"[StateUpdater] combined update failed (ignored): {e}")
+        await auxiliary_task
         return None
+    await auxiliary_task
     if not plan:
         return None
 
@@ -455,6 +506,7 @@ async def process_actor_response(
             state_candidates        = state_candidates,
             relationship_candidate  = rel_candidate,
             event_candidate         = event_candidate,
+            feasibility_audit       = feasibility_audit,
         )
         if new_event:
             await _create_event(new_event, npc_id, pc_id)

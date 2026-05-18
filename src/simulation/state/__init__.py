@@ -5,7 +5,6 @@
 # ================================
 
 from src.simulation.state.dynamic_information import (
-    apply_dynamic_information_update,
     apply_multi_character_dynamic_information_updates,
 )
 from src.simulation.state.updater import (
@@ -15,7 +14,6 @@ from src.simulation.state.updater import (
 )
 
 __all__ = [
-    "apply_dynamic_information_update",
     "apply_multi_character_dynamic_information_updates",
     "process_actor_response", "apply_time_updates", "delegate_complex_update",
 ]

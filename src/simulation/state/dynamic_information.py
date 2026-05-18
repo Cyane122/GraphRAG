@@ -5,8 +5,7 @@
 # actor responses.
 #
 # Functions
-#   - apply_dynamic_information_update(actor_response: str, npc_id: str) -> dict : Apply durable DynamicInformation changes for one character.
-#   - apply_multi_character_dynamic_information_updates(actor_response: str, pc_id: str) -> dict[str, dict] : Apply durable DynamicInformation changes for all NPCs in one LLM call.
+#   - apply_multi_character_dynamic_information_updates(actor_response: str, pc_id: str, scene_types: list[str] | None, participant_ids: list[str] | None) -> dict[str, dict] : Apply durable DynamicInformation changes for all NPCs in one LLM call.
 # ================================
 
 import asyncio
@@ -367,23 +366,3 @@ async def apply_multi_character_dynamic_information_updates(
     return updates_by_char
 
 
-async def apply_dynamic_information_update(actor_response: str, npc_id: str) -> dict:
-    """명시적인 장기 정보 변화가 있으면 DynamicInformation에 병합 저장합니다."""
-    current_info, scene_context = await asyncio.gather(
-        _fetch_dynamic_information(npc_id),
-        _fetch_scene_context(),
-    )
-    if not current_info:
-        print(f"[DynamicInformationUpdater] WARNING: current_info is empty for '{npc_id}' — DynamicInformation node missing or props is null. Skipping update.")
-        return {}
-    try:
-        updates = await _run_dynamic_information_update(actor_response, npc_id, current_info, scene_context)
-    except Exception as exc:
-        print(f"[DynamicInformationUpdater] failed and ignored: {exc}")
-        return {}
-    if not updates:
-        return {}
-
-    await update_dynamic_information(npc_id, updates)
-    print(f"[DynamicInformationUpdater] applied: {json.dumps(updates, ensure_ascii=False)}")
-    return updates

@@ -15,7 +15,7 @@
 #   - _remove_legacy_graph_steps(steps: list[dict]) -> None : 이전 그래프 메시지 제거
 #   - on_chat_end() -> None : 미확정 pending 강제 처리
 #   - on_message(message: cl.Message) -> None : 메시지 루프 메인 핸들러
-#   - _handle_system_command(user_input: str) -> None : help/status/debug graph 명령 처리
+#   - _handle_system_command(user_input: str) -> None : help/debug graph 명령 처리
 #   - on_reroll(action: cl.Action) -> None : 리롤 버튼 콜백
 #   - on_edit_response(action: cl.Action) -> None : 수정 버튼 콜백
 #   - on_delete_message(action: cl.Action) -> None : 삭제 버튼 콜백
@@ -64,7 +64,7 @@ from src.ui.time_state import (
 from src.simulation.state.multi_character import apply_multi_character_state_updates
 from src.simulation.state.updater import delegate_complex_update
 from src.simulation.systems.needs import ensure_traits_for_characters
-from src.core.database import KuzuAsyncDriver, async_driver
+from src.core.database import KuzuAsyncDriver
 from src.core.database.helpers import load_graph_info
 from src.core.llm.client import get_client
 from src.core.data_layer import JsonDataLayer
@@ -346,53 +346,12 @@ async def _handle_system_command(user_input: str) -> None:
             author="시스템",
         ).send()
         return
-    if command in {"/status", "!status"}:
-        await _send_lore_qa_response(user_input)
-        return
     if command in {"/debug graph", "!debug graph", "/graph", "!graph"}:
         _, pc_id, npc_id, _, _ = _wv()
         world_id = cl.user_session.get("world_id") or WORLD_ID
         await send_debug_graph(pc_id=pc_id, npc_id=npc_id, world_id=world_id)
         return
     await cl.Message(content=f"알 수 없는 시스템 명령입니다: `{user_input}`", author="시스템").send()
-
-
-async def _send_lore_qa_response(user_input: str) -> None:
-    """설정 확인성 질문에 Actor RP 대신 짧은 시스템 응답을 보냅니다."""
-    world_id, pc_id, npc_id, npc_name_kor, _ = _wv()
-    current_time = await snapshot_game_time()
-    npc_location = await _fetch_character_location_name(npc_id)
-    pc_location  = await _fetch_character_location_name(pc_id)
-    await cl.Message(
-        content=(
-            f"**현재 설정 요약**\n"
-            f"- 월드: `{world_id}`\n"
-            f"- PC: `{pc_id}`\n"
-            f"- NPC: `{npc_name_kor}` (`{npc_id}`)\n"
-            f"- 현재 시간: `{current_time or '알 수 없음'}`\n"
-            f"- NPC 위치: `{npc_location or '알 수 없음'}`\n"
-            f"- PC 위치: `{pc_location or '알 수 없음'}`\n\n"
-            f"질문: {user_input}"
-        ),
-        author="시스템",
-    ).send()
-
-
-async def _fetch_character_location_name(char_id: str) -> str | None:
-    """캐릭터가 연결된 Location 이름을 조회합니다."""
-    try:
-        async with async_driver.session() as session:
-            result = await session.run(
-                """
-                MATCH (c:Character {id: $char_id})-[:LOCATED_AT]->(l:Location)
-                RETURN coalesce(l.name, l.id) AS location
-                """,
-                char_id=char_id,
-            )
-            row = await result.single()
-            return row["location"] if row else None
-    except Exception:
-        return None
 
 
 # ════════════════════════════════════════════════════════════
@@ -927,10 +886,6 @@ async def on_message(message: cl.Message) -> None:
             if not user_input:
                 return
             route = TurnInputType.ROLEPLAY
-
-    if route == TurnInputType.LORE_QA:
-        await _send_lore_qa_response(user_input)
-        return
 
     # ── RP 턴: 유저 메시지에 삭제 버튼 추가 ─────────────────
     message.actions = [

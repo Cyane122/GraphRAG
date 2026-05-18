@@ -5,7 +5,8 @@
 #
 # Functions
 #   - _try_rule_based(user_input: str) -> dict | None : Fast-path classification for short inputs
-#   - _classify_and_parse_time(user_input: str, recent_story: str, global_state: dict, allowed_locs: str, scene_descriptions: dict[str, str] | None = None) -> dict : LLM-based scene and time parsing
+#   - _classify_and_parse_time(user_input: str, recent_story: str, global_state: dict, allowed_locs: str, scene_descriptions: dict[str, str] | None = None, schedule_context: dict | None = None) -> dict : LLM-based scene and time parsing
+#   - _render_schedule_context_for_classifier(schedule_context: dict) -> str : Render schedule constraints for the classifier prompt
 # ================================
 import asyncio
 import re
@@ -86,11 +87,13 @@ async def _classify_and_parse_time(
     global_state:      dict,
     allowed_locs:      str,
     scene_descriptions: dict[str, str] | None = None,
+    schedule_context: dict | None = None,
 ) -> dict:
     current_time    = datetime.fromisoformat(global_state["currentTime"])
     context_snippet = recent_story[-800:] if recent_story else ""
     _scenes = scene_descriptions or {"daily": "Everyday life with no significant conflict"}
     scene_types_block = "\n".join(f"  - {name}: {desc}" for name, desc in _scenes.items())
+    schedule_block = _render_schedule_context_for_classifier(schedule_context or {})
 
     system_instruction = "You are a combined scene classifier and time parser for a Korean roleplay system."
 
@@ -104,6 +107,9 @@ Time: {current_time.strftime("%Y-%m-%d %H:%M")} | Weather: {global_state["weathe
 [Allowed Locations]
 {allowed_locs}
 
+[Schedule Context]
+{schedule_block}
+
 [Context]
 {context_snippet}
 
@@ -115,6 +121,11 @@ scene_types: pick 1+ from the list below (use exact keys):
 {scene_types_block}
 action_type: "dialogue"(3min) | "action"(10min) | "movement"(25min) | "ooc_jump"(null min, use target_hour)
 target_hour: int (0-23) only for ooc_jump. Map: 새벽→3, 아침→8, 점심→12, 오후→15, 저녁→19, 밤→23
+schedule:
+  - Treat active/upcoming schedules as time pressure when choosing elapsed_minutes and movement plausibility.
+  - Do not teleport characters to a schedule location unless the user asks for movement or the context already implies transition.
+  - Include preparation_time_min/travel_time_min when a requested action would collide with a schedule.
+  - Routine schedules are stable knowledge; only same-day active/upcoming schedules should strongly constrain this turn.
 new_location_id:
   - If the destination exists in Allowed Locations, use that exact existing ID.
   - If the destination is clearly a new concrete place, create a stable lowercase snake_case ID.

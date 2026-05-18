@@ -21,8 +21,11 @@ MAX_TOKEN   = int(os.getenv("MAX_TOKEN",   4096))
 MODEL_ACTOR           = os.getenv("MODEL_ACTOR",           "gemini-3.1-pro-preview")
 MODEL_CLASSIFIER      = os.getenv("MODEL_CLASSIFIER",      "gemini-3-flash-preview")
 MODEL_STATE_UPDATER   = os.getenv("MODEL_STATE_UPDATER",   "gemini-3-flash-preview")
+# temperature=0 구조화 추출 전용 (multi_character / dynamic_information / state_updater)
 MODEL_COMPLEX_UPDATER = os.getenv("MODEL_COMPLEX_UPDATER", "gemini-3-flash-preview")
+# 이벤트 생성, 보조 관계 업데이트 등 판단·서술이 필요한 Pro 전용 작업
 MODEL_EVENT_CREATOR   = os.getenv("MODEL_EVENT_CREATOR",   "gemini-3.1-pro-preview")
+MODEL_PRO_UPDATER     = os.getenv("MODEL_PRO_UPDATER",     "gemini-3.1-pro-preview")
 
 # ── Google Cloud ────────────────────────────────────────────
 GOOGLE_PROJECT_ID = os.getenv("GOOGLE_PROJECT_ID")

@@ -8,6 +8,7 @@
 #   - fetch_schedule_hints(current_time: datetime, window_minutes: int = 120) -> list[dict] : Fetch same-day schedule hints for all active characters
 # ================================
 
+import json
 from datetime import datetime
 
 from src.core.database import async_driver
@@ -109,6 +110,8 @@ def _schedule_hint_for_time(row: dict, current_time: datetime, window_minutes: i
                 timing = "upcoming"
                 minutes_until = delta
 
+    material = row.get("material") or ""
+    realism = _schedule_realism_fields(material)
     return {
         "owner_id": row.get("owner_id"),
         "owner_name": row.get("owner_name") or row.get("owner_id"),
@@ -118,7 +121,8 @@ def _schedule_hint_for_time(row: dict, current_time: datetime, window_minutes: i
         "summary": row.get("summary") or "",
         "prompt_hint": row.get("prompt_hint") or "",
         "prompt_priority": row.get("prompt_priority") or 0,
-        "material": row.get("material") or "",
+        "material": material,
+        **realism,
         "timing": timing,
         "minutes_until": minutes_until,
         "start_time": row.get("start_time") or _format_minute(start_minute),
@@ -133,6 +137,8 @@ def _routine_hint(row: dict, current_time: datetime) -> dict:
     """Return minimal always-on routine info: who, when, where, and what."""
     start_minute = _coerce_minute(row.get("start_minute"), row.get("start_time"))
     end_minute = _coerce_minute(row.get("end_minute"), row.get("end_time"))
+    material = row.get("material") or ""
+    realism = _schedule_realism_fields(material)
     return {
         "owner_id": row.get("owner_id"),
         "owner_name": row.get("owner_name") or row.get("owner_id"),
@@ -147,8 +153,42 @@ def _routine_hint(row: dict, current_time: datetime) -> dict:
         "end_time": row.get("end_time") or _format_minute(end_minute),
         "location_id": row.get("location_id") or "",
         "location_name": row.get("location_name") or "",
+        **realism,
         "is_today": _matches_date(row, current_time),
     }
+
+
+def _schedule_realism_fields(raw_material: object) -> dict:
+    """Extract optional time-realism hints from Schedule.material."""
+    material = _parse_material(raw_material)
+    if not material:
+        return {}
+
+    return {
+        key: value
+        for key in (
+            "preparation_time_min",
+            "travel_time_min",
+            "flexibility",
+            "lateness_tolerance",
+            "can_skip",
+            "requires_transition_scene",
+        )
+        if (value := material.get(key)) not in (None, "", [])
+    }
+
+
+def _parse_material(raw_material: object) -> dict:
+    """Parse Schedule.material into a dict when it stores structured hints."""
+    if isinstance(raw_material, dict):
+        return raw_material
+    if not isinstance(raw_material, str) or not raw_material.strip():
+        return {}
+    try:
+        parsed = json.loads(raw_material)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _matches_date(row: dict, current_time: datetime) -> bool:

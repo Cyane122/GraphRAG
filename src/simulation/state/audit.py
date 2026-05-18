@@ -10,7 +10,8 @@
 #   - _audit_relationship_delta(delta: object, actor_response: str, npc_id: str, pc_id: str) -> tuple[int | None, dict | None] : Validate relationship deltas
 #   - _clamp_relationship_delta(delta: int, actor_response: str) -> int : Limit per-turn affinity movement
 #   - _audit_event_candidate(new_event: object, actor_response: str) -> tuple[dict | None, dict | None] : Validate event candidates
-#   - _write_state_audit_snapshot(actor_response: str, npc_id: str, pc_id: str, guard: dict, state_candidates: list[dict] | None, relationship_candidate: dict | None, event_candidate: dict | None) -> None : Save an audit snapshot
+#   - _audit_time_location_schedule(manager_effects: dict | None) -> dict : Validate time/location/schedule feasibility signals
+#   - _write_state_audit_snapshot(actor_response: str, npc_id: str, pc_id: str, guard: dict, state_candidates: list[dict] | None, relationship_candidate: dict | None, event_candidate: dict | None, feasibility_audit: dict | None) -> None : Save an audit snapshot
 # ================================
 import json
 import re
@@ -337,6 +338,52 @@ def _audit_event_candidate(new_event: object, actor_response: str) -> tuple[dict
     )
 
 
+def _audit_time_location_schedule(manager_effects: dict | None) -> dict:
+    """Return lightweight feasibility audit signals for time and location planning."""
+    effects = manager_effects or {}
+    time_plan = effects.get("time_plan") or {}
+    context_plan = effects.get("context_plan") or {}
+    issues: list[dict] = []
+
+    elapsed = _safe_int(time_plan.get("elapsed_minutes"), 0)
+    new_location_id = time_plan.get("new_location_id")
+    action_type = str(time_plan.get("action_type") or "")
+
+    if new_location_id and 0 < elapsed < 2:
+        issues.append(_issue(
+            "fast_location_transition",
+            "warning",
+            f"new_location_id={new_location_id}, elapsed_minutes={elapsed}",
+        ))
+
+    if action_type == "ooc_jump":
+        issues.append(_issue(
+            "ooc_time_jump",
+            "warning",
+            str(time_plan.get("reason") or "ooc time jump"),
+        ))
+
+    required_systems = set(context_plan.get("required_systems") or [])
+    if "goals" in required_systems and not context_plan.get("priority_order"):
+        issues.append(_issue(
+            "missing_context_priority_order",
+            "warning",
+            "long-term pressure requested without explicit priority_order",
+        ))
+
+    return {
+        "passed": not any(item["severity"] == "reject" for item in issues),
+        "issues": issues,
+        "time_plan": {
+            "action_type": action_type,
+            "elapsed_minutes": time_plan.get("elapsed_minutes"),
+            "new_location_id": new_location_id,
+            "new_time": time_plan.get("new_time"),
+        },
+        "context_priority_order": context_plan.get("priority_order") or [],
+    }
+
+
 def _write_state_audit_snapshot(
     actor_response: str,
     npc_id: str,
@@ -345,6 +392,7 @@ def _write_state_audit_snapshot(
     state_candidates: list[dict] | None = None,
     relationship_candidate: dict | None = None,
     event_candidate: dict | None = None,
+    feasibility_audit: dict | None = None,
 ) -> None:
     """Guard와 StateDiff 후보를 턴별 JSON 로그로 저장합니다."""
     try:
@@ -358,6 +406,7 @@ def _write_state_audit_snapshot(
             "state_candidates": state_candidates or [],
             "relationship_candidate": relationship_candidate,
             "event_candidate": event_candidate,
+            "feasibility_audit": feasibility_audit or {},
             "actor_response_preview": actor_response[:1200],
         }
         (_STATE_AUDIT_DIR / f"{stamp}.json").write_text(

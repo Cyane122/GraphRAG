@@ -142,6 +142,7 @@ async def commit_time_plan(time_plan: dict, pc_id: str, npc_id: str) -> datetime
 
     except Exception as e:
         print(f"[TimeManager] DB 업데이트 실패: {e}")
+        raise
 
     return new_time
 

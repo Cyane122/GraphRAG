@@ -289,7 +289,10 @@ def _render_world_block(world_context: dict, budget: dict[str, int], relationshi
             location = schedule.get("location_name") or schedule.get("location_id") or ""
             location_part = f" @ {location}" if location else ""
             material = _render_schedule_material(schedule.get("material"))
+            realism = _render_schedule_realism(schedule)
             line = f"- [{timing}] {owner}: {time_range}{location_part} {name}. {hint}".strip()
+            if realism:
+                line += f" Timing: {realism}"
             if material:
                 line += f" Material: {material}"
             lines.append(line)
@@ -351,7 +354,11 @@ def _render_routine_schedule(schedule: dict) -> str:
     location = schedule.get("location_name") or schedule.get("location_id") or ""
     location_part = f" @ {location}" if location else ""
     today = " today" if schedule.get("is_today") else ""
-    return f"- [{days}{today}] {owner}: {time_range}{location_part} {name}".strip()
+    realism = _render_schedule_realism(schedule)
+    line = f"- [{days}{today}] {owner}: {time_range}{location_part} {name}".strip()
+    if realism:
+        line += f" Timing: {realism}"
+    return line
 
 
 def _weekday_label(schedule: dict) -> str:
@@ -410,6 +417,44 @@ def _render_schedule_material(raw_material: object) -> str:
     if policy:
         parts.append(f"policy={policy}")
     return "; ".join(parts)
+
+
+def _render_schedule_realism(schedule: dict) -> str:
+    """Render optional schedule feasibility hints without forcing the scene."""
+    parts = []
+    prep = schedule.get("preparation_time_min")
+    if prep not in (None, ""):
+        parts.append(f"prep={prep}m")
+    travel = schedule.get("travel_time_min")
+    if travel not in (None, ""):
+        parts.append(f"travel={travel}m")
+    flexibility = schedule.get("flexibility")
+    if flexibility:
+        parts.append(f"flex={flexibility}")
+    lateness = schedule.get("lateness_tolerance")
+    if lateness:
+        parts.append(f"late={lateness}")
+    can_skip = _coerce_bool(schedule.get("can_skip"))
+    if can_skip is not None:
+        parts.append(f"can_skip={can_skip}")
+    if schedule.get("requires_transition_scene"):
+        parts.append("transition_required")
+    return "; ".join(parts)
+
+
+def _coerce_bool(value: object) -> bool | None:
+    """Normalize bool-like schedule material values."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "yes", "1"}:
+            return True
+        if lowered in {"false", "no", "0"}:
+            return False
+    return bool(value)
 
 
 def _first_profile_hint(profiles: list[dict]) -> object:

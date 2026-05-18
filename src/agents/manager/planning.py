@@ -6,6 +6,7 @@
 # Functions
 #   - bootstrap_manager(world_id: str | None, perspective: int, deps: ManagerDependencies) -> ManagerBootstrap : Load world and global state
 #   - classify_scene_and_time(user_input: str, recent_story: str, bootstrap: ManagerBootstrap, pc_id: str, npc_id: str, suppress_time_plan: bool, deps: ManagerDependencies) -> SceneTimePlan : Build scene and time plan
+#   - _fetch_time_parser_schedule_context(bootstrap: ManagerBootstrap) -> dict : Fetch schedule hints for time parsing
 # ================================
 
 from datetime import datetime
@@ -13,6 +14,7 @@ from datetime import datetime
 from src.agents.context.scene_keys import normalize_scene_types
 from src.agents.manager.models import ManagerBootstrap, ManagerDependencies, SceneTimePlan
 from src.assets.worlds.base import World
+from src.simulation.systems.schedules import fetch_schedule_context
 from src.simulation.state.updater import build_time_plan
 
 
@@ -129,11 +131,23 @@ async def _classify_scene(
         return rule_result, scene_types
 
     allowed_locs = await deps.get_allowed_locations()
+    schedule_context = await _fetch_time_parser_schedule_context(bootstrap)
     parse_result = await deps.classify_and_parse_time(
         user_input,
         recent_story,
         bootstrap.global_state,
         allowed_locs,
         bootstrap.world.get_scene_descriptions(),
+        schedule_context,
     )
     return parse_result, parse_result.get("scene_types") or ["daily"]
+
+
+async def _fetch_time_parser_schedule_context(bootstrap: ManagerBootstrap) -> dict:
+    """Fetch current schedule pressure for Manager time parsing."""
+    try:
+        current_time = datetime.fromisoformat(bootstrap.global_state["currentTime"])
+        return await fetch_schedule_context(current_time=current_time, window_minutes=360)
+    except Exception as e:
+        print(f"[Schedule] time parser hints failed (ignored): {e}")
+        return {}

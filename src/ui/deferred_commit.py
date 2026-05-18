@@ -14,8 +14,8 @@ from collections.abc import Awaitable, Callable
 
 import chainlit as cl
 
-from src.agents.manager import commit_manager_effects
 from src.agents.context.scene_state import update_scene_state_after_response
+from src.agents.manager.effects import commit_manager_auxiliary_effects, commit_manager_core_effects
 from src.core.logging.conversation_logger import append_turn
 from src.simulation.state.updater import process_actor_response
 from src.ui.status import send_status_toast
@@ -63,14 +63,12 @@ async def commit_pending(
         toast = await send_status_toast(random.choice(updating_msgs))
 
     try:
-        needs_result = await commit_manager_effects(
-            pending.get("manager_effects"),
+        manager_effects = pending.get("manager_effects")
+        core_result = await commit_manager_core_effects(
+            manager_effects,
             pc_id=pc_id,
             npc_id=npc_id,
-            scene_chars=pending.get("scene_chars", []),
         )
-        scene_need_hints = needs_result.get("scene_need_hints") or {}
-        cl.user_session.set("scene_need_hints", scene_need_hints)
 
         ooc_from_pregnancy = await process_actor_response(
             pending["ai_response"],
@@ -79,6 +77,7 @@ async def commit_pending(
             scene_types=pending.get("scene_types"),
             scene_chars=pending.get("scene_chars", []),
             world_config=world_config,
+            manager_effects=manager_effects,
         )
         if ooc_from_pregnancy:
             cl.user_session.set("pending_ooc", ooc_from_pregnancy)
@@ -91,8 +90,22 @@ async def commit_pending(
             timestamp=pending.get("timestamp"),
         )
 
+        needs_result = await commit_manager_auxiliary_effects(
+            manager_effects,
+            pc_id=pc_id,
+            npc_id=npc_id,
+            current_dt=core_result.get("current_dt"),
+            scene_chars=pending.get("scene_chars", []),
+        )
+        scene_need_hints = needs_result.get("scene_need_hints") or {}
+        cl.user_session.set("scene_need_hints", scene_need_hints)
+
         if world_id == "sses" and scheduler and _should_run_scheduler(pending):
-            sms = await scheduler()
+            try:
+                sms = await scheduler()
+            except Exception as e:
+                print(f"[CommitPending] scheduler failed (ignored): {e}")
+                sms = None
             if sms:
                 await cl.Message(content=sms, author="사회정서지원과").send()
     finally:
@@ -121,6 +134,7 @@ async def commit_pending_if_any(
     pending = cl.user_session.get("pending_commit")
     if not pending:
         return
+    committed = False
     try:
         await commit_pending(
             pending=pending,
@@ -133,7 +147,9 @@ async def commit_pending_if_any(
             scheduler=scheduler,
             show_toast=True,
         )
+        committed = True
     except Exception as e:
-        print(f"[CommitPending] 처리 실패 (계속 진행): {e}")
+        print(f"[CommitPending] core commit failed; pending retained: {e}")
     finally:
-        cl.user_session.set("pending_commit", None)
+        if committed:
+            cl.user_session.set("pending_commit", None)

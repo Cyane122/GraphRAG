@@ -16,7 +16,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from src.config import MODEL_EVENT_CREATOR as PRO_MODEL
+from src.config import MODEL_PRO_UPDATER as PRO_MODEL
 from src.core.database import async_driver, update_relationship_fields
 
 

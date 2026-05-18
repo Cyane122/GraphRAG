@@ -75,7 +75,7 @@ class ManagerDependencies:
     try_rule_based: Callable[[str, str], dict | None]
     get_allowed_locations: Callable[[], Awaitable[str]]
     classify_and_parse_time: Callable[
-        [str, str, dict, str, dict[str, str] | None],
+        [str, str, dict, str, dict[str, str] | None, dict | None],
         Awaitable[dict],
     ]
     fetch_character_data: Callable[[str, list[str]], Awaitable[dict]]
