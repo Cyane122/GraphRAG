@@ -181,8 +181,15 @@ Time: {current_time.strftime("%Y-%m-%d %H:%M")} | Weather: {global_state["weathe
 [Rules]
 scene_types: pick 1+ from the list below (use exact keys):
 {scene_types_block}
-action_type: "dialogue"(3min) | "action"(10min) | "movement"(25min) | "ooc_jump"(null min, use target_hour)
+action_type: "dialogue" | "action" | "movement" | "ooc_jump"
 target_hour: int (0-23) only for ooc_jump. Map: 새벽→3, 아침→8, 점심→12, 오후→15, 저녁→19, 밤→23
+elapsed_minutes: estimate the actual clock time the depicted scene would occupy.
+  - Estimate the WHOLE scene as one continuous event — do NOT sum per-component defaults.
+  - dialogue: short exchange (1-3 sentences each side) = 1-2 min. Extended back-and-forth = 3-5 min.
+  - action: brief physical contact, single gesture, one quick move = 1-3 min.
+            sustained physical activity (sparring, cooking, prolonged struggle) = 5-15 min.
+  - movement: same floor/building = 3-8 min. Cross-area or travel = 15-30 min.
+  - If user input is short (1-2 sentences) or describes a momentary event, use 1-3 min.
 schedule:
   - Treat active/upcoming schedules as time pressure when choosing elapsed_minutes and movement plausibility.
   - Treat time rules as stable world constraints, such as school hours, closing times, curfew, commute windows, and meal periods.
@@ -206,7 +213,7 @@ new_weather: from [Clear,Cloudy,Foggy,Drizzle,Rain,Heavy Rain,Thunderstorm,Snow,
   "scene_types": [...],
   "action_type": "...",
   "target_hour": null,
-  "elapsed_minutes": 3,
+  "elapsed_minutes": 2,
   "new_weather": null,
   "new_location_id": null,
   "new_location": null,
@@ -240,7 +247,7 @@ new_weather: from [Clear,Cloudy,Foggy,Drizzle,Rain,Heavy Rain,Thunderstorm,Snow,
         return {
             "scene_types":     ["daily"],
             "action_type":     "dialogue",
-            "elapsed_minutes": 3,
+            "elapsed_minutes": 2,
             "new_weather":     None,
             "new_location_id": None,
         }
@@ -249,7 +256,7 @@ new_weather: from [Clear,Cloudy,Foggy,Drizzle,Rain,Heavy Rain,Thunderstorm,Snow,
         return {
             "scene_types":     ["daily"],
             "action_type":     "dialogue",
-            "elapsed_minutes": 3,
+            "elapsed_minutes": 2,
             "new_weather":     None,
             "new_location_id": None,
         }

@@ -5,7 +5,8 @@
 #
 # Functions
 #   - is_ooc(text: str) -> bool : 텍스트에 OOC 마커가 있는지 확인
-#   - parse_ooc(text: str, npc_id: str, npc_name: str) -> dict : OOC 분석 후 DB 반영
+#   - parse_ooc(text: str, npc_id: str, npc_name: str, pc_id: str | None = None) -> dict : OOC 분석 후 DB 반영
+#   - _render_schedule_context_for_ooc(schedule_context: dict) -> str : 스케줄 컨텍스트를 OOC 프롬프트용 텍스트로 렌더링
 # ================================
 
 import re
@@ -14,6 +15,7 @@ from datetime import datetime, timedelta
 from src.config import MODEL_STATE_UPDATER as OOC_MODEL
 from src.core.database import update_dynamic_state, ensure_location, move_location, async_driver
 from src.core.llm.client import extract_json_from_llm, get_model, get_response_text
+from src.simulation.systems.schedules import fetch_schedule_context, SCHEDULE_TIME_PARSE_WINDOW_MIN
 
 _BOLD_RE = re.compile(r'\*\*.*?\*\*', re.DOTALL)
 _TIME_SET_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
@@ -42,6 +44,9 @@ Extract world-state changes from the OOC text.
 ## Known Characters
 {characters_str}
 
+## Schedule Context
+{schedule_block}
+
 ## Field Rules
 
 new_datetime — the new in-game datetime as "YYYY-MM-DDTHH:MM:00", or null
@@ -52,6 +57,13 @@ new_datetime — the new in-game datetime as "YYYY-MM-DDTHH:MM:00", or null
   "3시간 후" → add 3 hours to current datetime
   "30분 후" → add 30 minutes to current datetime
   "아침" / "저녁" / "자정" → same date, set hour to 08:00 / 18:30 / 00:00
+  When text references time relative to a named schedule event (e.g. "수업 시작 5분 후",
+  "점심 끝나고 10분 후", "조례 30분 전"), look up that event's start_time/end_time from
+  Schedule Context above, then compute: anchor_datetime ± offset.
+  Examples (class 09:00-10:00 on current date):
+    "수업 시작 5분 후" → T09:05:00
+    "수업 끝나고 10분 후" → T10:10:00
+    "수업 30분 전" → T08:30:00
   null ONLY if no time change is requested at all.
 
 time_delta_minutes — legacy fallback only (integer, default 0). Use new_datetime above.
@@ -107,6 +119,36 @@ summary — one-line Korean description of what changed. "변경 없음" if noth
   "summary": "no change"
 }
 """
+
+
+def _render_schedule_context_for_ooc(schedule_context: dict) -> str:
+    """스케줄 컨텍스트를 OOC 시간 파서용 텍스트로 렌더링합니다."""
+    schedules = schedule_context.get("schedules") or []
+    routines = schedule_context.get("routine_schedules") or []
+    lines: list[str] = []
+
+    if schedules:
+        lines.append("Same-day schedules:")
+        for s in schedules[:6]:
+            owner = s.get("owner_name") or s.get("owner_id") or "character"
+            name = s.get("name") or s.get("activity") or "schedule"
+            start = s.get("start_time") or "?"
+            end = s.get("end_time") or "?"
+            location = s.get("location_name") or s.get("location_id") or "?"
+            timing = s.get("timing") or "today"
+            lines.append(f"- {owner}: {name} {start}-{end} at {location} ({timing})")
+
+    today_routines = [r for r in routines if r.get("is_today")]
+    if today_routines:
+        lines.append("Today routines:")
+        for s in today_routines[:6]:
+            owner = s.get("owner_name") or s.get("owner_id") or "character"
+            name = s.get("name") or s.get("activity") or "routine"
+            start = s.get("start_time") or "?"
+            end = s.get("end_time") or "?"
+            lines.append(f"- {owner}: {name} {start}-{end}")
+
+    return "\n".join(lines) if lines else "none"
 
 
 def is_ooc(text: str) -> bool:
@@ -589,6 +631,15 @@ async def parse_ooc(text: str, npc_id: str, npc_name: str, pc_id: str | None = N
         row = await rec.single()
         current_time = _parse_current_time(row["ct"] if row else None)
 
+    try:
+        schedule_context = await fetch_schedule_context(
+            current_time=current_time,
+            window_minutes=SCHEDULE_TIME_PARSE_WINDOW_MIN,
+        )
+    except Exception as e:
+        print(f"[OOC] schedule context fetch failed (ignored): {e}")
+        schedule_context = {}
+
     locations = await _get_allowed_locations()
     characters = await _get_all_characters()
     location_context = await _fetch_location_context()
@@ -616,11 +667,13 @@ async def parse_ooc(text: str, npc_id: str, npc_name: str, pc_id: str | None = N
         for alias in c["aliases"]:
             name_to_id[alias] = c["id"]
 
+    schedule_block = _render_schedule_context_for_ooc(schedule_context)
     system_prompt = (_SYSTEM_PROMPT
         .replace("{locations_str}", locations)
         .replace("{characters_str}", characters_str)
         .replace("{current_time}", current_time.isoformat())
-        .replace("{current_location_chain}", current_location_chain))
+        .replace("{current_location_chain}", current_location_chain)
+        .replace("{schedule_block}", schedule_block))
 
     model = get_model(model_name=OOC_MODEL, system_prompt=system_prompt)
 
