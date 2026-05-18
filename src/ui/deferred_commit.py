@@ -78,6 +78,8 @@ async def commit_pending(
             scene_chars=pending.get("scene_chars", []),
             world_config=world_config,
             manager_effects=manager_effects,
+            history_snapshot=pending.get("history_snapshot", []),
+            recent_snapshot=pending.get("recent_snapshot", []),
         )
         if ooc_from_pregnancy:
             cl.user_session.set("pending_ooc", ooc_from_pregnancy)

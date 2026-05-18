@@ -12,6 +12,7 @@
 #   - fetch_global_state(fallback_dt: datetime) -> dict : Fetch GlobalState
 #   - get_location_name_from_id(location_id: str | None) -> str | None : Fetch a Location name
 #   - detect_present_npcs(user_input: str, actor_response: str, known_npcs: list[dict]) -> list[str] : Detect NPCs present in the current scene
+#   - fetch_location_character_ids(location_id: str | None) -> list[str] : Fetch characters located at the current scene location
 #   - fetch_npc_profiles(npc_ids: list[str], main_npc_id: str, pc_id: str) -> list[dict] : Fetch secondary NPC profile, speech, and relationship data
 # ================================
 import json
@@ -221,6 +222,21 @@ def detect_present_npcs(
     if found:
         print(f"[NPC 감지] {sorted(found)}")
     return sorted(found)
+
+
+async def fetch_location_character_ids(location_id: str | None) -> list[str]:
+    """Fetch character ids explicitly located at the current scene location."""
+    if not location_id:
+        return []
+
+    async with async_driver.session() as session:
+        records = await session.run("""
+            MATCH (c:Character)-[:LOCATED_AT]->(:Location {id: $location_id})
+            RETURN c.id AS id
+            ORDER BY c.id
+        """, location_id=location_id)
+        rows = await records.data()
+    return [str(row["id"]) for row in rows if row.get("id")]
 
 
 async def fetch_npc_profiles(

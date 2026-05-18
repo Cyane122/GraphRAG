@@ -7,6 +7,8 @@
 #   - _try_rule_based(user_input: str) -> dict | None : Fast-path classification for short inputs
 #   - _classify_and_parse_time(user_input: str, recent_story: str, global_state: dict, allowed_locs: str, scene_descriptions: dict[str, str] | None = None, schedule_context: dict | None = None) -> dict : LLM-based scene and time parsing
 #   - _render_schedule_context_for_classifier(schedule_context: dict) -> str : Render schedule constraints for the classifier prompt
+#   - _format_schedule_for_classifier(schedule: dict, detailed: bool) -> str : Format one schedule constraint line
+#   - _format_time_rule_for_classifier(rule: dict) -> str : Format one time rule constraint line
 # ================================
 import asyncio
 import re
@@ -51,6 +53,66 @@ _INTIMATE_RESULT = {
     "new_location_id": None,
     "reason":          "rule-based: intimate",
 }
+
+
+def _render_schedule_context_for_classifier(schedule_context: dict) -> str:
+    """Render compact schedule constraints for the Manager time parser."""
+    schedules = schedule_context.get("schedules") or []
+    routines = schedule_context.get("routine_schedules") or []
+    time_rules = schedule_context.get("time_rules") or []
+    lines: list[str] = []
+
+    if time_rules:
+        lines.append("Time rules:")
+        for rule in time_rules[:6]:
+            lines.append(f"- {_format_time_rule_for_classifier(rule)}")
+
+    if schedules:
+        lines.append("Same-day schedules:")
+        for schedule in schedules[:6]:
+            lines.append(f"- {_format_schedule_for_classifier(schedule, detailed=True)}")
+
+    today_routines = [schedule for schedule in routines if schedule.get("is_today")]
+    if today_routines:
+        lines.append("Today routines:")
+        for schedule in today_routines[:6]:
+            lines.append(f"- {_format_schedule_for_classifier(schedule, detailed=False)}")
+
+    return "\n".join(lines) if lines else "none"
+
+
+def _format_time_rule_for_classifier(rule: dict) -> str:
+    """Format one time rule in a short, LLM-readable line."""
+    name = rule.get("name") or rule.get("id") or "time rule"
+    hint = rule.get("prompt_hint") or rule.get("summary") or ""
+    location = rule.get("location_id") or "global"
+    tags = ",".join(str(tag) for tag in rule.get("tags") or [])
+    fields = [f"{name}", f"scope={location}"]
+    if hint:
+        fields.append(str(hint))
+    if tags:
+        fields.append(f"tags={tags}")
+    return "; ".join(fields)
+
+
+def _format_schedule_for_classifier(schedule: dict, detailed: bool) -> str:
+    """Format one schedule in a short, LLM-readable line."""
+    owner = schedule.get("owner_name") or schedule.get("owner_id") or "character"
+    name = schedule.get("name") or schedule.get("activity") or "schedule"
+    start = schedule.get("start_time") or "?"
+    end = schedule.get("end_time") or "?"
+    location = schedule.get("location_name") or schedule.get("location_id") or "unspecified location"
+    timing = schedule.get("timing") or ("today" if schedule.get("is_today") else "routine")
+    fields = [f"{owner}: {name}", f"{start}-{end}", f"at {location}", f"timing={timing}"]
+
+    if detailed and schedule.get("minutes_until") is not None:
+        fields.append(f"minutes_until={schedule.get('minutes_until')}")
+    for key in ("preparation_time_min", "travel_time_min", "flexibility", "lateness_tolerance", "can_skip", "requires_transition_scene"):
+        value = schedule.get(key)
+        if value not in (None, "", []):
+            fields.append(f"{key}={value}")
+
+    return "; ".join(str(field) for field in fields)
 
 
 def _try_rule_based(user_input: str, recent_story: str = "") -> dict | None:
@@ -123,6 +185,7 @@ action_type: "dialogue"(3min) | "action"(10min) | "movement"(25min) | "ooc_jump"
 target_hour: int (0-23) only for ooc_jump. Map: 새벽→3, 아침→8, 점심→12, 오후→15, 저녁→19, 밤→23
 schedule:
   - Treat active/upcoming schedules as time pressure when choosing elapsed_minutes and movement plausibility.
+  - Treat time rules as stable world constraints, such as school hours, closing times, curfew, commute windows, and meal periods.
   - Do not teleport characters to a schedule location unless the user asks for movement or the context already implies transition.
   - Include preparation_time_min/travel_time_min when a requested action would collide with a schedule.
   - Routine schedules are stable knowledge; only same-day active/upcoming schedules should strongly constrain this turn.

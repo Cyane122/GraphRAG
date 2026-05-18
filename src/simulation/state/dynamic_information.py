@@ -5,6 +5,7 @@
 # actor responses.
 #
 # Functions
+#   - _allows_dynamic_information_update(actor_response: str, scene_types: list[str] | None = None) -> bool : Return whether DynamicInformation LLM extraction is warranted.
 #   - apply_multi_character_dynamic_information_updates(actor_response: str, pc_id: str, scene_types: list[str] | None, participant_ids: list[str] | None) -> dict[str, dict] : Apply durable DynamicInformation changes for all NPCs in one LLM call.
 # ================================
 
@@ -23,6 +24,14 @@ _DYNAMIC_INFO_SIGNAL_RE = re.compile(
     r"성격|personality|became|changed|더\s*차분|더\s*대담|"
     r"키|신장|height|몸무게|체중|weight|살이\s*(?:쪘|빠졌)|cm|kg|"
     r"외모|appearance|평판|reputation|기술|skills|취미|hobby)",
+    re.IGNORECASE,
+)
+
+
+_INTIMATE_DURABLE_CHANGE_RE = re.compile(
+    r"(intercourse|penetration|lost virginity|virginity loss|pregnan|contraception|"
+    r"diagnosed|diagnosis|scar|tattoo|piercing|married|divorced|engaged|"
+    r"new job|graduated|moved|relocated)",
     re.IGNORECASE,
 )
 
@@ -81,6 +90,20 @@ async def _fetch_scene_context() -> dict[str, str]:
 def _needs_dynamic_information_update(actor_response: str) -> bool:
     """느리게 바뀌는 프로필 정보 후보가 있는지 빠르게 판정합니다."""
     return bool(_DYNAMIC_INFO_SIGNAL_RE.search(actor_response))
+
+
+def _allows_dynamic_information_update(
+    actor_response: str,
+    scene_types: list[str] | None = None,
+) -> bool:
+    """Return whether this turn is worth a DynamicInformation LLM pass."""
+    if _needs_dynamic_information_update(actor_response):
+        return True
+
+    active_scene_types = {str(scene_type).lower() for scene_type in (scene_types or [])}
+    if active_scene_types & _INTIMATE_SCENE_TYPES:
+        return bool(_INTIMATE_DURABLE_CHANGE_RE.search(actor_response))
+    return False
 
 
 def _sanitize_dynamic_information(
@@ -338,6 +361,9 @@ async def apply_multi_character_dynamic_information_updates(
     participant_ids: list[str] | None = None,
 ) -> dict[str, dict]:
     """모든 NPC의 DynamicInformation을 씬 기반으로 한 번의 LLM 호출로 업데이트합니다."""
+    if not _allows_dynamic_information_update(actor_response, scene_types):
+        return {}
+
     npcs, scene_context = await asyncio.gather(
         _fetch_all_npc_dynamic_info(pc_id, participant_ids=participant_ids),
         _fetch_scene_context(),
@@ -364,5 +390,3 @@ async def apply_multi_character_dynamic_information_updates(
         print(f"[DynamicInformationUpdater] applied for {char_id}: {json.dumps(updates, ensure_ascii=False)}")
 
     return updates_by_char
-
-

@@ -77,6 +77,11 @@ async def run_manager_pipeline(
         user_input,
         core_context.context_plan,
         recent_story,
+        preloaded_schedule_context=(
+            scene_plan.schedule_context
+            if scene_plan.current_dt == scene_plan.base_time
+            else None
+        ),
     )
     prompt_world_config = await resolve_prompt_world_config(
         bootstrap.world,

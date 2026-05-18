@@ -71,6 +71,40 @@ def insert_static_inline(conn: kuzu.Connection, char_id: str, rel: str, label: s
     )
 
 
+def insert_rule(conn: kuzu.Connection, rule_id: str, **props) -> None:
+    """Create a generic Rule node used by prompt and time-rule systems."""
+    values = {
+        "id": rule_id,
+        "name": "",
+        "summary": "",
+        "prompt_hint": "",
+        "prompt_priority": 0,
+        "tags": [],
+        "location_id": "",
+        "owner_id": "",
+        "scene_type": "",
+        "status": "active",
+    }
+    values.update(props)
+    conn.execute(
+        """
+        CREATE (:Rule {
+            id: $id,
+            name: $name,
+            summary: $summary,
+            prompt_hint: $prompt_hint,
+            prompt_priority: $prompt_priority,
+            tags: $tags,
+            location_id: $location_id,
+            owner_id: $owner_id,
+            scene_type: $scene_type,
+            status: $status
+        })
+        """,
+        values,
+    )
+
+
 def insert_schedule(conn: kuzu.Connection, owner_id: str, schedule_id: str, **props) -> None:
     """Create a Schedule node and attach it to the owning Character."""
     values = {

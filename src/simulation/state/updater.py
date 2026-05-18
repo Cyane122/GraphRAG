@@ -7,7 +7,7 @@
 # in src/simulation/state/multi_character.py.
 #
 # Functions
-#   - process_actor_response(actor_response: str, npc_id: str, pc_id: str, scene_types: list[str] | None, scene_chars: list[str] | None, world_config: dict | None, manager_effects: dict | None) -> str | None : Apply accepted actor response side effects.
+#   - process_actor_response(actor_response: str, npc_id: str, pc_id: str, scene_types: list[str] | None, scene_chars: list[str] | None, world_config: dict | None, manager_effects: dict | None, history_snapshot: list[dict] | None, recent_snapshot: list[str] | None) -> str | None : Apply accepted actor response side effects.
 #   - guard_actor_response(actor_response: str, npc_id: str, pc_id: str, world_config: dict | None) -> dict : Validate actor response before DB writes.
 #   - build_time_plan(plan: dict, base_time: datetime) -> dict : Compute time changes without DB writes.
 #   - commit_time_plan(time_plan: dict, pc_id: str, npc_id: str) -> datetime : Persist a computed time plan.
@@ -195,6 +195,7 @@ async def _run_event_creation(
     actor_response: str,
     npc_id:         str,
     pc_id:          str,
+    recent_context: str = "",
 ) -> dict:
     """
     Run the event model to decide whether the scene should become an Event.
@@ -213,7 +214,7 @@ async def _run_event_creation(
     prompt = f"""## Event Importance Scale
 8-10: Major: hospitalization after accident, first confession, surgery, death, marriage
 5-7: Significant: first meeting, major fight + real reconciliation, first intimacy, near-breakup, public humiliation
-2-4: Minor but memorable: new injury encountered for the first time, new named character met, promise, secret revealed, gift/item exchanged, meaningful location transition, or small durable relationship beat
+2-4: Minor but memorable: new injury encountered for the first time, new named character met, promise, secret revealed, gift/item exchanged, meaningful location transition, a new object/document becoming relevant, a durable role/authority interaction, a turn that creates a concrete unresolved task, or small durable relationship beat
 0-1: DO NOT create: routine chat, pure atmosphere, repeated follow-up, daily interaction with no lasting change
 
 Create an Event if importance >= 2.
@@ -235,6 +236,9 @@ Return ONLY valid JSON:
 {{
   "new_event": null
 }}
+
+Recent thread context:
+{recent_context[-3000:] if recent_context else "(none)"}
 
 Scene:
 {actor_response[:2000]}"""
@@ -259,6 +263,7 @@ async def _run_combined_update(
     npc_id:         str,
     pc_id:          str,
     world_config:   dict | None = None,
+    recent_context: str = "",
 ) -> dict:
     """
     Run both LLM workers concurrently:
@@ -271,7 +276,7 @@ async def _run_combined_update(
     """
     state_result, event_result = await asyncio.gather(
         _run_state_update(actor_response, npc_id, pc_id, world_config),
-        _run_event_creation(actor_response, npc_id, pc_id),
+        _run_event_creation(actor_response, npc_id, pc_id, recent_context),
         return_exceptions=True,
     )
     if isinstance(state_result, Exception):
@@ -295,14 +300,43 @@ _EVENT_CREATION_SIGNAL_RE = re.compile(
 )
 
 
-def _has_event_creation_signal(actor_response: str, participant_ids: list[str]) -> bool:
+def _has_event_creation_signal(
+    actor_response: str,
+    participant_ids: list[str],
+    manager_effects: dict | None = None,
+) -> bool:
     """Return whether a low-state-change scene is still worth asking the Event model about."""
     text = actor_response.strip()
     if not text:
         return False
     if len(participant_ids) > 2:
         return True
+    context_plan = (manager_effects or {}).get("context_plan") or {}
+    try:
+        if int(context_plan.get("importance") or 0) >= 6:
+            return True
+    except (TypeError, ValueError):
+        pass
     return bool(_EVENT_CREATION_SIGNAL_RE.search(text))
+
+
+def _render_recent_event_context(
+    history_snapshot: list[dict] | None = None,
+    recent_snapshot: list[str] | None = None,
+) -> str:
+    """Render recent accepted thread context for Event creation without adding world-specific rules."""
+    lines: list[str] = []
+    for item in (history_snapshot or [])[-8:]:
+        role = item.get("role") or "unknown"
+        content = str(item.get("content") or "").strip()
+        if content:
+            lines.append(f"{role}: {content[-800:]}")
+    if not lines:
+        for idx, content in enumerate((recent_snapshot or [])[-4:], start=1):
+            text = str(content or "").strip()
+            if text:
+                lines.append(f"recent_{idx}: {text[-800:]}")
+    return "\n\n".join(lines)
 
 
 # State update main path
@@ -316,6 +350,8 @@ async def process_actor_response(
     scene_chars:    list[str] | None = None,
     world_config:   dict | None = None,
     manager_effects: dict | None = None,
+    history_snapshot: list[dict] | None = None,
+    recent_snapshot: list[str] | None = None,
 ) -> str | None:
     """
     Analyze an accepted Actor response and apply persistent state side effects.
@@ -337,6 +373,7 @@ async def process_actor_response(
         return None
     if guard["issues"]:
         print(f"[StateGuard] warning: {json.dumps(guard, ensure_ascii=False)}")
+    recent_event_context = _render_recent_event_context(history_snapshot, recent_snapshot)
 
     participant_ids = [pc_id, npc_id]
     if world_config and scene_chars:
@@ -367,9 +404,9 @@ async def process_actor_response(
                 participant_ids,
                 primary_pair=(npc_id, pc_id),
             )
-        if npc_id != pc_id and _has_event_creation_signal(actor_response, participant_ids):
+        if npc_id != pc_id and _has_event_creation_signal(actor_response, participant_ids, manager_effects):
             try:
-                event_plan = await _run_event_creation(actor_response, npc_id, pc_id)
+                event_plan = await _run_event_creation(actor_response, npc_id, pc_id, recent_event_context)
                 new_event, event_candidate = _audit_event_candidate(event_plan.get("new_event"), actor_response)
                 if event_candidate:
                     print(f"[EventDiff] {json.dumps(event_candidate, ensure_ascii=False)}")
@@ -435,7 +472,7 @@ async def process_actor_response(
         participant_ids,
     ))
     try:
-        plan = await _run_combined_update(actor_response, npc_id, pc_id, world_config)
+        plan = await _run_combined_update(actor_response, npc_id, pc_id, world_config, recent_event_context)
     except Exception as e:
         print(f"[StateUpdater] combined update failed (ignored): {e}")
         await auxiliary_task

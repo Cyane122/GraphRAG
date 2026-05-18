@@ -6,6 +6,9 @@
 # Functions
 #   - fetch_schedule_context(current_time: datetime, window_minutes: int = 120) -> dict : Fetch routine and same-day schedule hints for all active characters
 #   - fetch_schedule_hints(current_time: datetime, window_minutes: int = 120) -> list[dict] : Fetch same-day schedule hints for all active characters
+# Constants
+#   - SCHEDULE_PROMPT_WINDOW_MIN : Nearby schedule window for dynamic prompts
+#   - SCHEDULE_TIME_PARSE_WINDOW_MIN : Wider schedule window for Manager time parsing
 # ================================
 
 import json
@@ -13,10 +16,13 @@ from datetime import datetime
 
 from src.core.database import async_driver
 
+SCHEDULE_PROMPT_WINDOW_MIN = 120
+SCHEDULE_TIME_PARSE_WINDOW_MIN = 360
+
 
 async def fetch_schedule_context(
     current_time: datetime,
-    window_minutes: int = 120,
+    window_minutes: int = SCHEDULE_PROMPT_WINDOW_MIN,
 ) -> dict:
     """Fetch always-on routine schedule summaries and same-day detailed hints for all active characters."""
     rows = await _fetch_schedule_rows()

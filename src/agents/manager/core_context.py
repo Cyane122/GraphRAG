@@ -52,6 +52,7 @@ async def assemble_core_context(
     npcs = await _fetch_present_npc_context(
         user_input,
         recent_story,
+        location_id,
         bootstrap.world,
         npc_id,
         pc_id,
@@ -155,13 +156,16 @@ async def _resolve_turn_location(
 async def _fetch_present_npc_context(
     user_input: str,
     recent_story: str,
+    location_id: str | None,
     world: World,
     npc_id: str,
     pc_id: str,
     deps: ManagerDependencies,
 ) -> list[dict]:
-    """Detect and fetch secondary NPC profiles present in the current scene."""
-    present_npc_ids = deps.detect_present_npcs(user_input, recent_story, world.get_npc_name_map())
+    """Fetch secondary NPC profiles present by mention or current location."""
+    mentioned_ids = deps.detect_present_npcs(user_input, recent_story, world.get_npc_name_map())
+    located_ids = await deps.fetch_location_character_ids(location_id)
+    present_npc_ids = sorted({*mentioned_ids, *located_ids} - {npc_id, pc_id})
     return await deps.fetch_npc_profiles(present_npc_ids, npc_id, pc_id) if present_npc_ids else []
 
 

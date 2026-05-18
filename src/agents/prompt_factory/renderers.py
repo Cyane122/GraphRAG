@@ -142,7 +142,17 @@ def clean_prompt_dict(data: dict) -> dict:
 
 def join_rendered_context(rendered_context: dict[str, str]) -> str:
     """Join pre-rendered dynamic context blocks in stable prompt order."""
-    order = ("scene", "state", "relationship", "personal_facts", "npcs", "events", "memories", "world")
+    order = (
+        "scene",
+        "state",
+        "relationship",
+        "personal_facts",
+        "npcs",
+        "events",
+        "memories",
+        "narrative_log",
+        "world",
+    )
     blocks = [rendered_context.get(key, "") for key in order]
     return "<world_context>\n" + "\n\n".join(block for block in blocks if block) + "\n</world_context>"
 
@@ -248,6 +258,7 @@ def render_world_section(world_context: dict) -> str:
     parts: list[str] = []
     _append_scene_state(parts, world_context.get("scene_state", {}))
     _append_context_plan(parts, world_context.get("context_plan", {}))
+    _append_rules(parts, world_context.get("rules", []))
     _append_static_events(parts, world_context.get("static_events", []))
     _append_routine_schedules(parts, world_context.get("routine_schedules", []))
     _append_schedules(parts, world_context.get("schedules", []))
@@ -343,6 +354,20 @@ def _append_static_events(parts: list[str], static_events: list[dict]) -> None:
         label = "오늘" if event.get("status") == "active" else "예정"
         lines.append(f"- [{label}] {event.get('hint', '')}")
     parts.append("[Upcoming Events]\n" + "\n".join(lines))
+
+
+def _append_rules(parts: list[str], rules: list[dict]) -> None:
+    """Append generic active prompt rules."""
+    if not rules:
+        return
+    lines = []
+    for rule in rules[:4]:
+        name = rule.get("name") or rule.get("id") or "rule"
+        hint = rule.get("prompt_hint") or rule.get("summary") or ""
+        if hint:
+            lines.append(f"- {name}: {hint}")
+    if lines:
+        parts.append("[Active Rules]\n" + "\n".join(lines))
 
 
 def _append_schedules(parts: list[str], schedules: list[dict]) -> None:

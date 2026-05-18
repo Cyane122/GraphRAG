@@ -35,6 +35,7 @@ class SceneTimePlan:
     current_dt: datetime
     time_plan: dict
     manager_effects: dict
+    schedule_context: dict
 
 
 @dataclass
@@ -85,4 +86,5 @@ class ManagerDependencies:
     fetch_location: Callable[[str], Awaitable[str]]
     fetch_location_hierarchy: Callable[[str], Awaitable[list[dict]]]
     detect_present_npcs: Callable[[str, str, dict[str, str]], list[str]]
+    fetch_location_character_ids: Callable[[str | None], Awaitable[list[str]]]
     fetch_npc_profiles: Callable[[list[str], str, str], Awaitable[list[dict]]]
