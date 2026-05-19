@@ -19,6 +19,17 @@ from src.core.database import async_driver
 from src.core.embedding.encoder import embed_async
 from src.simulation.systems.personal_facts import fetch_active_personal_facts, merge_prompt_facts
 
+_LOCATION_ID_ALIASES: dict[str, tuple[str, ...]] = {
+    "sunghwa_high_school": ("sunghwa_school",),
+    "sunghwa_high_school_classroom_1_7": ("sunghwa_classroom_1_7",),
+    "sunghwa_high_school_hallway": ("sunghwa_hallway",),
+    "sunghwa_high_school_cafeteria": ("sunghwa_cafeteria",),
+    "sunghwa_high_school_gym": ("sunghwa_gym",),
+    "sunghwa_high_school_rooftop": ("sunghwa_rooftop",),
+    "sunghwa_high_school_library": ("sunghwa_library",),
+    "sunghwa_high_school_shoe_locker": ("sunghwa_shoe_locker",),
+}
+
 
 async def assemble_core_context(
     user_input: str,
@@ -57,6 +68,7 @@ async def assemble_core_context(
         npc_id,
         pc_id,
         deps,
+        scene_plan.schedule_context,
     )
     scene_state_dict = _build_scene_state_dict(
         world_id,
@@ -161,12 +173,57 @@ async def _fetch_present_npc_context(
     npc_id: str,
     pc_id: str,
     deps: ManagerDependencies,
+    schedule_context: dict | None = None,
 ) -> list[dict]:
     """Fetch secondary NPC profiles present by mention or current location."""
     mentioned_ids = deps.detect_present_npcs(user_input, recent_story, world.get_npc_name_map())
     located_ids = await deps.fetch_location_character_ids(location_id)
-    present_npc_ids = sorted({*mentioned_ids, *located_ids} - {npc_id, pc_id})
+    scheduled_ids = _active_schedule_character_ids(schedule_context or {}, location_id)
+    present_npc_ids = sorted({*mentioned_ids, *located_ids, *scheduled_ids} - {npc_id, pc_id})
     return await deps.fetch_npc_profiles(present_npc_ids, npc_id, pc_id) if present_npc_ids else []
+
+
+def _active_schedule_character_ids(schedule_context: dict, location_id: str | None) -> list[str]:
+    """Return owners of active schedules at the current scene location."""
+    if not location_id:
+        return []
+    result: list[str] = []
+    for schedule in schedule_context.get("schedules") or []:
+        if schedule.get("timing") != "active":
+            continue
+        if not _same_schedule_location(schedule, location_id):
+            continue
+        owner_id = str(schedule.get("owner_id") or "").strip()
+        if owner_id:
+            result.append(owner_id)
+    return result
+
+
+def _same_schedule_location(schedule: dict, location_id: str) -> bool:
+    """Compare schedule location id/name against the current scene location token."""
+    schedule_id = str(schedule.get("location_id") or "")
+    schedule_name = str(schedule.get("location_name") or "")
+    return (
+        _same_location_id(schedule_id, location_id)
+        or bool(schedule_name and schedule_name == location_id)
+    )
+
+
+def _same_location_id(left: str, right: str) -> bool:
+    """Compare location ids while accepting known legacy/current aliases."""
+    if not left or not right:
+        return False
+    return bool(set(_location_seed_ids(left)) & set(_location_seed_ids(right)))
+
+
+def _location_seed_ids(location_id: str) -> list[str]:
+    """Return a location id plus known legacy/current aliases."""
+    ids = {location_id}
+    for canonical, aliases in _LOCATION_ID_ALIASES.items():
+        if location_id == canonical or location_id in aliases:
+            ids.add(canonical)
+            ids.update(aliases)
+    return sorted(ids)
 
 
 async def _fetch_memory_context_if_needed(

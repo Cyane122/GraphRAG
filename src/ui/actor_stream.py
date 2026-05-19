@@ -5,7 +5,7 @@
 #
 # Functions
 #   - recover_missing_analyze_prose(raw: str) -> tuple[str, bool] : Recover prose when Actor omits the closing analyze tag
-#   - stream_actor(fixed_prompt: str, genre_prompt: str, dynamic_prompt: str, history: list[dict], genai_client: object, model_name: str, max_token: int, npc_name: str, logs_dir: Path, status_text: str) -> tuple[str, list[str], cl.Message, int | None] : Actor 응답 스트리밍
+#   - stream_actor(fixed_prompt: str, genre_prompt: str, dynamic_prompt: str, history: list[dict], genai_client: object, model_name: str, max_token: int, npc_name: str, logs_dir: Path, status_text: str) -> tuple[str, list[str], cl.Message, int | None, str] : Actor 응답 스트리밍
 # ================================
 
 import asyncio
@@ -122,7 +122,7 @@ async def stream_actor(
     npc_name: str,
     logs_dir: Path,
     status_text: str,
-) -> tuple[str, list[str], cl.Message, int | None]:
+) -> tuple[str, list[str], cl.Message, int | None, str]:
     """Gemini generate_content_stream으로 Actor 응답을 스트리밍합니다."""
     system_text = f"{fixed_prompt}\n\n{genre_prompt}" if genre_prompt else fixed_prompt
     gemini_msgs = [
@@ -154,7 +154,7 @@ async def stream_actor(
                     system_instruction=system_text,
                     max_output_tokens=max_token,
                     temperature=1.0,
-                    thinking_config=types.ThinkingConfig(thinking_level="MEDIUM"),
+                    thinking_config=types.ThinkingConfig(thinking_level="HIGH"),
                     automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
                 ),
             ):
@@ -234,4 +234,4 @@ async def stream_actor(
         f"/ recovered_missing_analyze={recovered_missing_analyze}"
     )
 
-    return prose, _extract_scene_chars(raw_thinking), response_msg, _hour_from_response(prose)
+    return prose, _extract_scene_chars(raw_thinking), response_msg, _hour_from_response(prose), raw_thinking

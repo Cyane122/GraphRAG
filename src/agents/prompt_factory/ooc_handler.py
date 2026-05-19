@@ -660,9 +660,10 @@ async def parse_ooc(text: str, npc_id: str, npc_name: str, pc_id: str | None = N
         if chain else "알 수 없음"
     )
 
-    # name/alias → id 역매핑
+    # name/alias/id → id 역매핑
     name_to_id: dict[str, str] = {}
     for c in characters:
+        name_to_id[c["id"]] = c["id"]
         name_to_id[c["name"]] = c["id"]
         for alias in c["aliases"]:
             name_to_id[alias] = c["id"]

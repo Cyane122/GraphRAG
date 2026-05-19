@@ -387,6 +387,9 @@ def _append_schedules(parts: list[str], schedules: list[dict]) -> None:
         location_part = f" @ {location}" if location else ""
         material = _render_schedule_material(schedule.get("material"))
         line = f"- [{timing}] {owner}: {time_range}{location_part} {name}. {hint}".strip()
+        pressure = _render_schedule_pressure(schedule)
+        if pressure:
+            line += f" {pressure}"
         if material:
             line += f" Material: {material}"
         lines.append(line)
@@ -417,6 +420,22 @@ def _render_routine_schedule(schedule: dict) -> str:
     location_part = f" @ {location}" if location else ""
     today = " today" if schedule.get("is_today") else ""
     return f"- [{days}{today}] {owner}: {time_range}{location_part} {name}".strip()
+
+
+def _render_schedule_pressure(schedule: dict) -> str:
+    """Render urgent schedule pressure for the actor prompt."""
+    timing = schedule.get("timing")
+    if timing == "active":
+        return "이미 시작 시간이다. 지체하면 어색하므로 빨리 가야 한다."
+    if timing != "upcoming":
+        return ""
+    try:
+        minutes_until = float(schedule.get("minutes_until"))
+    except (TypeError, ValueError):
+        return ""
+    if minutes_until <= 30:
+        return f"시간이 임박했다({int(minutes_until)}분 남음). 빨리 가야 한다."
+    return ""
 
 
 def _weekday_label(schedule: dict) -> str:

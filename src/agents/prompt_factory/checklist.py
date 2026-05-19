@@ -4,7 +4,7 @@
 # Actor prompt checklist rendering helpers.
 #
 # Functions
-#   - build_turn_checklist(template, scene_types, world_config, char_data, current_pov, npc_data_list) -> str : Render per-turn checklist text
+#   - build_turn_checklist(template: str, scene_types: list[str], world_config: dict, char_data: dict, current_pov: dict | None, npc_data_list: list[dict] | None) -> str : Render per-turn checklist text
 # ================================
 
 import json
@@ -18,6 +18,8 @@ _CYCLE_PLACEHOLDER = (
     "pregnancy_risk=[있음(10~17, 배란 피크=14일) / 없음] "
     "If condom omitted AND pregnancy_risk=있음 -> flag in interior monologue."
 )
+
+_MAX_COT_CHARACTERS = 15
 
 
 def build_turn_checklist(
@@ -97,11 +99,14 @@ def _build_cycle_line(dyn_state: dict) -> str:
 def _build_all_cycle_lines(char_data: dict, npc_data_list: list[dict]) -> str:
     """등장 중인 모든 여성 캐릭터의 생리 주기를 CoT에 출력합니다."""
     entries: list[tuple[str, dict]] = []
+    seen_names: set[str] = set()
 
     for src in [char_data, *npc_data_list]:
         dyn = src.get("dynamic_state", {})
-        if dyn.get("has_menstrual_cycle") is True:
-            entries.append((src.get("name", "?"), dyn))
+        name = src.get("name", "?")
+        if dyn.get("has_menstrual_cycle") is True and name not in seen_names:
+            entries.append((name, dyn))
+            seen_names.add(name)
 
     if not entries:
         return "CYCLE: n/a"
@@ -154,7 +159,7 @@ def _render_pov_candidates_line(current_pov: dict) -> str:
             "profile": candidate.get("profile") or {},
             "relationship_to_pc": candidate.get("relationship_to_pc") or {},
         }
-        for candidate in candidates[:5]
+        for candidate in candidates[:_MAX_COT_CHARACTERS]
     ]
     return _to_json(payload)
 

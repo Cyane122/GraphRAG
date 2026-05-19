@@ -12,7 +12,7 @@
 #   - fetch_global_state(fallback_dt: datetime) -> dict : Fetch GlobalState
 #   - get_location_name_from_id(location_id: str | None) -> str | None : Fetch a Location name
 #   - detect_present_npcs(user_input: str, actor_response: str, known_npcs: list[dict]) -> list[str] : Detect NPCs present in the current scene
-#   - fetch_location_character_ids(location_id: str | None) -> list[str] : Fetch characters located at the current scene location
+#   - fetch_location_character_ids(location_id: str | None) -> list[str] : Fetch characters located in the current scene location scope
 #   - fetch_npc_profiles(npc_ids: list[str], main_npc_id: str, pc_id: str) -> list[dict] : Fetch secondary NPC profile, speech, and relationship data
 # ================================
 import json
@@ -32,6 +32,17 @@ REL_TO_KEY = {
 }
 
 _BASE_RELS = ["HAS_PROFILE", "HAS_PERSONALITY", "HAS_STATE", "HAS_INFO"]
+
+_LOCATION_ID_ALIASES: dict[str, tuple[str, ...]] = {
+    "sunghwa_high_school": ("sunghwa_school",),
+    "sunghwa_high_school_classroom_1_7": ("sunghwa_classroom_1_7",),
+    "sunghwa_high_school_hallway": ("sunghwa_hallway",),
+    "sunghwa_high_school_cafeteria": ("sunghwa_cafeteria",),
+    "sunghwa_high_school_gym": ("sunghwa_gym",),
+    "sunghwa_high_school_rooftop": ("sunghwa_rooftop",),
+    "sunghwa_high_school_library": ("sunghwa_library",),
+    "sunghwa_high_school_shoe_locker": ("sunghwa_shoe_locker",),
+}
 
 SCENE_REL_MAP: dict[str, list[str]] = {
     "daily":       _BASE_RELS,
@@ -225,18 +236,70 @@ def detect_present_npcs(
 
 
 async def fetch_location_character_ids(location_id: str | None) -> list[str]:
-    """Fetch character ids explicitly located at the current scene location."""
+    """Fetch character ids located at the current scene location or its immediate scope."""
     if not location_id:
         return []
 
+    seed_ids = _location_seed_ids(location_id)
+
     async with async_driver.session() as session:
-        records = await session.run("""
-            MATCH (c:Character)-[:LOCATED_AT]->(:Location {id: $location_id})
-            RETURN c.id AS id
-            ORDER BY c.id
-        """, location_id=location_id)
-        rows = await records.data()
-    return [str(row["id"]) for row in rows if row.get("id")]
+        scope_rec = await session.run("""
+            MATCH (l:Location)
+            WHERE l.id IN $seed_ids OR l.name = $location_name
+            RETURN l.id AS id
+            ORDER BY l.id
+        """, seed_ids=seed_ids, location_name=location_id)
+        scope_rows = await scope_rec.data()
+        child_scope_rows = []
+        for seed_id in seed_ids:
+            child_scope_rec = await session.run("""
+                MATCH (l:Location)-[:PART_OF]->(:Location {id: $parent_id})
+                RETURN l.id AS id
+                ORDER BY l.id
+            """, parent_id=seed_id)
+            child_scope_rows.extend(await child_scope_rec.data())
+        named_parent_rec = await session.run("""
+            MATCH (l:Location)-[:PART_OF]->(parent:Location)
+            WHERE parent.name = $location_name
+            RETURN l.id AS id
+            ORDER BY l.id
+        """, location_name=location_id)
+        child_scope_rows.extend(await named_parent_rec.data())
+        scoped_ids = [
+            str(row["id"])
+            for row in [*scope_rows, *child_scope_rows]
+            if row.get("id")
+        ]
+        if not scoped_ids:
+            scoped_ids = seed_ids
+
+        rows = []
+        for scoped_id in scoped_ids:
+            state_records = await session.run("""
+                MATCH (c:Character), (d:DynamicState {location_id: $location_id})
+                MATCH (c)-[:HAS_STATE]->(d)
+                RETURN c.id AS id
+                ORDER BY c.id
+            """, location_id=scoped_id)
+            located_records = await session.run("""
+                MATCH (c:Character), (l:Location {id: $location_id})
+                MATCH (c)-[:LOCATED_AT]->(l)
+                RETURN c.id AS id
+                ORDER BY c.id
+            """, location_id=scoped_id)
+            rows.extend(await state_records.data())
+            rows.extend(await located_records.data())
+    return sorted({str(row["id"]) for row in rows if row.get("id")})
+
+
+def _location_seed_ids(location_id: str) -> list[str]:
+    """Return a location id plus known legacy/current aliases."""
+    ids = {location_id}
+    for canonical, aliases in _LOCATION_ID_ALIASES.items():
+        if location_id == canonical or location_id in aliases:
+            ids.add(canonical)
+            ids.update(aliases)
+    return sorted(ids)
 
 
 async def fetch_npc_profiles(

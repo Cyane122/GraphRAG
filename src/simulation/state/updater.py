@@ -459,7 +459,13 @@ async def process_actor_response(
             except Exception as e:
                 print(f"[WorldBuilder] resolve failed (continuing): {e}")
         try:
-            return await process_ejaculation(npc_id, actor_response, scene_char_ids=scene_chars)
+            # NPC==PC(남성 PC)일 때 npc_id 자체는 생리 주기가 없으므로
+            # scene_chars 전체를 intimate_char_ids로 전달해 has_menstrual_cycle 캐릭터를 검사
+            return await process_ejaculation(
+                npc_id, actor_response,
+                scene_char_ids=scene_chars,
+                intimate_char_ids=scene_chars,
+            )
         except Exception as e:
             print(f"[PregnancyMgr] processing failed (continuing): {e}")
         return None

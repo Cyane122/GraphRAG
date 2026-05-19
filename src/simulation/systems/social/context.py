@@ -81,7 +81,7 @@ async def _fetch_recent_auto_events(
             MATCH (c:Character)-[:INVOLVED_IN]->(e:Event)
             WHERE c.id <> $npc_id
               AND c.id <> $pc_id
-              AND e.impact = "autonomous need resolution"
+              AND e.impact IN ["autonomous need resolution", "schedule_start"]
               AND e.timestamp >= $cutoff
             OPTIONAL MATCH (c)-[:HAS_PROFILE]->(sp:StaticProfile)
             RETURN c.id          AS char_id,

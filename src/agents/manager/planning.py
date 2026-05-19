@@ -162,11 +162,18 @@ async def _classify_scene(
     schedule_context: dict,
 ) -> tuple[dict, list[str]]:
     """Classify a scene via rules first, then the LLM classifier."""
+    _STANDARD_SCENE_TYPES = {"daily", "emotional", "physical", "intimate", "workplace", "aegyo"}
+    _world_has_custom_types = bool(set(bootstrap.world.get_scene_types()) - _STANDARD_SCENE_TYPES)
+
     rule_result = deps.try_rule_based(user_input, recent_story)
     if rule_result and not _is_schedule_sensitive_rule_result(rule_result, user_input, schedule_context):
         scene_types = rule_result["scene_types"]
-        print(f"[Classify+Time / rule-based] scene={scene_types} elapsed={rule_result['elapsed_minutes']}min")
-        return rule_result, scene_types
+        # 월드에 커스텀 씬 타입이 있으면 rule-based daily 결과는 LLM으로 위임
+        if _world_has_custom_types and scene_types == ["daily"]:
+            pass
+        else:
+            print(f"[Classify+Time / rule-based] scene={scene_types} elapsed={rule_result['elapsed_minutes']}min")
+            return rule_result, scene_types
 
     allowed_locs = await deps.get_allowed_locations()
     parse_result = await deps.classify_and_parse_time(

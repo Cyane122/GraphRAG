@@ -306,10 +306,20 @@ class KuzuAsyncDriver:
 
         try:
             module = import_module(f"src.assets.worlds.{self._world_id}.schema")
-            world = module.world_instance
+            scenarios = getattr(module, "SCENARIOS", None)
+            world = None
+            if isinstance(scenarios, list):
+                if self._scenario_id:
+                    for sc in scenarios:
+                        if sc.scenario_id == self._scenario_id and sc.world is not None:
+                            world = sc.world
+                            break
+                if world is None and scenarios:
+                    world = scenarios[0].world
+            if world is None:
+                world = getattr(module, "world_instance", None) or World()
         except (ModuleNotFoundError, AttributeError):
             world = World()
-
         print(f"[KuzuBootstrap] base schema missing for '{self._world_id}' ({', '.join(sorted(missing))}). Initializing schema.")
         world.build_schema(self._conn, self._scenario_id)
 

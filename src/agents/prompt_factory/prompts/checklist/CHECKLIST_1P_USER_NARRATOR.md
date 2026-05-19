@@ -1,12 +1,12 @@
 <instructions>
-Fill out the template below inside <analyze>...</analyze>, under 700 tokens.
+Fill out the template below inside <analyze>...</analyze>, under 1200 tokens.
 Close </analyze>, then IMMEDIATELY write the Korean prose scene.
 The scene is mandatory — do not stop after </analyze>.
 </instructions>
 
 <analyze>
 SCENE: [1 sentence]
-CHARACTERS: [풀네임 JSON 배열]
+CHARACTERS: [physically present or directly active women first, then other present characters; full-name JSON array; include up to 15]
 STATE: {{state_line}}
 CURRENT POV: {current_pov_line}
 POV CANDIDATES: {pov_candidates_line}

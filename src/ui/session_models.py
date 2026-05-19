@@ -35,3 +35,4 @@ class PendingCommit(BaseModel):
     debug_dir: Path | str | None = None
     user_msg_id: str | None = None
     response_msg_id: str | None = None
+    prev_cot: str = ""

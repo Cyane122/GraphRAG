@@ -285,5 +285,3 @@ def _format_prompt_vars(
             world_cot_append=world_config.get("world_cot_append", ""),
         )
     )
-
-

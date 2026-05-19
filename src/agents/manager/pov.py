@@ -70,7 +70,7 @@ def _candidate_from_present_npc(npc: dict) -> dict:
         "aliases": npc.get("aliases") or [],
         "source": "present_npc",
         "profile": _compact_profile(npc.get("profile") or {}),
-        "dynamic_state": {},
+        "dynamic_state": _compact_dynamic_state(npc.get("dynamic_state") or {}),
         "relationship_to_pc": _compact_relationship(npc.get("rel_to_pc") or {}),
     }
 
@@ -126,7 +126,17 @@ def _compact_profile(profile: dict) -> dict:
 
 def _compact_dynamic_state(dynamic_state: dict) -> dict:
     """Keep dynamic fields relevant to POV continuity."""
-    keys = ("mood", "mental_condition", "physical_condition", "stress_level", "location_id")
+    keys = (
+        "mood",
+        "mental_condition",
+        "physical_condition",
+        "stress_level",
+        "location_id",
+        "has_menstrual_cycle",
+        "cycle_day",
+        "pregnant",
+        "pregnancy_day",
+    )
     return {key: dynamic_state[key] for key in keys if dynamic_state.get(key) not in (None, "")}
 
 

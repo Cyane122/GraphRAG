@@ -12,7 +12,7 @@ from src.config import MODEL_ACTOR as ACTOR_MODEL, MAX_TOKEN
 from src.core.logging.prompt_debug import build_prompt_fingerprint, format_prompt_fingerprint
 from src.core.llm.client import get_model, get_response_text
 
-MAX_TOKENS = round(MAX_TOKEN * 0.65 / 100) * 100
+MAX_TOKENS = MAX_TOKEN
 
 
 def _log_usage_metadata(response: object) -> None:
@@ -82,7 +82,7 @@ async def run_actor(
         generation_config={
             "max_output_tokens": MAX_TOKENS,
             "temperature": 1.0,
-            "thinking_config": {"thinking_level": "MEDIUM"},
+            "thinking_config": {"thinking_level": "HIGH"},
         }
     )
 

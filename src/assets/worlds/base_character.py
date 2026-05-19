@@ -76,12 +76,35 @@ def _merge_static_event(
 
 
 class Character:
-    """캐릭터 구현체 베이스 클래스."""
+    """캐릭터 구현체 베이스 클래스.
+
+    시나리오별 분기 패턴
+    ────────────────────
+    1. 서브클래스에서 DEFAULT_CFG 로 기본값 전체를 정의한다.
+    2. SCENARIO_OVERRIDES 에는 달라지는 값만 적는다 (delta).
+    3. __init__(scenario_id) 호출 시 두 dict 가 병합돼 self.cfg 에 저장된다.
+    4. build_schema / build_relationship 에서 self.cfg 를 읽어 사용한다.
+
+    예시:
+        DEFAULT_CFG = {"club": None, "affinity_sian": 5}
+        SCENARIO_OVERRIDES = {
+            "volleyball_team": {"club": "volleyball", "affinity_sian": 10},
+        }
+    """
 
     id: str = ""
     name: str = ""
     aliases: list[str] = []
     char_type: str = "npc"
+
+    DEFAULT_CFG: dict = {}
+    SCENARIO_OVERRIDES: dict[str, dict] = {}
+
+    def __init__(self, scenario_id: str | None = None) -> None:
+        self.scenario_id = scenario_id
+        cfg = dict(self.DEFAULT_CFG)
+        cfg.update(self.SCENARIO_OVERRIDES.get(scenario_id or "default", {}))
+        self.cfg = cfg
 
     def build_schema(self, conn: kuzu.Connection) -> None:
         """캐릭터 노드, StaticProfile, DynamicState를 Kuzu에 삽입합니다."""

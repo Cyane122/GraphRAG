@@ -5,7 +5,7 @@
 #
 # Functions
 #   - load_world_instance(world_id: str) -> World : Load the World instance for a world id
-#   - run_manager(user_input: str, pc_id: str, npc_id: str, recent_story: str, world_id: str | None, perspective: int, return_meta: bool = False, suppress_time_plan: bool = False, scene_need_hints: dict[str, str] | None = None) -> tuple : Run one manager turn pipeline
+#   - run_manager(user_input: str, pc_id: str, npc_id: str, recent_story: str, world_id: str | None, scenario_id: str | None, perspective: int, return_meta: bool = False, suppress_time_plan: bool = False, scene_need_hints: dict[str, str] | None = None) -> tuple : Run one manager turn pipeline
 #   - commit_manager_effects(effects: dict | None, pc_id: str, npc_id: str) -> None : Commit pending manager side effects
 # ================================
 import asyncio
@@ -35,6 +35,7 @@ async def run_manager(
     npc_id:       str,
     recent_story: str = "",
     world_id:     str = None,
+    scenario_id:  str | None = None,
     perspective:  int = 3,
     return_meta:   bool = False,
     suppress_time_plan: bool = False,
@@ -50,7 +51,7 @@ async def run_manager(
         perspective,
         suppress_time_plan,
         ManagerDependencies(
-            load_world_instance=load_world_instance,
+            load_world_instance=lambda wid: load_world_instance(wid, scenario_id),
             fetch_global_state=fetch_global_state,
             try_rule_based=_try_rule_based,
             get_allowed_locations=_get_allowed_locations,

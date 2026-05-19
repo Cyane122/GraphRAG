@@ -64,6 +64,7 @@ from src.ui.time_state import (
 from src.simulation.state.multi_character import apply_multi_character_state_updates
 from src.simulation.state.updater import delegate_complex_update
 from src.simulation.systems.needs import ensure_traits_for_characters
+from src.simulation.systems.organic import set_pregnant_manual
 from src.core.database import KuzuAsyncDriver
 from src.core.database.helpers import load_graph_info
 from src.core.llm.client import get_client
@@ -105,8 +106,15 @@ def _discover_world_profiles() -> list[tuple[str, str | None, str]]:
             continue
         try:
             module = _import(f"src.assets.worlds.{world_id}.schema")
-            world  = getattr(module, "world_instance", None)
-            if world and world.SCENARIOS:
+            # 신규 스타일: 모듈 레벨 SCENARIOS list
+            scenarios = getattr(module, "SCENARIOS", None)
+            if isinstance(scenarios, list) and scenarios:
+                for sc in scenarios:
+                    result.append((world_id, sc.scenario_id, sc.display_name))
+                continue
+            # 레거시: world.SCENARIOS dict (rofan 등)
+            world = getattr(module, "world_instance", None)
+            if world and isinstance(getattr(world, "SCENARIOS", None), dict) and world.SCENARIOS:
                 for sid, scenario in world.SCENARIOS.items():
                     result.append((world_id, sid, scenario.display_name))
                 continue
@@ -218,7 +226,7 @@ async def _init_session_world(
     create_driver=False 이면 world_config만 세팅하고 DB 드라이버는 만들지 않습니다.
     첫 메시지 시점에 _ensure_db_driver()로 지연 생성합니다.
     """
-    world_instance = load_world_instance(world_id)
+    world_instance = load_world_instance(world_id, scenario_id)
     world_cfg = world_instance.get_full_config(PERSPECTIVE, scenario_id)
     world_cfg["npc_name_map"] = world_instance.get_npc_name_map()
 
@@ -340,6 +348,7 @@ async def _handle_system_command(user_input: str) -> None:
                 "- `*...*`: OOC 상태 패치\n"
                 "- `/help`: 명령 도움말\n"
                 "- `/debug graph`: 현재 장면 중심 그래프 보기\n"
+                "- `/임신 [이름]`: 캐릭터 임신 상태 수동 설정 (자동 감지 실패 시 보정용)\n"
                 "- 사이드바: 채팅방 목록 / 이전 대화 재개\n"
                 "- `data/threads/{thread_id}/usernote.md`: 유저노트 (파일 직접 편집, 매 턴 자동 반영)"
             ),
@@ -350,6 +359,21 @@ async def _handle_system_command(user_input: str) -> None:
         _, pc_id, npc_id, _, _ = _wv()
         world_id = cl.user_session.get("world_id") or WORLD_ID
         await send_debug_graph(pc_id=pc_id, npc_id=npc_id, world_id=world_id)
+        return
+    if user_input.strip().split()[0].lower() in {"/임신", "!임신"}:
+        parts = user_input.strip().split(maxsplit=1)
+        if len(parts) < 2:
+            await cl.Message(content="사용법: `/임신 [캐릭터 이름 또는 ID]`", author="시스템").send()
+            return
+        char_ref = parts[1].strip()
+        result = await set_pregnant_manual(char_ref)
+        if result is None:
+            await cl.Message(
+                content=f"캐릭터를 찾을 수 없습니다: `{char_ref}`\n이름 또는 ID를 확인하세요.",
+                author="시스템",
+            ).send()
+        else:
+            await cl.Message(content=result, author="시스템").send()
         return
     await cl.Message(content=f"알 수 없는 시스템 명령입니다: `{user_input}`", author="시스템").send()
 
@@ -400,6 +424,7 @@ async def _run_generation(
             npc_id       = npc_id,
             recent_story = recent_story,
             world_id     = world_id,
+            scenario_id  = cl.user_session.get("scenario_id"),
             perspective  = PERSPECTIVE,
             return_meta  = True,
             suppress_time_plan=bool(ooc_result and ooc_result.get("time_changed")),
@@ -432,6 +457,11 @@ async def _run_generation(
     if note_block:
         dynamic = note_block + dynamic
 
+    # 이전 턴 CoT를 dynamic 끝에 주입 (모델이 이전 계산 결과를 참조할 수 있도록)
+    prev_cot = cl.user_session.get("prev_cot") or ""
+    if prev_cot:
+        dynamic = dynamic + f"\n\n[Previous Turn CoT]\n{prev_cot}"
+
     debug_dir = write_turn_debug_snapshot(
         user_input      = user_input,
         fixed_prompt    = fixed,
@@ -449,7 +479,7 @@ async def _run_generation(
     )
 
     # 3. Actor 스트리밍
-    full_response, scene_chars, response_msg, hour = await stream_actor(
+    full_response, scene_chars, response_msg, hour, raw_thinking = await stream_actor(
         fixed_prompt   = fixed,
         genre_prompt   = genre,
         dynamic_prompt = dynamic,
@@ -515,8 +545,10 @@ async def _run_generation(
         debug_dir=debug_dir,
         user_msg_id=user_msg_id or cl.user_session.get("reroll_user_msg_id"),
         response_msg_id=response_msg.id,
+        prev_cot=cl.user_session.get("prev_cot") or "",
     )
     cl.user_session.set("pending_commit", pending_commit.model_dump())
+    cl.user_session.set("prev_cot",       raw_thinking)
     cl.user_session.set("reroll_user_msg_id", None)
 
     response_msg.actions = make_actions()
@@ -562,6 +594,7 @@ async def _reroll_pending_response(
     cl.user_session.set("conversation_history", pending["history_snapshot"])
     cl.user_session.set("recent_responses",     pending["recent_snapshot"])
     cl.user_session.set("pending_commit",        None)
+    cl.user_session.set("prev_cot",              pending.get("prev_cot", ""))
 
     if pending.get("prev_game_time"):
         await restore_game_time(pending["prev_game_time"])

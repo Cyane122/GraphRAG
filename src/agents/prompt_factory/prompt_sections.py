@@ -129,8 +129,8 @@ Large relationship shifts only follow rare milestones: confession, betrayal, dec
 
 
 TOKEN_LIMIT_WARNING = f"""<token_limit_constraint>
-Max output = {round(MAX_TOKEN * 0.65 / 100) * 100} tokens. Deliver a complete response within budget.
-<analyze> block must be concise.
+Max output = {MAX_TOKEN} tokens. Deliver a complete response within budget.
+<analyze> block may expand for ensemble scenes, but reserve most tokens for prose.
 </token_limit_constraint>"""
 
 _IMPERSONATION_HEADER = """<impersonation>
@@ -315,12 +315,12 @@ Physical beat carries tone — narrator states what body does, not how voice sou
 
 
 _CHECKLIST_3P = """<instructions>
-Fill out the template below inside <analyze>...</analyze>, under 400 tokens.
+Fill out the template below inside <analyze>...</analyze>, under 1200 tokens.
 Close </analyze>, then IMMEDIATELY write the Korean prose scene. The scene is mandatory — do not stop after </analyze>.
 </instructions>
 <analyze>
 SCENE: [1 sentence]
-CHARACTERS: [풀네임 JSON 배열]
+CHARACTERS: [physically present or directly active women first, then other present characters; full-name JSON array; include up to 15]
 STATE: {{state_line}}
 EMOTION: Lv[1–10]. Hot→[body:verb]. Cold→[body:verb]. Same axis last turn? [yes→switch/no]
 TONE: {user}=[word]. output=[word]. match=[yes/no]
@@ -494,12 +494,12 @@ Physical beat carries tone — {char} states what body does, not how voice sound
 
 
 _CHECKLIST_1P = """<instructions>
-Fill out the template below inside <analyze>...</analyze>, under 900 tokens.
+Fill out the template below inside <analyze>...</analyze>, under 1200 tokens.
 Close </analyze>, then IMMEDIATELY write the Korean prose scene. The scene is mandatory — do not stop after </analyze>.
 </instructions>
 <analyze>
 SCENE: [1 sentence]
-CHARACTERS: [풀네임 JSON 배열]
+CHARACTERS: [physically present or directly active women first, then other present characters; full-name JSON array; include up to 15]
 CHOREOGRAPHY: [목록에 있는 각 캐릭터들이 이 턴에서 보여줄 짧은 행동이나 대사 계획을 각각 10자 내외로 작성]
 STATE: {{state_line}}
 CURRENT_POV: {{current_pov_line}}

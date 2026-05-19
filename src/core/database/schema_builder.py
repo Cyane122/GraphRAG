@@ -10,13 +10,12 @@
 
 import argparse
 import shutil
-from importlib import import_module
 from pathlib import Path
 
 import kuzu
 
-from src.assets.worlds.base import World
 from src.config import WORLD_ID
+from src.agents.manager.world_loader import load_world_instance
 
 if __name__ == "__main__":
 
@@ -27,11 +26,7 @@ if __name__ == "__main__":
 
     world_id    = args.world_id
     scenario_id = args.scenario_id
-    try:
-        module = import_module(f"src.assets.worlds.{world_id}.schema")
-        world  = module.world_instance
-    except (ModuleNotFoundError, AttributeError):
-        world = World()
+    world = load_world_instance(world_id, scenario_id)
 
     # Kuzu DB 삭제 (파일 단독 형식 또는 디렉토리 형식 모두 처리)
     db_path = Path("graph") / world_id

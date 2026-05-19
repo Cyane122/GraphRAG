@@ -16,6 +16,24 @@ from src.simulation.systems.memory import run_decay
 from src.simulation.systems.needs import run_needs_update
 from src.simulation.systems.organic import tick_all_cycles
 from src.simulation.systems.personal_facts import commit_personal_facts
+from src.simulation.systems.schedule_tick import run_schedule_tick
+
+
+def _parse_effect_datetime(value: object) -> datetime | None:
+    """Parse an ISO datetime from manager effect data."""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _effect_base_time(effects: dict) -> datetime | None:
+    """Return the previous in-game time for time-plan or OOC time patches."""
+    time_plan = effects.get("time_plan") or {}
+    ooc_patch = effects.get("ooc_time_patch") or {}
+    return _parse_effect_datetime(time_plan.get("base_time") or ooc_patch.get("time_before"))
 
 
 async def commit_manager_core_effects(
@@ -32,10 +50,7 @@ async def commit_manager_core_effects(
     if time_plan:
         current_dt = await commit_time_plan(time_plan, pc_id, npc_id)
     elif effects.get("ooc_time_after"):
-        try:
-            current_dt = datetime.fromisoformat(effects["ooc_time_after"])
-        except (TypeError, ValueError):
-            current_dt = None
+        current_dt = _parse_effect_datetime(effects.get("ooc_time_after"))
 
     return {"current_dt": current_dt}
 
@@ -68,9 +83,12 @@ async def commit_manager_auxiliary_effects(
             print(f"[ManagerCommit] needs update failed (ignored): {e}")
 
     daily_plan = effects.get("daily_systems") or {}
-    days_passed = int(daily_plan.get("days_passed") or 0)
-    if days_passed > 0:
-        daily_time = current_dt or datetime.fromisoformat(daily_plan["current_time"])
+    try:
+        days_passed = int(daily_plan.get("days_passed") or 0)
+    except (TypeError, ValueError):
+        days_passed = 0
+    daily_time = current_dt or _parse_effect_datetime(daily_plan.get("current_time"))
+    if days_passed > 0 and daily_time:
         try:
             await run_decay(daily_time)
         except Exception as e:
@@ -93,6 +111,20 @@ async def commit_manager_auxiliary_effects(
         except Exception as e:
             print(f"[ManagerCommit] StaticEvent evaluation failed (ignored): {e}")
 
+    if current_dt:
+        try:
+            prev_dt = _effect_base_time(effects)
+            if prev_dt:
+                await run_schedule_tick(
+                    pc_id=pc_id,
+                    npc_id=npc_id,
+                    prev_time=prev_dt,
+                    current_time=current_dt,
+                    scene_chars=scene_chars,
+                )
+        except Exception as e:
+            print(f"[ManagerCommit] schedule tick failed (ignored): {e}")
+
     return needs_result
 
 
@@ -106,59 +138,14 @@ async def commit_manager_effects(
     if not effects:
         return {}
 
-    needs_result: dict = {}
-
-    time_plan = effects.get("time_plan")
-    current_dt: datetime | None = None
-    if time_plan:
-        current_dt = await commit_time_plan(time_plan, pc_id, npc_id)
-    elif effects.get("ooc_time_after"):
-        try:
-            current_dt = datetime.fromisoformat(effects["ooc_time_after"])
-        except (TypeError, ValueError):
-            current_dt = None
-
-    needs_plan = effects.get("needs_update") or {}
-    if needs_plan:
-        try:
-            needs_time = current_dt or datetime.fromisoformat(needs_plan["current_time"])
-            elapsed_minutes = needs_plan.get("elapsed_minutes")
-            needs_result = await run_needs_update(
-                pc_id           = needs_plan.get("pc_id") or pc_id,
-                elapsed_minutes = float(elapsed_minutes if elapsed_minutes is not None else 1.0),
-                current_time    = needs_time,
-                scene_chars     = scene_chars,
-            )
-        except Exception as e:
-            print(f"[ManagerCommit] needs update 실패 (무시): {e}")
-
-    daily_plan = effects.get("daily_systems") or {}
-    days_passed = int(daily_plan.get("days_passed") or 0)
-    if days_passed > 0:
-        daily_time = current_dt or datetime.fromisoformat(daily_plan["current_time"])
-        try:
-            await run_decay(daily_time)
-        except Exception as e:
-            print(f"[ManagerCommit] decay 실패 (무시): {e}")
-        try:
-            await tick_all_cycles(days_passed)
-        except Exception as e:
-            print(f"[ManagerCommit] cycle tick 실패 (무시): {e}")
-
-    personal_facts = effects.get("personal_facts") or []
-    if personal_facts:
-        try:
-            await commit_personal_facts(personal_facts, pc_id, npc_id, current_dt)
-        except Exception as e:
-            print(f"[ManagerCommit] personal facts update failed (ignored): {e}")
-
-    if current_dt:
-        try:
-            await evaluate_static_events(current_dt, commit=True)
-        except Exception as e:
-            print(f"[ManagerCommit] StaticEvent 평가 실패 (무시): {e}")
-
-    return needs_result
+    core_result = await commit_manager_core_effects(effects, pc_id, npc_id)
+    return await commit_manager_auxiliary_effects(
+        effects,
+        pc_id=pc_id,
+        npc_id=npc_id,
+        current_dt=core_result.get("current_dt"),
+        scene_chars=scene_chars,
+    )
 
 
 # ════════════════════════════════════════════════════════════

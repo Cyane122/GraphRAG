@@ -36,12 +36,19 @@ if TYPE_CHECKING:
 
 @dataclass
 class Scenario:
-    """한 세계 내의 시작 설정. SCENARIOS dict에 등록하면 ChatProfile 드롭다운에 노출됩니다."""
+    """한 세계 내의 시작 설정.
+
+    새 스타일: world 필드에 설정된 World 인스턴스를 넣으면
+    module-level SCENARIOS 리스트로 등록 → ChatProfile 드롭다운에 노출.
+
+    구 스타일 (rofan 등 레거시): world=None 두고 default_time 등 직접 지정.
+    """
     scenario_id: str
     display_name: str
-    default_time: datetime
-    default_location_id: str
-    opening_scene_path: str = "opening_scene.md"
+    world: "World | None" = field(default=None)          # 신규: 설정된 World 인스턴스
+    default_time: datetime | None = None                  # 레거시: world 없을 때만 사용
+    default_location_id: str | None = None                # 레거시: world 없을 때만 사용
+    opening_scene_path: str = "opening_scene.md"          # 레거시
 
 
 # ── 정적 노드 헬퍼 ─────────────────────────────────────────────────
@@ -265,17 +272,20 @@ class World:
         pc: Character | None = None,
         chars: list[Character] | None = None,
         perspective: int = 1,
+        scenario_id: str | None = None,
     ) -> None:
         """세계 인스턴스를 초기화합니다.
 
         narrator: 서술자 캐릭터 (NPC POV). 미지정 시 get_npc_id 기본값 사용.
         pc: 플레이어 캐릭터. 미지정 시 get_pc_id 기본값 사용.
         chars: 이 세계에 존재하는 캐릭터 목록. build_schema 시 사용.
+        scenario_id: 이 인스턴스가 담당하는 시나리오 ID.
         """
         self.narrator = narrator
         self.pc = pc
         self.chars: list[Character] = chars or []
         self.perspective = perspective
+        self.scenario_id = scenario_id
 
     # classifier LLM에 주입할 씬 타입 정의. name → description(English).
     # 설명은 classifier 프롬프트에 직접 주입되므로 LLM이 타입을 정확히 구분할 수 있다.
@@ -331,9 +341,11 @@ class World:
 
     def get_full_config(self, perspective: int = 3, scenario_id: str | None = None) -> dict:
         """프롬프트 조립에 필요한 전체 설정 딕셔너리를 반환합니다."""
-        scenario = self.SCENARIOS.get(scenario_id) if scenario_id and self.SCENARIOS else None
-        start_time       = scenario.default_time        if scenario else self.get_default_time()
-        default_location = scenario.default_location_id if scenario else self.get_default_location_id()
+        # 레거시 dict SCENARIOS 지원 (rofan 등)
+        _sid = scenario_id or self.scenario_id
+        scenario = self.SCENARIOS.get(_sid) if _sid and isinstance(self.SCENARIOS, dict) and self.SCENARIOS else None
+        start_time       = (scenario.default_time        if scenario and scenario.default_time        else self.get_default_time())
+        default_location = (scenario.default_location_id if scenario and scenario.default_location_id else self.get_default_location_id())
         return {
             "world_section":        self.get_world_section(),
             "specific_prose_rules": self.get_specific_prose_rules(perspective),
@@ -345,7 +357,7 @@ class World:
             "npc_id":               self.get_npc_id(),
             "npc_name_kor":         self.npc_name_kor(),
             "default_location_id":  default_location,
-            "scenario_id":          scenario_id,
+            "scenario_id":          _sid,
         }
 
     def get_default_location_id(self) -> str:
@@ -367,6 +379,10 @@ class World:
     def npc_name_kor(self) -> str:
         """NPC(서술자) 한국어 이름을 반환합니다. narrator가 주입된 경우 인스턴스 변수를 우선합니다."""
         return self.narrator.name if self.narrator else "엔피씨"
+
+    def iter_scenario_characters(self, scenario_id: str | None = None) -> list["Character"]:
+        """시나리오에 속한 캐릭터 목록을 반환합니다. 현재는 self.chars 전체 반환."""
+        return self.chars
 
     def _build_world_events(self, conn: kuzu.Connection) -> None:
         """세계 레벨 StaticEvent를 생성합니다. 캐릭터 무관 이벤트(계절 전환, 대규모 사건 등).
