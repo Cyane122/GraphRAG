@@ -11,7 +11,8 @@
 #   - get_client() -> genai.Client : 스트리밍 직접 호출 시 사용하는 클라이언트 반환
 #   - get_model(model_name: str, system_prompt: str | None) -> _GeminiModel : 모델 래퍼 반환
 #   - get_response_text(response) -> str : response.text가 None인 경우 parts에서 텍스트 추출
-#   - extract_json_from_llm(raw_text, source: str) -> dict | list : LLM 응답에서 JSON 안전 추출
+#   - log_empty_response_diagnostics(response: object, source: str) -> None : 빈 LLM 응답의 메타데이터를 출력
+#   - extract_json_from_llm(raw_text, source: str, log_errors: bool) -> dict | list : LLM 응답에서 JSON 안전 추출
 # ================================
 
 import asyncio
@@ -89,6 +90,74 @@ def get_response_text(response) -> str:
     return ""
 
 
+def _safe_primitive(value: object) -> object:
+    """로그에 안전하게 남길 수 있는 짧은 원시값으로 변환합니다."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_safe_primitive(item) for item in value[:8]]
+    if isinstance(value, dict):
+        return {str(key): _safe_primitive(item) for key, item in list(value.items())[:20]}
+    try:
+        return str(value)
+    except Exception:
+        return f"<{type(value).__name__}>"
+
+
+def _response_diagnostics(response: object) -> dict:
+    """Gemini 응답 객체에서 빈 응답 원인 추적에 필요한 메타데이터를 추출합니다."""
+    info: dict = {
+        "response_type": type(response).__name__ if response is not None else None,
+        "candidates": [],
+        "prompt_feedback": None,
+        "usage_metadata": None,
+    }
+    if response is None:
+        return info
+
+    for attr in ("prompt_feedback", "usage_metadata"):
+        try:
+            info[attr] = _safe_primitive(getattr(response, attr, None))
+        except Exception as exc:
+            info[attr] = f"<unavailable: {exc}>"
+
+    try:
+        candidates = getattr(response, "candidates", None) or []
+    except Exception:
+        candidates = []
+
+    for candidate in candidates[:3]:
+        candidate_info: dict = {}
+        for attr in ("finish_reason", "finish_message", "safety_ratings", "citation_metadata"):
+            try:
+                candidate_info[attr] = _safe_primitive(getattr(candidate, attr, None))
+            except Exception as exc:
+                candidate_info[attr] = f"<unavailable: {exc}>"
+        try:
+            parts = getattr(getattr(candidate, "content", None), "parts", None) or []
+            candidate_info["parts"] = [
+                {
+                    "has_text": bool(getattr(part, "text", None)),
+                    "text_len": len(getattr(part, "text", "") or ""),
+                    "thought": bool(getattr(part, "thought", False) or getattr(part, "is_thought", False)),
+                    "part_type": type(part).__name__,
+                }
+                for part in parts[:8]
+            ]
+        except Exception as exc:
+            candidate_info["parts"] = f"<unavailable: {exc}>"
+        info["candidates"].append(candidate_info)
+    return info
+
+
+def log_empty_response_diagnostics(response: object, source: str) -> None:
+    """빈 LLM 응답의 finish_reason/safety/parts 메타데이터를 로그로 남깁니다."""
+    print(
+        f"[LLM Empty Response:{source}] "
+        f"{json.dumps(_response_diagnostics(response), ensure_ascii=False, default=str)}"
+    )
+
+
 # ════════════════════════════════════════════════════════════
 # 모델 래퍼
 # ════════════════════════════════════════════════════════════
@@ -100,7 +169,7 @@ class _GeminiModel:
     model.generate_content(contents, generation_config) 인터페이스로 감싼다.
 
     generation_config 딕셔너리에서:
-    - thinking_config: {"thinking_level": "LOW"|"MEDIUM"|"HIGH"}
+    - thinking_config: {"thinking_level": "LOW"|"MEDIUM"|"HIGH", "thinking_budget": int, "include_thoughts": bool}
       → types.ThinkingConfig으로 변환
     - 나머지 키(max_output_tokens, temperature, response_mime_type 등)는 그대로 전달
     """
@@ -120,9 +189,14 @@ class _GeminiModel:
         build: dict = {}
         if self._system:
             build["system_instruction"] = self._system
-        build["thinking_config"] = types.ThinkingConfig(
-            thinking_level=thinking_raw.get("thinking_level", "LOW")
-        )
+        thinking_args: dict = {}
+        if "thinking_level" in thinking_raw:
+            thinking_args["thinking_level"] = thinking_raw.get("thinking_level")
+        if "thinking_budget" in thinking_raw:
+            thinking_args["thinking_budget"] = thinking_raw.get("thinking_budget")
+        if "include_thoughts" in thinking_raw:
+            thinking_args["include_thoughts"] = thinking_raw.get("include_thoughts")
+        build["thinking_config"] = types.ThinkingConfig(**thinking_args)
         build["automatic_function_calling"] = types.AutomaticFunctionCallingConfig(
             disable=True
         )
@@ -194,7 +268,7 @@ def get_model(model_name: str, system_prompt: str | None = None) -> _GeminiModel
 # JSON 파서
 # ════════════════════════════════════════════════════════════
 
-def extract_json_from_llm(raw_text, source: str = "unknown") -> dict | list:
+def extract_json_from_llm(raw_text, source: str = "unknown", log_errors: bool = True) -> dict | list:
     """
     LLM 응답에서 JSON을 안전하게 추출.
 
@@ -205,7 +279,7 @@ def extract_json_from_llm(raw_text, source: str = "unknown") -> dict | list:
     4. Trailing comma 제거
     5. 정상 파싱 시도
     6. 실패 시 잘린 JSON 복구 시도 (괄호 닫기 보정)
-    7. 최종 실패 시 {} 반환
+    7. 최종 실패 시 {} 반환. log_errors=False면 실패 로그를 생략한다.
     """
     if not isinstance(raw_text, str):
         print(f"[LLM Parser:{source}] 입력이 문자열이 아님: {type(raw_text)} → {{}} 반환")
@@ -234,7 +308,8 @@ def extract_json_from_llm(raw_text, source: str = "unknown") -> dict | list:
         else:
             preview = "(empty)"
             suffix = ""
-        print(f"[LLM Parser Error:{source}] 파싱 실패: {e}\nRaw Text: {preview}{suffix}")
+        if log_errors:
+            print(f"[LLM Parser Error:{source}] 파싱 실패: {e}\nRaw Text: {preview}{suffix}")
         return {}
 
 
@@ -288,8 +363,9 @@ def _fix_trailing_comma(json_str: str) -> str:
 def _fix_unterminated_string(json_str: str) -> str:
     """
     Unterminated string 복구.
-    모델이 문자열 중간에 ...로 잘라버린 경우 닫는 따옴표 + 닫는 괄호를 추가한다.
+    모델이 문자열 중간에 잘라버린 경우 닫는 따옴표 + 괄호를 LIFO 순서로 추가한다.
     """
+    stack: list[str] = []
     in_string = False
     escaped = False
     for ch in json_str:
@@ -301,12 +377,16 @@ def _fix_unterminated_string(json_str: str) -> str:
             continue
         if ch == '"':
             in_string = not in_string
+            continue
+        if not in_string:
+            if ch in '{[':
+                stack.append(ch)
+            elif ch == '}' and stack and stack[-1] == '{':
+                stack.pop()
+            elif ch == ']' and stack and stack[-1] == '[':
+                stack.pop()
 
-    if in_string:
-        json_str = json_str.rstrip() + '"'
-
-    open_braces = json_str.count('{') - json_str.count('}')
-    open_brackets = json_str.count('[') - json_str.count(']')
-    json_str += ']' * max(0, open_brackets)
-    json_str += '}' * max(0, open_braces)
-    return json_str
+    closers = '"' if in_string else ''
+    for opener in reversed(stack):
+        closers += '}' if opener == '{' else ']'
+    return json_str.rstrip() + closers

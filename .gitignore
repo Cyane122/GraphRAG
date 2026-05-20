@@ -6,6 +6,8 @@ src/assets/worlds/*/
 !src/assets/worlds/default/
 logs/
 graph/
+!public/graph/
+!public/graph/**
 data/
 scripts/
 chat/

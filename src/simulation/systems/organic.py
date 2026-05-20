@@ -18,7 +18,12 @@ from datetime import datetime
 
 from src.config import MODEL_CLASSIFIER as _FLASH_MODEL
 from src.core.database import async_driver, update_dynamic_state
-from src.core.llm.client import extract_json_from_llm, get_model, get_response_text
+from src.core.llm.client import (
+    extract_json_from_llm,
+    get_model,
+    get_response_text,
+    log_empty_response_diagnostics,
+)
 
 # ── 확률 파라미터 ─────────────────────────────────────────
 BASE_FERTILE    = 0.27   # 가임기 단발 기준 확률
@@ -37,14 +42,14 @@ DAY_WEIGHT: dict[int, float] = {
 }
 
 # ── 사정·절정 표현 pre-filter (LLM 호출 전 빠른 제외) ──────
-# 직접 표현뿐 아니라 간접 절정 묘사·콘돔 파열도 포함해 false negative를 최소화한다.
+# 독립적인 "쏟아졌다" 같은 동사는 빛/물/가루 묘사와 충돌하므로 성적 맥락이 붙은 표현만 둔다.
 _EJAC_RE = re.compile(
     # 직접 사정 표현
     r"질내사정"
     r"|(?:안|속)에\s*(?:쏟|싸|쌌|뿌렸|채웠|사정)"
     r"|자궁\s*(?:안|속)에\s*(?:쏟|싸|뿌렸|사정)"
+    r"|(?:정액|하얀\s*액체|체액)\s*(?:을|를)?\s*(?:쏟|싸|쌌|뿌렸|채웠)"
     r"|사정\s*(?:했|해버렸|해\s*버렸|하고\s*말았|하며)"
-    r"|뿌렸다|뿌렸어|쏟아냈다|쏟아졌다"
     # 절정·클라이막스 (간접 묘사)
     r"|절정\s*(?:에\s*달했|을\s*맞이|했|에\s*이르|을\s*느)"
     r"|클라이막스"
@@ -52,6 +57,23 @@ _EJAC_RE = re.compile(
     # 콘돔·고무 파열과 함께하는 삽입 묘사
     r"|(?:찢어진|터진|파열된)\s*(?:라텍스|콘돔|고무)"
     r"|(?:라텍스|콘돔|고무\s*막)\s*(?:찢어지|터지|파열)"
+)
+
+_EXPLICIT_INTERNAL_EJAC_RE = re.compile(
+    r"질내사정"
+    r"|(?:질|보지|자궁|몸\s*안|안|속)\s*(?:에|으로|안에|속에)?\s*"
+    r"(?:정액을\s*)?(?:쏟|싸|쌌|뿌렸|채웠|사정)"
+    r"|(?:쏟|싸|쌌|뿌렸|채웠|사정).*?(?:질|보지|자궁|몸\s*안|안|속)"
+)
+
+_PROTECTED_CONDOM_RE = re.compile(
+    r"(?:콘돔|라텍스|고무)\s*(?:을|를|이|가)?\s*(?:꼈|끼고|낀|착용|쓴|사용)"
+    r"|(?:콘돔|라텍스|고무)\s*(?:안|속)"
+)
+
+_BROKEN_OR_ABSENT_CONDOM_RE = re.compile(
+    r"(?:콘돔|라텍스|고무)\s*(?:없이|안\s*끼|안\s*꼈|찢|터지|파열|벗겨|빠지)"
+    r"|(?:생으로|노콘)"
 )
 
 _EJAC_CLASSIFY_SYSTEM = """\
@@ -87,18 +109,34 @@ async def _classify_ejaculation(actor_response: str) -> dict:
     """
     model = get_model(model_name=_FLASH_MODEL, system_prompt=_EJAC_CLASSIFY_SYSTEM)
     try:
+        config = {"max_output_tokens": 32, "temperature": 0.0}
         response = await model.generate_content_async(
             actor_response[:3000],
-            generation_config={
-                "max_output_tokens": 32,
-                "temperature": 0.0,
-                "response_mime_type": "application/json",
-            },
+            generation_config={**config, "response_mime_type": "application/json"},
         )
-        return extract_json_from_llm(get_response_text(response), source="ejac_classifier") or {}
+        raw = get_response_text(response)
+        if not raw.strip():
+            log_empty_response_diagnostics(response, "ejac_classifier:json_mode")
+            response = await model.generate_content_async(actor_response[:3000], generation_config=config)
+            raw = get_response_text(response)
+        if not raw.strip():
+            log_empty_response_diagnostics(response, "ejac_classifier:retry")
+            return {}
+        return extract_json_from_llm(raw, source="ejac_classifier") or {}
     except Exception as e:
         print(f"[PregnancyMgr] ejaculation classify failed: {e}")
         return {}
+
+
+def _has_explicit_unprotected_internal_ejaculation(actor_response: str) -> bool:
+    """LLM 실패 시 사용할 엄격한 질내사정 fallback을 판정합니다."""
+    if not _EXPLICIT_INTERNAL_EJAC_RE.search(actor_response):
+        return False
+    if _BROKEN_OR_ABSENT_CONDOM_RE.search(actor_response):
+        return True
+    if _PROTECTED_CONDOM_RE.search(actor_response):
+        return False
+    return True
 
 
 async def detect_internal_ejaculation(actor_response: str) -> bool:
@@ -106,7 +144,7 @@ async def detect_internal_ejaculation(actor_response: str) -> bool:
 
     1단계: regex pre-filter — 사정 표현 없으면 즉시 False
     2단계: Flash 분류 — 질내 여부·콘돔 상태 판단
-    Flash 실패 시 임신 가능으로 처리(False negative 방지).
+    Flash 실패 시 명시적·무방비 질내사정 표현이 있을 때만 True.
     """
     if not _EJAC_RE.search(actor_response):
         return False
@@ -117,9 +155,10 @@ async def detect_internal_ejaculation(actor_response: str) -> bool:
 
     print(f"[PregnancyMgr] ejac classify → vaginal={vaginal} condom_protected={condom_protected}")
 
-    # Flash 실패(빈 dict) → 사정 표현이 있으니 임신 가능으로 fallback
     if vaginal is None:
-        return True
+        fallback = _has_explicit_unprotected_internal_ejaculation(actor_response)
+        print(f"[PregnancyMgr] ejac classify fallback → explicit_internal={fallback}")
+        return fallback
     if not vaginal:
         return False
     if condom_protected:

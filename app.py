@@ -10,6 +10,10 @@
 # Functions
 #   - set_chat_profiles(current_user: cl.User | None) -> list[cl.ChatProfile] : 세계관 선택 드롭다운
 #   - _thread_db_path(thread_id: str) -> str : 스레드별 Kuzu DB 경로 결정
+#   - _profile_from_thread(thread: ThreadDict) -> str | None : 스레드 태그/메타데이터에서 ChatProfile 이름 복구
+#   - _resolve_thread_world(thread: ThreadDict) -> tuple[str, str | None] : 스레드의 world/scenario 선택값 복구
+#   - _is_closed_connection_error(exc: BaseException) -> bool : 종료 중 닫힌 연결 예외 판별
+#   - _close_session_driver() -> None : 현재 세션의 Kuzu 드라이버 정리
 #   - on_chat_start() -> None : 신규 세션 초기화 및 오프닝 씬 출력
 #   - on_chat_resume(thread: ThreadDict) -> None : 기존 채팅방 재개 시 세션 복원
 #   - _remove_legacy_graph_steps(steps: list[dict]) -> None : 이전 그래프 메시지 제거
@@ -135,6 +139,44 @@ def _thread_db_path(thread_id: str) -> str:
     if root_schema.exists():
         return str(root_schema)
     return str(data_schema)
+
+
+def _profile_from_thread(thread: ThreadDict) -> str | None:
+    """스레드 태그/메타데이터에서 ChatProfile 이름을 복구합니다."""
+    metadata = thread.get("metadata") or {}
+    for tag in thread.get("tags") or []:
+        if isinstance(tag, str) and tag:
+            return tag
+    profile = metadata.get("chat_profile")
+    return str(profile) if profile else None
+
+
+def _resolve_thread_world(thread: ThreadDict) -> tuple[str, str | None]:
+    """스레드의 world_id/scenario_id를 metadata보다 ChatProfile 태그 우선으로 복구합니다."""
+    metadata = thread.get("metadata") or {}
+    profile = _profile_from_thread(thread)
+    if profile:
+        return _parse_profile_name(profile)
+    return metadata.get("world_id") or WORLD_ID, metadata.get("scenario_id")
+
+
+def _is_closed_connection_error(exc: BaseException) -> bool:
+    """종료 중 닫힌 Kuzu/웹소켓 연결에서 발생한 예외인지 확인합니다."""
+    message = str(exc).lower()
+    return "connection is closed" in message or "connection closed" in message
+
+
+def _close_session_driver() -> None:
+    """현재 Chainlit 세션의 Kuzu 드라이버를 레지스트리에서 제거하고 닫습니다."""
+    db_path = cl.user_session.get("db_path")
+    driver = None
+    if db_path:
+        driver = _ACTIVE_DRIVERS.pop(db_path, None)
+    if driver is None:
+        driver = cl.user_session.get("db_driver")
+    if driver is not None:
+        driver.close()
+    cl.user_session.set("db_driver", None)
 
 
 @cl.set_chat_profiles
@@ -286,9 +328,11 @@ async def _ensure_db_driver() -> None:
     # 신규 채팅의 첫 메시지 시점에 스레드 메타데이터 저장 (빈 채팅방 사이드바 등록 방지)
     try:
         thread_id = cl.context.session.thread_id
+        tag = f"{world_id}/{scenario_id}" if scenario_id else world_id
         await cl.data_layer.update_thread(
             thread_id=thread_id,
             metadata={"world_id": world_id, "scenario_id": scenario_id},
+            tags=[tag],
         )
     except Exception:
         pass
@@ -727,12 +771,18 @@ async def on_chat_start() -> None:
 @cl.on_chat_resume
 async def on_chat_resume(thread: ThreadDict) -> None:
     """기존 채팅방을 재개할 때 세션 변수를 스레드 데이터로 복원합니다."""
-    metadata    = thread.get("metadata") or {}
-    world_id    = metadata.get("world_id")    or WORLD_ID
-    scenario_id = metadata.get("scenario_id")
-    thread_id   = thread["id"]
+    world_id, scenario_id = _resolve_thread_world(thread)
+    thread_id = thread["id"]
 
     await _init_session_world(world_id, thread_id, scenario_id)
+    try:
+        await cl.data_layer.update_thread(
+            thread_id=thread_id,
+            metadata={"world_id": world_id, "scenario_id": scenario_id},
+            tags=[f"{world_id}/{scenario_id}" if scenario_id else world_id],
+        )
+    except Exception:
+        pass
 
     steps = thread.get("steps") or []
     await _remove_legacy_graph_steps(steps)
@@ -766,27 +816,29 @@ async def on_chat_resume(thread: ThreadDict) -> None:
 @cl.on_chat_end
 async def on_chat_end() -> None:
     """채팅 종료 시 미확정 pending을 세션 종료 전에 강제 처리합니다."""
-    db_path = cl.user_session.get("db_path")
-    if db_path:
-        stale = _ACTIVE_DRIVERS.pop(db_path, None)
-        if stale is None:
-            stale = cl.user_session.get("db_driver")
-        if stale is not None:
-            stale.close()
-
     pending = cl.user_session.get("pending_commit")
-    if not pending:
+    if pending:
+        world_id, pc_id, npc_id, _, world_config = _wv()
+        try:
+            await commit_pending(
+                pending=pending,
+                world_id=world_id,
+                pc_id=pc_id,
+                npc_id=npc_id,
+                world_config=world_config,
+                scheduler=_get_scheduler(world_id),
+                show_toast=False,
+            )
+            cl.user_session.set("pending_commit", None)
+        except Exception as exc:
+            if not _is_closed_connection_error(exc):
+                raise
+    try:
+        _close_session_driver()
+    except Exception as exc:
+        if not _is_closed_connection_error(exc):
+            raise
         return
-    world_id, pc_id, npc_id, _, world_config = _wv()
-    await commit_pending(
-        pending=pending,
-        world_id=world_id,
-        pc_id=pc_id,
-        npc_id=npc_id,
-        world_config=world_config,
-        scheduler=_get_scheduler(world_id),
-        show_toast=False,
-    )
 
 
 # ════════════════════════════════════════════════════════════

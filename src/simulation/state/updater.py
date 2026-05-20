@@ -45,8 +45,11 @@ from src.simulation.state.dynamic_information import (
     apply_multi_character_dynamic_information_updates,
 )
 from src.simulation.state.events import (
+    _append_to_event,
     _apply_relationship_status,
+    _close_event,
     _create_event,
+    _fetch_active_event,
     _get_current_iso_time,
     _update_acceptance_scores,
     delegate_complex_update,
@@ -130,42 +133,24 @@ NEVER negative. Max +3 per turn.
 Analyze the scene. Return updates ONLY for Main NPC ({npc_id}) and the ({npc_id})<->{pc_id}) relationship.
 CRITICAL: Do NOT assign secondary characters' injuries or emotions to {npc_id}."""
 
-    prompt = f"""## Classification
-LITERAL: Direct physical events: injury, illness, confirmed physical state, clothing description.
-  Examples: "팔을 다쳤다" / "발목을 삐었다" / "코트를 걸쳤다" / "새 옷을 입었다"
-FIGURATIVE: Emotional or metaphorical language. NEVER touch physical_condition / injury_detail.
-  Examples: "심장이 찢어질 것 같아" / "죽고 싶다" / "머리가 터질 것 같아"
+    prompt = f"""LITERAL=physical facts (injury/illness/clothing). FIGURATIVE=emotion/metaphor — never touch physical_condition/injury_detail.
 
-## DynamicState: extract ONLY actually changed fields
-Always extractable:
-- mood: calm/happy/sad/angry/anxious/tired/annoyed/excited
-- emotional_state: short Korean phrase reflecting inner feeling (e.g. "설렘", "불안", "안도", "긴장")
-- mental_condition: stable/stressed/anxious/depressed/exhausted
-- stress_level: JSON number from 0 to 10 ONLY. Never return strings like "high", "low", or "5".
-  10=life-altering crisis or breakdown, 5=clear conflict or strong distress, 3=noticeable tension, 0=calm day.
-- workplace_stress_level: JSON number from 0 to 10 ONLY. Never return strings like "high", "low", or "5".
-  10=public professional disaster, 6=serious workplace pressure, 2=minor awkwardness, 0=no workplace stress.
-- outfit: current clothing IF explicitly described (Korean, <= 50 chars). Omit entirely if not mentioned.
-- injury_marks: "없음" or visible injury description. Only update if changed this scene.
+DynamicState — extract ONLY changed fields:
+mood: calm/happy/sad/angry/anxious/tired/annoyed/excited
+emotional_state: Korean phrase (e.g. "설렘","불안","안도")
+mental_condition: stable/stressed/anxious/depressed/exhausted
+stress_level: 0-10 int. 10=breakdown,5=conflict,3=tension,0=calm
+workplace_stress_level: 0-10 int. 10=public disaster,6=pressure,2=minor,0=none
+outfit: only if explicitly described (Korean,≤50ch)
+injury_marks: "없음" / description — only if changed
+LITERAL only: physical_condition(healthy/fatigued/injured/ill/hospitalized), injury_detail
+Rare (omit if not triggered): age(birthday/year pass), circle_level(mana breakthrough), robe_grade(bronze/silver/gold/platinum/crimson)
+All numeric = JSON numbers, not strings.
 
-LITERAL only:
-- physical_condition: healthy/fatigued/injured/ill/hospitalized
-- injury_detail: body part + type (LITERAL events only)
-
-Rare growth events (omit entirely if not triggered this scene):
-- age: JSON integer. Increment ONLY when narration explicitly confirms a birthday or year passing.
-- circle_level: JSON integer. Update ONLY when a character explicitly achieves a new mana circle breakthrough.
-- robe_grade: string. Update ONLY on confirmed Academy robe promotion. Values: "bronze"/"silver"/"gold"/"platinum"/"crimson".
-
-Numeric fields must be JSON numbers, not quoted strings. Correct: {{"dynamic_state": {{"stress_level": 8}}}}. Wrong: {{"dynamic_state": {{"stress_level": "high"}}}}.
-
-## Relationship delta
-Integer (e.g. +5 or -10). null if unchanged.
-- Default to null for routine talk, proximity, embarrassment, or unchanged rapport.
-- Use -2..+2 for small but visible warmth, irritation, concern, or disappointment.
-- Use -5..+5 only for a meaningful scene-level shift.
-- Use -10..+10 only for rare relationship milestones: confession, betrayal, rescue, decisive reconciliation, near-breakup, or first intimacy.
-- Do not use repeated mild intimacy, politeness, or compliance as automatic affinity growth.
+Relationship delta: int or null.
+null=routine/proximity/embarrassment/no change.
+±1=small visible shift. ±2=clear scene-level shift. ±3=rare milestone (confession/betrayal/rescue/reconciliation/near-breakup).
+Sex (incl. first intimacy) ≠ affinity milestone. No growth from intimacy/politeness/arousal alone.
 {ts_section}
 Return ONLY valid JSON:
 {{
@@ -196,49 +181,51 @@ async def _run_event_creation(
     npc_id:         str,
     pc_id:          str,
     recent_context: str = "",
+    active_event:   dict | None = None,
 ) -> dict:
     """
-    Run the event model to decide whether the scene should become an Event.
-    DynamicState and relationship deltas are not handled here.
+    Run the event model to decide whether the scene should create/continue/close an Event.
 
-    Returns: {new_event: null | {...}}
+    Returns: {action: "none|continue|close|close_create|create", new_event: null | {...}}
     """
     from src.core.llm.client import get_model, extract_json_from_llm
 
-    system_instruction = (
-        f"You are a narrative archivist for a Korean roleplay simulation. "
-        f"Decide whether this scene warrants creating a lasting Event record. "
-        f"Focus on {npc_id} and {pc_id}."
-    )
+    system_instruction = f"Narrative archivist for Korean roleplay. Decide event action for this scene. Focus on {npc_id}/{pc_id}."
 
-    prompt = f"""## Event Importance Scale
-8-10: Major: hospitalization after accident, first confession, surgery, death, marriage
-5-7: Significant: first meeting, major fight + real reconciliation, first intimacy, near-breakup, public humiliation
-2-4: Minor but memorable: new injury encountered for the first time, new named character met, promise, secret revealed, gift/item exchanged, meaningful location transition, a new object/document becoming relevant, a durable role/authority interaction, a turn that creates a concrete unresolved task, or small durable relationship beat
-0-1: DO NOT create: routine chat, pure atmosphere, repeated follow-up, daily interaction with no lasting change
+    if active_event:
+        turns = active_event.get("turn_count", 1)
+        active_block = f"""
+Active event [{active_event['id']}] — turn {turns} — {active_event.get('summary', '')}
+→ "continue": same event still in progress. "close": event has concluded/topic changed. "close_create": closes AND a separate new event starts this turn.
+"""
+        actions_hint = '"continue"/"close"/"close_create"(close+new)/"create"(new, ignore active)/"none"'
+    else:
+        active_block = ""
+        actions_hint = '"create"(importance≥2)/"none"'
 
-Create an Event if importance >= 2.
-When uncertain between null and a minor durable beat, prefer an importance 2 Event.
-
-## When creating an event
-- id format: {{location}}_{{description}}_{{YYYYMMDD_HHMM}}
-- summary: 1-2 sentence Korean narrative summary
-- memory_type: one of: episodic (something that happened), emotional (a felt moment/shift), relational (relationship milestone)
-- narrative_summary: 1 sentence, Actor-facing story continuity hook
-- state_summary: 1 sentence, factual state/relationship preservation (who did what to whom)
-- importance: integer 2-10
-- impact: brief phrase describing the lasting effect
-
-When importance >= 7, also add:
-- new_relationship_status: 1-2 English sentences describing the relationship state AFTER this event, specific about what shifted
+    prompt = f"""Importance:
+8-10: Major (hospitalization/confession/surgery/death/marriage)
+5-7: Significant (first meeting/major fight+reconciliation/VERY FIRST emotional intimacy/near-breakup/public humiliation)
+2-4: Minor durable (new injury/new named char/promise/secret/gift/location transition/new object or doc/repeated sex incl. arrangement)
+0-1: Skip (routine/atmosphere/repeated follow-up)
+{active_block}
+action: {actions_hint}
+For create/close_create include event_data fields:
+  id: {{location}}_{{description}}_{{YYYYMMDD_HHMM}}
+  summary: 1-2 sentence Korean narrative
+  memory_type: episodic/emotional/relational
+  narrative_summary: 1 sentence Actor continuity hook
+  state_summary: 1 sentence factual (who did what)
+  importance: 2-10 | impact: brief phrase
+  importance >= 7 → new_relationship_status: 1-2 English sentences (state AFTER)
 
 Return ONLY valid JSON:
 {{
+  "action": "none",
   "new_event": null
 }}
 
-Recent thread context:
-{recent_context[-3000:] if recent_context else "(none)"}
+Context: {recent_context[-2000:] if recent_context else "(none)"}
 
 Scene:
 {actor_response[:2000]}"""
@@ -264,19 +251,20 @@ async def _run_combined_update(
     pc_id:          str,
     world_config:   dict | None = None,
     recent_context: str = "",
+    active_event:   dict | None = None,
 ) -> dict:
     """
     Run both LLM workers concurrently:
       - Flash (COMPLEX_MODEL): DynamicState extraction + relationship delta
-      - Pro (EVENT_MODEL): event creation decision
+      - Pro (EVENT_MODEL): event creation/continuation decision
 
     Returns:
-        {dynamic_state, relationship_delta, new_event,
+        {dynamic_state, relationship_delta, action, new_event,
          ts_acceptance_delta?, northern_attachment_delta?}
     """
     state_result, event_result = await asyncio.gather(
         _run_state_update(actor_response, npc_id, pc_id, world_config),
-        _run_event_creation(actor_response, npc_id, pc_id, recent_context),
+        _run_event_creation(actor_response, npc_id, pc_id, recent_context, active_event),
         return_exceptions=True,
     )
     if isinstance(state_result, Exception):
@@ -289,7 +277,11 @@ async def _run_combined_update(
         event_plan = {}
     else:
         event_plan = event_result
-    return {**state_plan, "new_event": event_plan.get("new_event")}
+    return {
+        **state_plan,
+        "action": event_plan.get("action", "none"),
+        "new_event": event_plan.get("new_event"),
+    }
 
 
 _EVENT_CREATION_SIGNAL_RE = re.compile(
@@ -389,6 +381,14 @@ async def process_actor_response(
         except Exception as e:
             print(f"[RelationshipUpdater] primary relationship ensure failed (ignored): {e}")
 
+    # 현재 열린 이벤트 조회 (npc/pc 쌍 기준)
+    active_event: dict | None = None
+    if npc_id != pc_id:
+        try:
+            active_event = await _fetch_active_event(npc_id, pc_id)
+        except Exception as _ae_err:
+            print(f"[EventAccum] active_event fetch failed (ignored): {_ae_err}")
+
     if scene_types and not _needs_classification(actor_response, scene_types):
         print("[StateUpdater] skipped (no state-relevant change)")
         # 두 추출 작업은 서로 독립적이므로 병렬 실행
@@ -406,8 +406,28 @@ async def process_actor_response(
             )
         if npc_id != pc_id and _has_event_creation_signal(actor_response, participant_ids, manager_effects):
             try:
-                event_plan = await _run_event_creation(actor_response, npc_id, pc_id, recent_event_context)
-                new_event, event_candidate = _audit_event_candidate(event_plan.get("new_event"), actor_response)
+                event_plan = await _run_event_creation(
+                    actor_response, npc_id, pc_id, recent_event_context, active_event
+                )
+                action = event_plan.get("action", "none")
+                new_event: dict | None = None
+                event_candidate: dict | None = None
+
+                if action == "continue" and active_event:
+                    await _append_to_event(active_event["id"], actor_response)
+                elif action == "close" and active_event:
+                    await _close_event(active_event["id"], npc_id, pc_id)
+                elif action in ("close_create", "create"):
+                    if active_event and action == "close_create":
+                        await _close_event(active_event["id"], npc_id, pc_id)
+                    new_event, event_candidate = _audit_event_candidate(
+                        event_plan.get("new_event"), actor_response
+                    )
+                elif event_plan.get("new_event"):
+                    new_event, event_candidate = _audit_event_candidate(
+                        event_plan.get("new_event"), actor_response
+                    )
+
                 if event_candidate:
                     print(f"[EventDiff] {json.dumps(event_candidate, ensure_ascii=False)}")
                 _write_state_audit_snapshot(
@@ -419,7 +439,7 @@ async def process_actor_response(
                     feasibility_audit=feasibility_audit,
                 )
                 if new_event:
-                    await _create_event(new_event, npc_id, pc_id)
+                    await _create_event(new_event, npc_id, pc_id, actor_response)
             except Exception as e:
                 print(f"[StateUpdater] low-change event creation failed (ignored): {e}")
         return None
@@ -478,7 +498,9 @@ async def process_actor_response(
         participant_ids,
     ))
     try:
-        plan = await _run_combined_update(actor_response, npc_id, pc_id, world_config, recent_event_context)
+        plan = await _run_combined_update(
+            actor_response, npc_id, pc_id, world_config, recent_event_context, active_event
+        )
     except Exception as e:
         print(f"[StateUpdater] combined update failed (ignored): {e}")
         await auxiliary_task
@@ -536,9 +558,28 @@ async def process_actor_response(
         except Exception as e:
             print(f"[StateUpdater] TS scoring update failed (ignored): {e}")
 
-    # Create Event and update relationship status when importance is high enough.
+    # Create/continue/close Event based on action.
+    new_event: dict | None = None
     try:
-        new_event, event_candidate = _audit_event_candidate(plan.get("new_event"), actor_response)
+        action = plan.get("action", "none")
+        event_candidate: dict | None = None
+
+        if action == "continue" and active_event:
+            await _append_to_event(active_event["id"], actor_response)
+
+        elif action == "close" and active_event:
+            await _close_event(active_event["id"], npc_id, pc_id)
+
+        elif action in ("close_create", "create"):
+            if active_event and action == "close_create":
+                await _close_event(active_event["id"], npc_id, pc_id)
+            new_event, event_candidate = _audit_event_candidate(plan.get("new_event"), actor_response)
+
+        else:
+            # "none" or backward-compat: LLM may return new_event without action field
+            if plan.get("new_event"):
+                new_event, event_candidate = _audit_event_candidate(plan.get("new_event"), actor_response)
+
         if event_candidate:
             print(f"[EventDiff] {json.dumps(event_candidate, ensure_ascii=False)}")
         _write_state_audit_snapshot(
@@ -552,7 +593,7 @@ async def process_actor_response(
             feasibility_audit       = feasibility_audit,
         )
         if new_event:
-            await _create_event(new_event, npc_id, pc_id)
+            await _create_event(new_event, npc_id, pc_id, actor_response)
             new_status = new_event.get("new_relationship_status")
             event_importance = _safe_int(new_event.get("importance"), 0)
             if new_status and event_importance >= 7:

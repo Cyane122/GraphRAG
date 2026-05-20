@@ -146,31 +146,22 @@ async def _run_dynamic_information_update(
     current_sexual_info = current_info.get("sexual_information", "(not set)")
     allowed_fields = set(current_info)
 
-    system_instruction = (
-        "You are a conservative DynamicInformation updater for a Korean roleplay system. "
-        "Update only durable, explicit facts about the target character."
-    )
+    system_instruction = "Conservative DynamicInformation updater for Korean roleplay. Update only durable, explicit facts."
     prompt = f"""Target character id: {npc_id}
 Scene date/time: {scene_time}
 Scene location: {scene_location}
 
-=== Current DynamicInformation (full) ===
+=== Current DynamicInformation ===
 {json.dumps(current_info, ensure_ascii=False, indent=2)}
 
-=== Current sexual_information (for reference) ===
+=== Current sexual_information ===
 {current_sexual_info}
 
-Extract slow-changing DynamicInformation updates for the target character only.
-
-Allowed fields are exactly the current DynamicInformation keys:
+Extract slow-changing DynamicInformation for target only.
+Allowed fields:
 {_field_lines(allowed_fields)}
 
-Rules:
-- Preserve all existing facts; only replace the part that changed. Return the full updated string for any changed field.
-- Do not infer hidden changes from arousal, mood, or embarrassment alone. However, virginity loss MUST be recorded if current Experience is "Virgin" and intercourse explicitly occurs in the scene.
-- For any field, update only when the scene explicitly changes a durable fact represented by that field.
-- Do not update DynamicState fields here.
-- Omit unchanged fields.
+Rules: Preserve all existing; return full updated string for changed field. No inference from arousal/mood/embarrassment. Exception: virginity loss MUST be recorded (Experience="Virgin" + explicit intercourse). No DynamicState fields. Omit unchanged.
 
 Return ONLY valid JSON:
 {{
@@ -269,30 +260,16 @@ async def _run_multi_char_dynamic_info_update(
         )
     npc_block = "\n\n".join(npc_sections)
 
-    system_instruction = (
-        "You are a conservative DynamicInformation updater for a Korean roleplay system. "
-        "Update only durable, explicit facts. Never invent changes not in the scene."
-    )
+    system_instruction = "Conservative DynamicInformation updater for Korean roleplay. Update only durable, explicit facts. Never invent changes."
     prompt = f"""Scene date/time: {scene_time}
 Scene location: {scene_location}
 
-=== Character profiles (current DynamicInformation) ===
+=== Character profiles ===
 {npc_block}
 
-For each character listed above, extract slow-changing DynamicInformation updates where an explicit change occurred in the scene.
-The PC/player is an in-world character and MUST be updated when explicit durable facts changed.
-Omit characters whose information did not change.
+Extract slow-changing DynamicInformation for each character above. PC is an in-world character — update when explicit durable facts changed. Omit unchanged characters. Use only each character's allowed fields (listed above); no absent fields.
 
-Allowed fields are listed separately for each character above.
-Do not return fields that are absent from that character's current DynamicInformation.
-
-Rules:
-- Return the full updated string (all sub-fields preserved, only changed part replaced) for any changed field.
-- Virginity loss MUST be recorded when current Experience is "Virgin" and intercourse explicitly occurs.
-- For any field, update only when the scene explicitly changes a durable fact represented by that field.
-- Do not infer from arousal, mood, or embarrassment alone.
-- Do not update DynamicState fields.
-- Omit unchanged characters entirely.
+Rules: return full updated string for changed fields; virginity loss MUST be recorded (Experience="Virgin" + explicit intercourse); no inference from arousal/mood/embarrassment; no DynamicState fields; omit unchanged.
 
 Return ONLY valid JSON:
 {{

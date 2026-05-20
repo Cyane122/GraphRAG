@@ -122,26 +122,14 @@ async def _generate_sns_batch(candidates: list[dict]) -> list[str]:
         for c in candidates
     ]
 
-    system_instruction = "You are generating realistic Korean SNS posts for fictional characters in a slice-of-life roleplay."
+    system_instruction = "Generate realistic Korean SNS posts for fictional characters in a slice-of-life roleplay."
 
-    prompt = f"""Each character just did something. Write a short post they might upload to their feed.
+    prompt = f"""Write a short SNS post each character might upload after their recent action.
+1-2 lines, casual Korean. Match personality from name/action. Natural emoji (or none). No direct need mentions. Sound like a real person. Varied styles.
 
-Rules:
-- 1–2 lines max, casual Korean
-- Match the character's personality if inferable from their name/action
-- Natural emoji use — but no spam. Some characters may use none.
-- Do NOT mention the need (hunger/social/etc.) directly
-- Sound like a real person, not AI
-- Varied styles: some melancholic, some cheerful, some mundane
-
-Input:
 {json.dumps(items, ensure_ascii=False, indent=2)}
 
-Return ONLY a JSON array. Each element:
-{{
-  "id": "<same event_id>",
-  "post_text": "<post content only — no handle, no prefix>"
-}}"""
+Return ONLY JSON array: [{{"id":"<same event_id>","post_text":"<post only — no handle/prefix>"}},...]"""
 
     try:
         model = get_model(NARRATOR_MODEL, system_prompt=system_instruction)

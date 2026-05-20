@@ -73,12 +73,12 @@ _FIELD_EVIDENCE: dict[str, re.Pattern] = {
 _COMMIT_CONFIDENCE = 0.60
 _STATE_AUDIT_DIR = Path("logs/state_audit")
 _RELATIONSHIP_ROUTINE_DELTA_CAP = 2
-_RELATIONSHIP_MEANINGFUL_DELTA_CAP = 5
-_RELATIONSHIP_MILESTONE_DELTA_CAP = 10
+_RELATIONSHIP_MEANINGFUL_DELTA_CAP = 4
+_RELATIONSHIP_MILESTONE_DELTA_CAP = 6
 _RELATIONSHIP_MILESTONE_RE = re.compile(
     r"(confess|confession|reconcile|reconciliation|breakup|betray|saved|rescue|"
     r"first intimacy|near-death|life-saving|고백|화해|이별|배신|구해|구했다|구해줬|"
-    r"목숨|첫 관계|처음으로|결정적|돌이킬 수)",
+    r"목숨|첫 관계|결정적|돌이킬 수)",
     re.IGNORECASE,
 )
 

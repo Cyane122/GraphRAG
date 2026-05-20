@@ -218,7 +218,18 @@ def render_events_section(events: list[dict], char_name: str, user_name: str) ->
         return "<recent_events>없음</recent_events>"
     lines = []
     for event in events:
-        line = f"- [{event.get('timestamp', '?')}] {event.get('summary', '')}"
+        status = event.get("status") or "closed"
+        if status == "active":
+            turns = event.get("turn_count") or 1
+            label = f"[진행중 {turns}턴]"
+            line = f"- [{event.get('timestamp', '?')}] {label} {event.get('summary', '')}"
+            # active 이벤트는 최근 내용 미리보기 포함
+            content = (event.get("content") or "").strip()
+            if content:
+                preview = content[-1200:]  # 마지막 1200자 (최근 턴 중심)
+                line += f"\n  [최근 내용]\n  {preview}"
+        else:
+            line = f"- [{event.get('timestamp', '?')}] {event.get('summary', '')}"
         npc_mem = event.get("npc_memory")
         pc_mem = event.get("pc_memory")
         if npc_mem:

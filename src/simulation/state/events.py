@@ -19,6 +19,129 @@ from src.core.embedding.encoder import embed_async
 from src.simulation.systems.memory import ensure_memories_for_event
 from src.simulation.state.audit import _prepare_event_summaries
 
+async def _fetch_active_event(npc_id: str, pc_id: str) -> dict | None:
+    """RELATIONSHIP.active_event_id에서 현재 열린 이벤트를 조회한다."""
+    async with async_driver.session() as session:
+        rec = await session.run("""
+            MATCH (a:Character {id: $a})-[r:RELATIONSHIP]->(b:Character {id: $b})
+            WHERE r.active_event_id IS NOT NULL AND r.active_event_id <> ''
+            RETURN r.active_event_id AS eid
+        """, a=npc_id, b=pc_id)
+        row = await rec.single()
+    if not row or not row.get("eid"):
+        return None
+    eid = row["eid"]
+    async with async_driver.session() as session:
+        rec2 = await session.run("""
+            MATCH (e:Event {id: $eid})
+            RETURN e.id AS id, e.summary AS summary, e.content AS content,
+                   e.turn_count AS turn_count, e.timestamp AS timestamp, e.importance AS importance
+        """, eid=eid)
+        row2 = await rec2.single()
+    return dict(row2) if row2 else None
+
+
+async def _append_to_event(event_id: str, actor_response: str) -> None:
+    """이벤트에 새 턴 내용을 추가한다."""
+    async with async_driver.session() as session:
+        await session.run("""
+            MATCH (e:Event {id: $eid})
+            SET e.content = e.content + '\n---\n' + $addition,
+                e.turn_count = coalesce(e.turn_count, 1) + 1
+        """, eid=event_id, addition=actor_response[:3000])
+    print(f"[EventAccum] turn appended: {event_id}")
+
+
+async def _compress_event_content(content: str, turns: int) -> dict:
+    """누적된 이벤트 내용을 LLM으로 압축해 최종 summary를 반환한다."""
+    from src.core.llm.client import get_model, extract_json_from_llm
+
+    prompt = f"""Compress {turns} turns of a roleplay event into a final record.
+
+Content:
+{content[:5000]}
+
+Return ONLY valid JSON:
+{{
+  "summary": "2-4 sentence Korean narrative (comprehensive — who, what, how it concluded)",
+  "narrative_summary": "1 sentence actor hook",
+  "state_summary": "1 sentence factual (who did what, outcome)"
+}}"""
+
+    try:
+        model = get_model(
+            model_name=NARRATIVE_MODEL,
+            system_prompt="Compress roleplay event content into a final record.",
+        )
+        resp = await model.generate_content_async(
+            prompt,
+            generation_config={"temperature": 0.0, "max_output_tokens": 512, "response_mime_type": "application/json"},
+        )
+        result = extract_json_from_llm(resp.text, source="event_compress")
+        if isinstance(result, dict):
+            return result
+    except Exception as e:
+        print(f"[EventAccum] 압축 실패 (무시): {e}")
+    return {}
+
+
+async def _update_event_memories(event_id: str, new_summaries: dict) -> None:
+    """이벤트 닫힘 후 관련 Memory 노드 summary를 갱신한다."""
+    summary = new_summaries.get("summary", "")
+    if not summary:
+        return
+    async with async_driver.session() as session:
+        await session.run("""
+            MATCH (m:Memory)-[:OF_EVENT]->(e:Event {id: $eid})
+            SET m.summary = $summary,
+                m.narrative_summary = $ns,
+                m.state_summary = $ss
+        """, eid=event_id, summary=summary,
+             ns=new_summaries.get("narrative_summary", ""),
+             ss=new_summaries.get("state_summary", ""))
+
+
+async def _close_event(event_id: str, npc_id: str, pc_id: str) -> None:
+    """이벤트를 닫고 누적 내용을 압축해 최종 summary를 갱신한다."""
+    async with async_driver.session() as session:
+        rec = await session.run(
+            "MATCH (e:Event {id: $eid}) RETURN e.content AS content, e.turn_count AS turns",
+            eid=event_id,
+        )
+        row = await rec.single()
+    if not row:
+        return
+
+    content = row.get("content") or ""
+    turns = int(row.get("turns") or 1)
+    new_summaries: dict = {}
+    if turns > 1 and content:
+        new_summaries = await _compress_event_content(content, turns)
+
+    async with async_driver.session() as session:
+        await session.run(
+            "MATCH (e:Event {id: $eid}) SET e.status = 'closed'",
+            eid=event_id,
+        )
+        if new_summaries.get("summary"):
+            await session.run("""
+                MATCH (e:Event {id: $eid})
+                SET e.summary = $s, e.narrative_summary = $ns, e.state_summary = $ss
+            """, eid=event_id,
+                 s=new_summaries["summary"],
+                 ns=new_summaries.get("narrative_summary", ""),
+                 ss=new_summaries.get("state_summary", ""))
+        await session.run("""
+            MATCH (a:Character {id: $a})-[r:RELATIONSHIP]->(b:Character {id: $b})
+            SET r.active_event_id = ''
+        """, a=npc_id, b=pc_id)
+
+    if new_summaries.get("summary"):
+        await _update_event_memories(event_id, new_summaries)
+
+    print(f"[EventAccum] closed: {event_id} ({turns} turns)")
+
+
 async def _apply_relationship_status(char_a: str, char_b: str, new_status: str) -> None:
     """RELATIONSHIP 양방향 current_status를 갱신한다."""
     async with async_driver.session() as session:
@@ -57,36 +180,27 @@ async def _generate_event_plan(
     """
     from src.core.llm.client import get_model, extract_json_from_llm
 
-    system_instruction = f"You are a precise event recorder for a roleplay system. Focus on {npc_id} and {pc_id}."
+    system_instruction = f"Precise event recorder for a roleplay system. Focus on {npc_id}/{pc_id}."
 
-    prompt = f"""Initial state changes detected: {json.dumps(initial_changes, ensure_ascii=False)}
+    prompt = f"""Changes: {json.dumps(initial_changes, ensure_ascii=False)}
 
-Decide whether to create an Event node based on the scene below.
+Importance:
+8-10: Major (hospitalization/surgery/accident/confession)
+5-7: Significant (major injury/near-breakup/VERY FIRST emotional intimacy/public humiliation)
+2-4: Minor durable (new injury/new named char/promise/secret/gift/location transition/small durable conflict/repeated sex incl. arrangement)
+0-1: Skip (routine/atmosphere/repeated follow-up)
 
-## Event Importance
-8-10: Major (hospitalization, surgery, serious accident, first confession)
-5-7: Significant (major injury, near-breakup, first intimacy, public humiliation)
-2-4: Minor but memorable (first clinic visit for new injury, new named character, promise, secret, gift/item exchange, meaningful location transition, small durable conflict)
-0-1: DO NOT create (routine, pure atmosphere, repeated follow-up)
-
-Create an Event if importance >= 2. When uncertain between null and a minor durable beat, prefer importance 2.
-
-ID format: {{location}}_{{description}}_{{YYYYMMDD_HHMM}}
-
-When importance >= 7 add "new_relationship_status" to new_event:
-  1-3 sentences English describing the current relationship state after this event.
-
-When creating new_event include:
-- memory_type: one of episodic, emotional, relational.
-- narrative_summary: Actor-facing story continuity, 1 sentence.
-- state_summary: factual state/relationship preservation, 1 sentence.
+Create if importance >= 2. Uncertain → prefer importance 2.
+id: {{location}}_{{description}}_{{YYYYMMDD_HHMM}}
+importance >= 7 → new_relationship_status: 1-3 English sentences (state AFTER).
+Include: memory_type (episodic/emotional/relational), narrative_summary (1 sentence Actor hook), state_summary (1 sentence factual).
 
 Return ONLY valid JSON:
 {{
   "new_event": null
 }}
 
-Scene / OOC command:
+Scene:
 {input_text[:1500]}"""
 
     model = get_model(model_name=COMPLEX_MODEL, system_prompt=system_instruction)
@@ -152,7 +266,12 @@ async def _unique_event_id(base_id: str) -> str:
     return f"{safe_base}_{datetime.now().strftime('%H%M%S%f')}"
 
 
-async def _create_event(event_data: dict, npc_id: str, pc_id: str) -> None:
+async def _create_event(
+    event_data: dict,
+    npc_id: str,
+    pc_id: str,
+    actor_response: str = "",
+) -> None:
     """Event 노드 생성 + Memory 노드 생성까지 처리한다."""
     if not event_data or not event_data.get("id"):
         return
@@ -172,6 +291,8 @@ async def _create_event(event_data: dict, npc_id: str, pc_id: str) -> None:
         except Exception as e:
             print(f"[Updater] 임베딩 생성 실패 (무시): {e}")
 
+    content = actor_response[:3000] if actor_response else ""
+
     async with async_driver.session() as session:
         await session.run("""
             CREATE (:Event {
@@ -183,6 +304,9 @@ async def _create_event(event_data: dict, npc_id: str, pc_id: str) -> None:
                 memory_type:   $memory_type,
                 narrative_summary: $narrative_summary,
                 state_summary: $state_summary,
+                content:       $content,
+                status:        'active',
+                turn_count:    1,
                 decay_rate:    0.1,
                 summary_level: 0,
                 embedding:     $embedding
@@ -193,6 +317,7 @@ async def _create_event(event_data: dict, npc_id: str, pc_id: str) -> None:
             memory_type=prepared["memory_type"],
             narrative_summary=prepared["narrative_summary"],
             state_summary=prepared["state_summary"],
+            content=content,
             embedding=embedding,
         )
 
@@ -206,7 +331,8 @@ async def _create_event(event_data: dict, npc_id: str, pc_id: str) -> None:
         await session.run("""
             MATCH (a:Character {id: $a})-[r:RELATIONSHIP]->(b:Character {id: $b})
             SET r.shared_events    = coalesce(r.shared_events, []) + [$event_id],
-                r.last_interaction = $timestamp
+                r.last_interaction = $timestamp,
+                r.active_event_id  = $event_id
         """, a=npc_id, b=pc_id, event_id=event_data["id"], timestamp=timestamp_fmt)
 
     print(f"[Updater] event created: {event_data['id']} (importance={importance})")
@@ -248,18 +374,15 @@ async def update_relationship_narrative(
     affinity = row.get("affinity") or 0
     trust = row.get("trust") or 0
 
-    prompt = f"""Update this relationship summary based on a significant new event.
+    prompt = f"""Update relationship summary after a significant event.
 
-Previous summary: {current_summary or "(none yet)"}
-Current state: affinity={affinity}, trust={trust}
-New event (importance={event_importance}): {event_summary}
+Previous: {current_summary or "(none yet)"}
+State: affinity={affinity}, trust={trust}
+Event (importance={event_importance}): {event_summary}
 
-Write a new 2-3 sentence relationship summary reflecting the state AFTER this event.
-Capture: how they relate now, emotional undercurrents, unresolved tensions or new intimacy.
-Present tense. Korean is fine.
+2-3 sentences reflecting state AFTER. Capture: current dynamic, emotional undercurrents, unresolved tensions or new intimacy. Present tense. Korean OK.
 
-Return ONLY JSON:
-{{"summary": "..."}}"""
+Return ONLY JSON: {{"summary": "..."}}"""
 
     try:
         model = get_model(
@@ -312,7 +435,7 @@ async def delegate_complex_update(
 
     new_event = plan.get("new_event")
     if new_event:
-        await _create_event(new_event, npc_id, pc_id)
+        await _create_event(new_event, npc_id, pc_id, actor_response)
         new_status = new_event.get("new_relationship_status")
         if new_status and new_event.get("importance", 0) >= 7:
             await _apply_relationship_status(npc_id, pc_id, new_status)

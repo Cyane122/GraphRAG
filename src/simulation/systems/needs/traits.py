@@ -6,12 +6,25 @@
 # Functions
 #   - ensure_traits(char_id: str) -> dict : Generate and save missing trait_* fields with the LLM
 #   - ensure_traits_for_characters(characters: list[dict]) -> dict : Initialize traits from a character list
+#   - _has_nonzero_traits(props: dict) -> bool : Return whether saved traits contain a real bias
+#   - _trait_cache_context() -> tuple[str, str] : Return active world/scenario cache context
+#   - _safe_cache_name(value: str | None) -> str : Convert a context value into a safe path segment
+#   - _trait_cache_path() -> Path : Return the per-world/per-scenario local trait cache path
+#   - _legacy_trait_cache_path() -> Path | None : Return the legacy per-world cache path
+#   - _read_trait_cache() -> dict : Read local generated trait cache
+#   - _write_trait_cache(cache: dict) -> None : Persist local generated trait cache
+#   - _get_cached_traits(char_id: str) -> dict : Return cached traits for a character
+#   - _set_cached_traits(char_id: str, traits: dict) -> None : Store generated traits for a character
+#   - _sanitize_traits(values: dict) -> dict : Clamp and complete trait values
 #   - _default_traits() -> dict : Return all trait keys set to 0.0
-#   - _as_float(value, default: float = 0.0) -> float : Safe float conversion
+#   - _as_float(value: object, default: float = 0.0) -> float : Safe float conversion
 # ================================
+import asyncio
 import json
+import re
+from pathlib import Path
 
-from src.config import MODEL_STATE_UPDATER as TRAITS_MODEL
+from src.config import MODEL_STATE_UPDATER as TRAITS_MODEL, WORLD_ID
 from src.core.database import async_driver
 from src.core.llm.client import get_model, extract_json_from_llm
 
@@ -34,6 +47,9 @@ REQUIRED_KEYS = [
     "trait_hedonism", "trait_anxiety_prone", "trait_libido_drive",
     "trait_attachment", "trait_ambition", "trait_impulsivity",
 ]
+
+_CACHE_VERSION = 1
+_DEFAULT_SCENARIO_ID = "default"
 
 
 # ════════════════════════════════════════════════════════════
@@ -62,7 +78,16 @@ async def ensure_traits(char_id: str) -> dict:
         return _default_traits()
 
     if _is_traits_complete(profile) and _has_nonzero_traits(profile):
-        return {k: profile[k] for k in ALL_TRAIT_KEYS if k in profile}
+        traits = _sanitize_traits(profile)
+        if not await _get_cached_traits(char_id):
+            await _set_cached_traits(char_id, traits)
+        return traits
+
+    cached = await _get_cached_traits(char_id)
+    if cached:
+        await _write_traits_to_db(char_id, source_label, cached)
+        print(f"[TraitsInit] {char_id}: trait_* 없음 → 로컬 캐시 사용")
+        return cached
 
     personality = profile.get("personality", "")
     role        = profile.get("role", profile.get("job", ""))
@@ -90,6 +115,7 @@ async def ensure_traits(char_id: str) -> dict:
         return _default_traits()
 
     await _write_traits_to_db(char_id, source_label, generated)
+    await _set_cached_traits(char_id, generated)
     print(f"[TraitsInit] {char_id}: 트레이트 생성 완료 → DB 저장")
 
     return generated
@@ -161,29 +187,14 @@ async def _generate_traits_from_personality(
         "Your response must start with { and end with }."
     )
 
-    prompt = f"""Analyze the character's personality and generate their trait scores.
+    prompt = f"""Generate trait scores for {char_id} (age={age}, role={role}):
+{personality}
 
-Character Profile:
-- ID: {char_id}
-- Age: {age}
-- Role: {role}
-- Personality Description: {personality}
+Output: single JSON w/ ALL {len(ALL_TRAIT_KEYS)} keys — float -1.0 to 1.0 (positive=trait present, negative=opposite, 0=neutral).
+Keys: {keys_inline}
+Examples: "calm/logical/aloof"→extroversion:-0.4,impulsivity:-0.6; "loud/energetic"→extroversion:0.9,vitality:0.8; "strict/perfectionist"→diligence:0.9,perfectionism:0.9
 
-Instructions for JSON output:
-1. The output must be a single JSON object.
-2. Include ALL of the following {len(ALL_TRAIT_KEYS)} keys. Do not omit any.
-  - Keys: {keys_inline}
-3. Every key's value must be a float between -1.0 and 1.0.
-  - A positive value indicates a strong presence of the trait.
-  - A negative value indicates the opposite tendency.
-  - 0.0 means the trait is neutral.
-
-Mapping Examples:
-- "calm, logical, aloof" → "extroversion": -0.4, "impulsivity": -0.6, "control_need": 0.5
-- "loud, energetic, social" → "extroversion": 0.9, "vitality": 0.8, "laziness": -0.5
-- "strict, perfectionist" → "diligence": 0.9, "perfectionism": 0.9, "control_need": 0.8
-
-Return only the raw JSON object."""
+Return ONLY raw JSON."""
 
     try:
         model = get_model(TRAITS_MODEL, system_prompt=system_instruction)
@@ -200,16 +211,15 @@ Return only the raw JSON object."""
             print(f"[TraitsInit] {char_id}: 파싱 결과가 dict가 아님 ({type(parsed)}) → 저장 생략")
             return {}
 
-        result = {k: max(-1.0, min(1.0, float(v))) for k, v in parsed.items() if k in ALL_TRAIT_KEYS}
-        if not result:
+        valid_values = {k: v for k, v in parsed.items() if k in ALL_TRAIT_KEYS}
+        if not valid_values:
             print(f"[TraitsInit] {char_id}: 유효 trait 키 없음 → 저장 생략")
             return {}
 
-        missing = [k for k in ALL_TRAIT_KEYS if k not in result]
+        missing = [k for k in ALL_TRAIT_KEYS if k not in valid_values]
         if missing:
             print(f"[TraitsInit] {char_id}: 누락 키 {len(missing)}개 → 0.0으로 채움")
-            for k in missing:
-                result[k] = 0.0
+        result = _sanitize_traits(valid_values)
 
         if not all(k in result for k in REQUIRED_KEYS):
             print(f"[TraitsInit] {char_id}: 필수 키 누락, 생성 실패로 간주 → 저장 생략")
@@ -224,15 +234,10 @@ Return only the raw JSON object."""
 
 async def _write_traits_to_db(char_id: str, source_label: str, traits: dict) -> None:
     """trait 딕셔너리를 DB에 저장한다.
-    StaticProfile은 props JSON blob에 병합해 저장한다.
-    DynamicState에는 trait_* 컬럼이 없어 저장을 건너뛴다 (메모리 전용).
+    StaticProfile은 props JSON blob에 병합해 저장한다. StaticProfile이 없고
+    DynamicState fallback으로 생성된 값이면 최소 StaticProfile을 만들어 저장한다.
     """
     if not traits:
-        return
-
-    if source_label != "StaticProfile":
-        # DynamicState 스키마에 trait_* 컬럼이 없으므로 저장 불가
-        print(f"[TraitsInit] {char_id}: DynamicState에 trait 저장 불가 — 이번 턴 메모리 전용")
         return
 
     # StaticProfile.props는 JSON blob — 기존 데이터를 읽어 traits를 병합한 뒤 덮어쓴다
@@ -249,10 +254,146 @@ async def _write_traits_to_db(char_id: str, source_label: str, traits: dict) -> 
             except (ValueError, TypeError):
                 pass
         current.update(traits)
-        await session.run(
-            "MATCH (c:Character {id: $cid})-[:HAS_PROFILE]->(n:StaticProfile) SET n.props = $props_json",
-            cid=char_id, props_json=json.dumps(current, ensure_ascii=False),
-        )
+        props_json = json.dumps(current, ensure_ascii=False)
+        if row:
+            await session.run(
+                "MATCH (c:Character {id: $cid})-[:HAS_PROFILE]->(n:StaticProfile) SET n.props = $props_json",
+                cid=char_id, props_json=props_json,
+            )
+            return
+
+        await session.run("""
+            MATCH (c:Character {id: $cid})
+            WHERE NOT (c)-[:HAS_PROFILE]->()
+            CREATE (c)-[:HAS_PROFILE]->(:StaticProfile {
+                id: $profile_id,
+                props: $props_json,
+                age: 0,
+                gender: "",
+                role: ""
+            })
+        """, cid=char_id, profile_id=f"{char_id}_static", props_json=props_json)
+        if source_label != "StaticProfile":
+            print(f"[TraitsInit] {char_id}: StaticProfile 생성 후 trait 저장")
+
+
+def _trait_cache_context() -> tuple[str, str]:
+    """현재 Chainlit 세션의 world/scenario 캐시 컨텍스트를 반환합니다."""
+    world_id = WORLD_ID
+    scenario_id = _DEFAULT_SCENARIO_ID
+    try:
+        import chainlit as cl
+
+        session_world_id = cl.user_session.get("world_id")
+        session_scenario_id = cl.user_session.get("scenario_id")
+        if session_world_id:
+            world_id = str(session_world_id)
+        if session_scenario_id:
+            scenario_id = str(session_scenario_id)
+    except Exception:
+        pass
+    return _safe_cache_name(world_id), _safe_cache_name(scenario_id)
+
+
+def _safe_cache_name(value: str | None) -> str:
+    """캐시 파일 경로에 안전한 이름으로 변환합니다."""
+    text = str(value or _DEFAULT_SCENARIO_ID).strip() or _DEFAULT_SCENARIO_ID
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", text)
+
+
+def _trait_cache_path() -> Path:
+    """현재 world/scenario에 해당하는 로컬 trait 캐시 파일 경로를 반환합니다."""
+    world_id, scenario_id = _trait_cache_context()
+    return Path("data") / "trait_cache" / world_id / f"{scenario_id}.json"
+
+
+def _legacy_trait_cache_path() -> Path | None:
+    """이전 WORLD_ID 단일 파일 캐시 경로를 반환합니다."""
+    world_id, scenario_id = _trait_cache_context()
+    if scenario_id != _DEFAULT_SCENARIO_ID:
+        return None
+    return Path("data") / "trait_cache" / f"{world_id}.json"
+
+
+async def _read_trait_cache() -> dict:
+    """로컬 trait 캐시를 UTF-8 JSON으로 읽고 없거나 깨졌으면 빈 dict를 반환합니다."""
+    path = _trait_cache_path()
+    legacy_path = _legacy_trait_cache_path()
+
+    def _read() -> dict:
+        """동기 파일 읽기를 작은 작업 단위로 감쌉니다."""
+        read_path = path if path.exists() else legacy_path
+        if read_path is None or not read_path.exists():
+            return {}
+        try:
+            with read_path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError, TypeError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return data
+
+    return await asyncio.to_thread(_read)
+
+
+async def _write_trait_cache(cache: dict) -> None:
+    """로컬 trait 캐시를 UTF-8 JSON으로 저장합니다."""
+    path = _trait_cache_path()
+
+    def _write() -> None:
+        """동기 파일 쓰기를 작은 작업 단위로 감쌉니다."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False, indent=2, sort_keys=True)
+
+    await asyncio.to_thread(_write)
+
+
+async def _get_cached_traits(char_id: str) -> dict:
+    """캐시에 저장된 캐릭터 trait을 정규화해 반환합니다."""
+    cache = await _read_trait_cache()
+    if cache.get("version") != _CACHE_VERSION:
+        return {}
+
+    world_traits = cache.get("traits")
+    if not isinstance(world_traits, dict):
+        return {}
+
+    raw_traits = world_traits.get(char_id)
+    if not isinstance(raw_traits, dict):
+        return {}
+
+    traits = _sanitize_traits(raw_traits)
+    return traits if _is_traits_complete(traits) else {}
+
+
+async def _set_cached_traits(char_id: str, traits: dict) -> None:
+    """생성된 캐릭터 trait을 로컬 캐시에 저장합니다."""
+    clean_traits = _sanitize_traits(traits)
+    if not _is_traits_complete(clean_traits):
+        return
+
+    cache = await _read_trait_cache()
+    if cache.get("version") != _CACHE_VERSION:
+        world_id, scenario_id = _trait_cache_context()
+        cache = {
+            "version": _CACHE_VERSION,
+            "world_id": world_id,
+            "scenario_id": scenario_id,
+            "traits": {},
+        }
+    cache.setdefault("traits", {})[char_id] = clean_traits
+    await _write_trait_cache(cache)
+
+
+def _sanitize_traits(values: dict) -> dict:
+    """trait 값을 -1.0~1.0 범위로 보정하고 누락 키를 0.0으로 채웁니다."""
+    result: dict[str, float] = {}
+    for key in ALL_TRAIT_KEYS:
+        value = values.get(key, 0.0)
+        result[key] = max(-1.0, min(1.0, _as_float(value, 0.0)))
+    return result
 
 
 def _default_traits() -> dict:
@@ -260,10 +401,9 @@ def _default_traits() -> dict:
     return {k: 0.0 for k in ALL_TRAIT_KEYS}
 
 
-def _as_float(value, default: float = 0.0) -> float:
+def _as_float(value: object, default: float = 0.0) -> float:
     """값을 안전하게 float로 변환합니다."""
     try:
         return float(value)
     except (TypeError, ValueError):
         return default
-

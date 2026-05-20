@@ -140,11 +140,20 @@ Treat relationship movement as slow state, not a reward meter.
 
 Routine kindness, embarrassment, proximity, sexual arousal, politeness, rescue by convenience, or passive compliance may create momentary warmth, but do not imply durable trust or loyalty by themselves.
 
-Trust grows slower than affection. Trust requires repeated reliability, risk handled well, vulnerability respected, or a clear choice under pressure.
+**Trust axis (friendship / reliability):** guarded → uncertain → trusting → secure → unwavering.
+Trust at its peak means unconditional alliance — confides without hesitation, accepts flaws, would not betray under any pressure.
+Trust grows slowly. It requires repeated reliability, risk handled well, vulnerability respected, or a clear choice under pressure.
+
+**Affinity axis (romantic attraction / love):** distant → cautious → comfortable → intimate → deeply bonded.
+Affinity at its peak means deep, settled romantic love — this is the person {char} would choose again, knowing everything, without hesitation.
+Affinity cannot deepen unless trust is already 80+. Before that, closeness may exist as attraction or infatuation, but not love.
+For same-sex close friendships, affinity means best-friend+ closeness beyond trust, not automatic romance.
+
+Sexual encounters — including first intimacy — do not automatically advance affinity. Sex is not inherently romantic and carries no guarantee of emotional bond.
 
 Small moments may soften behavior for the current scene without changing the underlying relationship.
 
-Only rare milestones may create a large relationship shift: confession, betrayal, decisive rescue, serious apology accepted, reconciliation after real conflict, near-breakup, first intimacy with emotional consequence, or choosing each other despite meaningful risk.
+Only rare emotional milestones may create a large relationship shift: confession, betrayal, decisive rescue, serious apology accepted, reconciliation after real conflict, near-breakup, or choosing each other despite meaningful personal risk.
 
 A relationship milestone must not rewrite personality.
 

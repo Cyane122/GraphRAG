@@ -28,6 +28,8 @@ _DESTINATION_MOVE_RE = re.compile(
     r"(?P<dest>[가-힣A-Za-z0-9_·''\-\s]{1,40}?)(?:으로|로)\s*(?:이동|간다|가자|향한다|간다|옮긴다)"
 )
 _DESTINATION_CLAUSE_SPLIT_RE = re.compile(r".*(?:라서|이라서|라|이라|때문에|니까|이니|라며)\s*")
+_EXIT_LOCATION_RE = re.compile(r"(?:나온|나오|걸어\s*나온|걸어\s*나오|돌아온|돌아오|복귀)")
+_EXIT_LOCATION_NEG_RE = re.compile(r"(?:나오|돌아오|복귀)\s*지\s*(?:못|않|않았|못했)")
 
 _SYSTEM_PROMPT = """\
 You are a state extractor for a Korean roleplay system.
@@ -463,6 +465,32 @@ async def _resolve_location_from_ooc_text(text: str, plan: dict, context: dict) 
     return destination, default_meta
 
 
+async def _get_character_location_parent(char_id: str) -> str | None:
+    """캐릭터의 현재 Location이 하위 장소면 부모 Location ID를 반환합니다."""
+    async with async_driver.session() as session:
+        result = await session.run(
+            """
+            MATCH (c:Character {id: $char_id})-[:LOCATED_AT]->(l:Location)-[:PART_OF]->(p:Location)
+            RETURN p.id AS parent_id
+            """,
+            char_id=char_id,
+        )
+        row = await result.single()
+        if row and row.get("parent_id"):
+            return str(row["parent_id"])
+
+        fallback = await session.run(
+            """
+            MATCH (c:Character {id: $char_id})-[:HAS_STATE]->(d:DynamicState)
+            MATCH (l:Location {id: d.location_id})-[:PART_OF]->(p:Location)
+            RETURN p.id AS parent_id
+            """,
+            char_id=char_id,
+        )
+        fallback_row = await fallback.single()
+    return str(fallback_row["parent_id"]) if fallback_row and fallback_row.get("parent_id") else None
+
+
 async def _apply_time_change(
     delta_minutes: object,
     time_set: object,
@@ -611,6 +639,35 @@ async def _resolve_ooc_move_targets(
     return sorted(primary_targets)
 
 
+async def _infer_exit_location_from_ooc_text(
+    text: str,
+    characters: list[dict],
+    npc_id: str,
+    pc_id: str | None,
+) -> tuple[str | None, list[str]]:
+    """목적지 없이 하위 장소에서 '나온다/돌아온다'는 OOC를 부모 장소 이동으로 해석합니다."""
+    if not _EXIT_LOCATION_RE.search(text):
+        return None, []
+    if _EXIT_LOCATION_NEG_RE.search(text):
+        return None, []
+
+    targets = await _resolve_ooc_move_targets(text, characters, npc_id, pc_id)
+    if not targets:
+        return None, []
+
+    parent_by_target: dict[str, str] = {}
+    for char_id in targets:
+        parent_id = await _get_character_location_parent(char_id)
+        if parent_id:
+            parent_by_target[char_id] = parent_id
+
+    unique_parents = set(parent_by_target.values())
+    if len(unique_parents) != 1:
+        return None, []
+
+    return next(iter(unique_parents)), sorted(parent_by_target)
+
+
 async def _set_global_location(location_id: str) -> None:
     """GlobalState.currentLocationId를 OOC 위치 변경과 동기화합니다."""
     safe_location_id = location_id.replace("\\", "\\\\").replace("'", "\\'")
@@ -705,6 +762,14 @@ async def parse_ooc(text: str, npc_id: str, npc_name: str, pc_id: str | None = N
         applied_state_changes[char_name] = char_state
 
     inferred_location, inferred_location_meta = await _resolve_location_from_ooc_text(text, plan, location_context)
+    inferred_move_targets: list[str] | None = None
+    if not inferred_location:
+        inferred_location, inferred_move_targets = await _infer_exit_location_from_ooc_text(
+            text,
+            characters,
+            npc_id,
+            pc_id,
+        )
     new_location = inferred_location
     if new_location and not await _location_exists(new_location):
         loc_meta = plan.get("new_location") if isinstance(plan.get("new_location"), dict) else {}
@@ -723,7 +788,7 @@ async def parse_ooc(text: str, npc_id: str, npc_name: str, pc_id: str | None = N
         else:
             new_location = None
     if new_location and await _location_exists(new_location):
-        moved_character_ids = await _resolve_ooc_move_targets(text, characters, npc_id, pc_id)
+        moved_character_ids = inferred_move_targets or await _resolve_ooc_move_targets(text, characters, npc_id, pc_id)
         for char_id in moved_character_ids:
             await move_location(char_id, new_location)
         await _set_global_location(new_location)

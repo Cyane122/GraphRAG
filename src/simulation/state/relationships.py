@@ -20,14 +20,13 @@ from src.config import MODEL_PRO_UPDATER as PRO_MODEL
 from src.core.database import async_driver, update_relationship_fields
 
 
-_AFFINITY_MEANINGFUL_STEP_CAP = 5
-_AFFINITY_MILESTONE_STEP_CAP = 10
+_AFFINITY_STEP_CAP = 2  # milestone 구분 없음 — affinity는 항상 소폭 상한
 _TRUST_MEANINGFUL_STEP_CAP = 3
 _TRUST_MILESTONE_STEP_CAP = 6
-_RELATIONSHIP_MILESTONE_RE = re.compile(
+_TRUST_MILESTONE_RE = re.compile(
     r"(confess|confession|reconcile|reconciliation|breakup|betray|saved|rescue|"
     r"first intimacy|near-death|life-saving|고백|화해|이별|배신|구해|구했다|구해줬|"
-    r"목숨|첫 관계|처음으로|결정적|돌이킬 수)",
+    r"목숨|첫 관계|결정적|돌이킬 수)",
     re.IGNORECASE,
 )
 
@@ -162,32 +161,28 @@ async def _run_relationship_update(
         return RelationshipUpdatePlan()
 
     system_instruction = (
-        "You are a conservative Pro relationship updater for a graph-based Korean roleplay system. "
-        "Update only relationships directly evidenced by the accepted scene."
+        "Conservative Pro relationship updater for Korean roleplay. "
+        "Update only relationships directly evidenced by the scene."
     )
-    prompt = f"""## Directed relationship targets
+    prompt = f"""## Relationship targets
 {_target_lines(targets)}
 
-## Task
-Extract relationship changes between the listed scene participants.
-Use only real source_id and target_id values from the target list.
+Extract relationship changes from scene. Use only source_id/target_id from target list.
 
-Allowed updates:
-- affinity: integer -100..100 absolute score after this scene, not a delta.
-- trust: integer -100..100 absolute score after this scene, not a delta.
-- rel_type: acquaintance / stranger / classmate / coworker / friend / rival / family / lover / ex / customer / mentor.
-- current_status: one concise sentence describing the current relation after the scene.
-- summary: 1-2 concise sentences only for durable relationship changes.
+Updates:
+affinity: -100..100 absolute (not delta). trust: -100..100 absolute.
+rel_type: acquaintance/stranger/classmate/coworker/friend/rival/family/lover/ex/customer/mentor
+current_status: 1 concise sentence (after scene). summary: 1-2 sentences for durable changes only.
 
 Rules:
-- Omit unchanged edges.
-- Do not update the main PC/NPC pair here.
-- Do not infer hidden intimacy, friendship, hostility, or trust without explicit scene evidence.
-- Keep score movement small: affinity normally changes by at most 5, trust by at most 3.
-- Larger changes require rare milestones such as confession, betrayal, rescue, decisive reconciliation, near-breakup, or first intimacy.
-- Trust should grow slower than affinity and should not rise from embarrassment, attraction, politeness, or passive compliance alone.
-- First meetings may create low but nonzero awareness/trust if they directly interacted.
-- If A's view of B changes differently than B's view of A, return both directed edges.
+- Omit unchanged edges. Skip main PC/NPC pair.
+- No inference w/o explicit scene evidence.
+- affinity = love/romantic bond. For same-sex close friends, affinity means best-friend+ closeness above trust, not romance.
+- affinity can rise only when current trust >= 80.
+- affinity change ≤ 5; trust change ≤ 3. Larger → rare milestones only (confession/betrayal/rescue/reconciliation/near-breakup/first intimacy).
+- Trust grows slower — no increase from embarrassment/attraction/politeness/compliance alone.
+- First meetings: low nonzero trust OK if they directly interacted.
+- If A/B views differ → return both directed edges.
 
 Return ONLY valid JSON:
 {{
@@ -251,11 +246,11 @@ def _bounded_score_update(
     if requested == current:
         return None
 
-    milestone = bool(_RELATIONSHIP_MILESTONE_RE.search(actor_response or ""))
     if field == "trust":
+        milestone = bool(_TRUST_MILESTONE_RE.search(actor_response or ""))
         cap = _TRUST_MILESTONE_STEP_CAP if milestone else _TRUST_MEANINGFUL_STEP_CAP
     else:
-        cap = _AFFINITY_MILESTONE_STEP_CAP if milestone else _AFFINITY_MEANINGFUL_STEP_CAP
+        cap = _AFFINITY_STEP_CAP
 
     diff = requested - current
     if abs(diff) <= cap:
@@ -273,7 +268,12 @@ def _updates_for_db(
     affinity = _bounded_score_update(target.current.get("affinity"), update.affinity, "affinity", actor_response)
     trust = _bounded_score_update(target.current.get("trust"), update.trust, "trust", actor_response)
     if affinity is not None:
-        data["affinity"] = affinity
+        current_trust = _as_int(target.current.get("trust")) or 0
+        current_affinity = _as_int(target.current.get("affinity")) or 0
+        if affinity > current_affinity and current_trust < 80:
+            pass  # affinity 증가는 trust >= 80일 때만 허용
+        else:
+            data["affinity"] = affinity
     if trust is not None:
         data["trust"] = trust
     if update.rel_type:

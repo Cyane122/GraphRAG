@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 from src.config import MODEL_COMPLEX_UPDATER as COMPLEX_MODEL
 from src.core.database import (
     async_driver,
+    ensure_location,
     get_dynamic_state_field_types,
     move_location,
     update_dynamic_state,
@@ -127,6 +128,19 @@ def _state_field_lines(field_types: dict[str, str]) -> str:
     )
 
 
+async def _ensure_location_if_missing(location_id: str) -> None:
+    """DB에 없는 위치만 최소 정보로 생성한다. 이미 존재하면 아무것도 하지 않는다."""
+    async with async_driver.session() as session:
+        rec = await session.run(
+            "MATCH (l:Location {id: $id}) RETURN l.id AS id", id=location_id
+        )
+        if await rec.single():
+            return
+    name = location_id.replace("_", " ").strip()
+    await ensure_location(location_id, name=name, description="", prompt_priority=6)
+    print(f"[MultiStateUpdater] 새 위치 자동 생성: {location_id}")
+
+
 def _parse_state_plan(plan: object) -> MultiCharacterStatePlan:
     """LLM JSON 추출 결과를 모듈 경계용 Pydantic 모델로 정규화합니다."""
     if not isinstance(plan, dict):
@@ -153,39 +167,27 @@ async def _run_multi_character_state_update(
     )
 
     system_instruction = (
-        "You are a precise multi-character state manager for a Korean roleplay system. "
-        "Update only the character who is explicitly described as changing. "
-        "Never copy one character's state to another character."
+        "Precise multi-character state manager for Korean roleplay. "
+        "Update only explicitly changed characters. Never copy one character's state to another."
     )
-    prompt = f"""## Valid character targets
+    prompt = f"""## Characters
 {_target_lines(targets)}
 
-## Known location ids
+## Locations
 {_location_lines(known_locations)}
 
-## Task
-Extract DynamicState updates for any listed character whose current state explicitly changed in the scene.
-The PC/player is an in-world character and MUST be updated when explicitly changed.
-Do not infer hidden changes. Omit unchanged characters.
-Korean particles attached to names still refer to the same target.
-Match target aliases even when topic, subject, object, or dative particles are attached.
-Location change (conservative): Only update location_id when a character EXPLICITLY DEPARTS
-the current scene and the destination is clearly a different known location (e.g., "went home",
-"left for school", "headed to the café"). Do NOT update location_id merely because a character
-is described as being at or walking around their current location. If the destination cannot be
-matched to a known location id from the list above, omit location_id entirely.
+Extract DynamicState updates for explicitly changed characters. PC is an in-world character — update when explicitly changed. Omit unchanged. Korean particles still refer to same target; match aliases w/ particles.
+location_id: only when character EXPLICITLY DEPARTS to a clearly different location. Do NOT update if still at / walking around current location.
+- Known location → exact id from list.
+- Character's OWN personal space (own home / room / apt) → generate "{{char_id}}_house" (e.g. if char_id is "ko_haram" → "ko_haram_house"). These are auto-created.
+- Unknown public/third-party location → omit.
 
-Allowed DynamicState fields are the live schema columns below:
+DynamicState fields:
 {_state_field_lines(field_types)}
 
-Special field rules:
-- location_id: only if the character clearly moved to one of the known location ids above.
-  Map location names to ids from the known location list. Return the id exactly as listed.
-- stress_level and workplace_stress_level: JSON number 0..10.
-- Numeric schema fields must be JSON numbers, boolean schema fields must be JSON booleans.
-- Do not return id.
+Rules: stress_level/workplace_stress_level → JSON number 0..10. Numeric → JSON numbers; boolean → JSON booleans. Do not return id.
 
-Return ONLY valid JSON in this shape. Use real char_id values from the target list:
+Return ONLY valid JSON. Use real char_id values:
 {{
   "character_updates": [
     {{"char_id": "<character_id>", "dynamic_state": {{"mood": "tired"}}}}
@@ -256,6 +258,7 @@ async def apply_multi_character_state_updates(
             continue
         location_id = state.pop("location_id", None)
         if location_id:
+            await _ensure_location_if_missing(str(location_id))
             await move_location(item.char_id, str(location_id))
         await update_dynamic_state(item.char_id, state)
         applied_state = dict(state)

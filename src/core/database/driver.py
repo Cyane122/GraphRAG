@@ -227,6 +227,10 @@ _COLUMN_MIGRATIONS: list[str] = [
     "ALTER TABLE Memory ADD narrative_summary STRING DEFAULT ''",
     "ALTER TABLE Memory ADD state_summary STRING DEFAULT ''",
     "ALTER TABLE RELATIONSHIP ADD summary STRING DEFAULT ''",
+    "ALTER TABLE RELATIONSHIP ADD active_event_id STRING DEFAULT ''",
+    "ALTER TABLE Event ADD content STRING DEFAULT ''",
+    "ALTER TABLE Event ADD status STRING DEFAULT 'closed'",
+    "ALTER TABLE Event ADD turn_count INT64 DEFAULT 1",
     "ALTER TABLE Schedule ADD day_of_weeks INT64[] DEFAULT []",
     "ALTER TABLE Schedule ADD material STRING DEFAULT ''",
 ]

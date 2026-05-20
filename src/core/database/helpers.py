@@ -315,13 +315,14 @@ async def ensure_location(
 
 
 async def update_relationship_affinity(char_a: str, char_b: str, delta: int) -> None:
-    """호감도 공통 업데이트 (양방향, ±100 상한)."""
+    """호감도 공통 업데이트 (양방향, ±100 상한). trust < 90이면 affinity 증가 차단."""
     async with async_driver.session() as session:
         await session.run("""
             MATCH (a:Character {id: $a})-[r:RELATIONSHIP]->(b:Character {id: $b})
             SET r.affinity = CASE
-                WHEN coalesce(r.affinity, 0) + $delta > 100  THEN 100
-                WHEN coalesce(r.affinity, 0) + $delta < -100 THEN -100
+                WHEN $delta > 0 AND coalesce(r.trust, 0) < 90 THEN coalesce(r.affinity, 0)
+                WHEN coalesce(r.affinity, 0) + $delta > 100   THEN 100
+                WHEN coalesce(r.affinity, 0) + $delta < -100  THEN -100
                 ELSE coalesce(r.affinity, 0) + $delta
             END
         """, a=char_a, b=char_b, delta=delta)
@@ -420,7 +421,7 @@ async def update_relationship_fields(char_a: str, char_b: str, updates: dict) ->
 
 
 async def move_location(char_id: str, new_loc_id: str) -> None:
-    """캐릭터 장소 이동 공통 로직. LOCATED_AT 관계를 단일 진실 소스로 유지한다."""
+    """캐릭터 장소 이동 공통 로직. LOCATED_AT 관계 + DynamicState.location_id 양쪽을 동기화한다."""
     async with async_driver.session() as session:
         check_rec = await session.run(
             "MATCH (l:Location {id: $new_loc_id}) RETURN l.id AS id",
@@ -440,10 +441,13 @@ async def move_location(char_id: str, new_loc_id: str) -> None:
             CREATE (c)-[:LOCATED_AT]->(next)
         """, char_id=char_id, new_loc_id=new_loc_id)
 
-        await session.run("""
-            MATCH (c:Character {id: $char_id})-[:HAS_STATE]->(d:DynamicState)
-            SET d.location_id = $new_loc_id
-        """, char_id=char_id, new_loc_id=new_loc_id)
+        try:
+            await session.run("""
+                MATCH (c:Character {id: $char_id})-[:HAS_STATE]->(d:DynamicState)
+                SET d.location_id = $new_loc_id
+            """, char_id=char_id, new_loc_id=new_loc_id)
+        except Exception as _loc_sync_err:
+            print(f"[move_location] DynamicState.location_id sync skipped: {_loc_sync_err}")
 
 
 async def advance_cycle_day(char_id: str, days: int) -> None:

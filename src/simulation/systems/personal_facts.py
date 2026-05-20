@@ -18,7 +18,7 @@ import hashlib
 import re
 from datetime import datetime, timedelta
 
-from src.config import MODEL_STATE_UPDATER
+from src.config import MODEL_PRO_UPDATER as MODEL_STATE_UPDATER
 from src.core.database import async_driver
 from src.core.llm.client import extract_json_from_llm, get_model, get_response_text
 
@@ -202,41 +202,27 @@ async def _extract_facts_with_llm(
     subject_aliases: dict[str, str],
 ) -> list[dict]:
     """Use the lightweight model to extract explicit facts as JSON."""
-    system_prompt = "You extract explicit personal daily-life facts from Korean roleplay user input."
+    system_prompt = "Extract explicit personal daily-life facts from Korean roleplay input. No inference."
     subjects = _render_subject_options(subject_aliases, subject_id)
-    prompt = f"""Return ONLY valid JSON. Extract facts explicitly stated by the user.
-Do not infer. Do not store emotions, metaphors, flirting, or scene actions unless they create a durable practical fact.
+    prompt = f"""Return ONLY valid JSON.
+Explicit facts only. Skip emotions/metaphors/flirting/scene actions unless durable & practical.
 
-[Current in-game time]
-{current_dt.strftime("%Y-%m-%d %H:%M")}
+[Time] {current_dt.strftime("%Y-%m-%d %H:%M")}
+[Subject] default={subject_id}. Use other id only when explicitly named.
+[Subjects/aliases] {subjects}
+[Audience] {audience_id}
+[Categories] household/schedule/absence/preference/promise/boundary/routine/misc
 
-[Subject]
-Default subject is {subject_id}. Use another subject_id only when the input explicitly names that person.
+[Rules]
+- subject_id: allowed ids only. audience_id: "{audience_id}".
+- normalized_key: stable snake_case (e.g. "household.parents_absent"). Contradiction→reuse same key.
+- Normalize relative dates to current time. valid_until: ISO8601 or null.
+- "today/tonight" absence/schedule → valid_until=tomorrow 12:00 unless stated otherwise.
+- confidence: 0.0-1.0
 
-[Allowed subject ids and aliases]
-{subjects}
+[Input] {user_input}
 
-[Audience who heard it]
-{audience_id}
-
-[Categories]
-household, schedule, absence, preference, promise, boundary, routine, misc
-
-[Normalization rules]
-- subject_id must be one of the allowed subject ids above.
-- audience_id must be "{audience_id}".
-- normalized_key must be stable snake_case like "household.parents_absent".
-- For a contradiction, reuse the same normalized_key as the older fact would use.
-- Normalize relative dates against current in-game time.
-- valid_until is ISO 8601 string or null.
-- For "today/tonight" absence or schedule facts, valid_until should usually be tomorrow 12:00 unless a more precise return time is stated.
-- confidence is 0.0 to 1.0.
-
-[User input]
-{user_input}
-
-[Output JSON]
-{{"facts":[{{"category":"household","fact_text":"short factual sentence","normalized_key":"household.some_key","subject_id":"{subject_id}","audience_id":"{audience_id}","valid_until":null,"confidence":0.9}}]}}
+[Output] {{"facts":[{{"category":"household","fact_text":"...","normalized_key":"household.x","subject_id":"{subject_id}","audience_id":"{audience_id}","valid_until":null,"confidence":0.9}}]}}
 """
     model = get_model(MODEL_STATE_UPDATER, system_prompt=system_prompt)
     response = await asyncio.wait_for(
@@ -244,7 +230,7 @@ household, schedule, absence, preference, promise, boundary, routine, misc
             prompt,
             generation_config={
                 "temperature": 0.0,
-                "max_output_tokens": 768,
+                "max_output_tokens": 1024,
                 "thinking_config": {"thinking_level": "LOW"},
                 "response_mime_type": "application/json",
             },

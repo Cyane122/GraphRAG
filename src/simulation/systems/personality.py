@@ -12,7 +12,7 @@
 import json
 from datetime import datetime
 
-from src.config import MODEL_COMPLEX_UPDATER as DRIFT_MODEL
+from src.config import MODEL_COMPLEX_UPDATER as DRIFT_MODEL, MODEL_PRO_UPDATER as MACRO_DRIFT_MODEL
 from src.core.database import async_driver
 from src.core.llm.client import get_model, extract_json_from_llm
 
@@ -161,27 +161,20 @@ async def _apply_micro_drift(
     """
     pc_hint = await _load_pc_personality_hint(pc_id)
 
-    prompt = f"""Character {npc_id} has spent a long time in a deep, close relationship with {pc_id} (affinity: {affinity}/100).
+    prompt = f"""{npc_id} — deep relationship w/ {pc_id} (affinity: {affinity}/100). MICRO drift: 90%+ unchanged. Adjust 1-2 traits minimally in wording/emphasis. Must still feel like themselves — nearly imperceptible change.
 
 Current personality:
 {json.dumps(props, ensure_ascii=False, indent=2)}
 
-{f"Known tendencies of {pc_id}: {pc_hint}" if pc_hint else ""}
+{f"{pc_id} tendencies: {pc_hint}" if pc_hint else ""}
 
-Apply MICRO personality drift: extremely subtle change, 90%+ unchanged.
-- Adjust 1–2 traits very slightly in wording or emphasis
-- Do NOT overhaul the character — they must still feel like themselves
-- The change should be nearly imperceptible to a reader comparing before/after
-
-Return the COMPLETE updated personality JSON (preserve ALL existing keys exactly, modify only 1–2 values slightly).
-Also add: "last_drifted_at": "{game_time.isoformat()}"
-
+Return COMPLETE updated personality JSON (all keys preserved; 1-2 values changed slightly) w/ "last_drifted_at": "{game_time.isoformat()}"
 Return ONLY valid JSON."""
 
     try:
         model = get_model(
             DRIFT_MODEL,
-            system_prompt=f"You are subtly evolving {npc_id}'s personality due to long-term relationship influence. Changes must be minimal.",
+            system_prompt=f"Subtly evolving {npc_id}'s personality via long-term relationship influence. Changes must be minimal.",
         )
         resp = await model.generate_content_async(
             prompt,
@@ -215,28 +208,21 @@ async def _apply_macro_drift(npc_id: str, game_time: datetime) -> None:
     event_context = await _load_high_importance_events(npc_id)
     drift_count   = int(props.get("macro_drift_count") or 0) + 1
 
-    prompt = f"""Character {npc_id} has just experienced a life-altering event (importance 9–10).
+    prompt = f"""{npc_id} — life-altering event (importance 9-10). MACRO shift: clear evolution in values/worldview/emotional baseline. Core identity recognizable (same person, changed outlook). new sample_line reflects new state of mind.
 
 Previous personality:
 {json.dumps(props, ensure_ascii=False, indent=2)}
 
-Major events they have experienced:
+Major events:
 {event_context}
 
-Rewrite their personality to reflect the transformation. This is a MACRO shift:
-- Clear evolution in values, worldview, or emotional baseline
-- Keep their core identity recognizable (same person, changed outlook)
-- The new sample_line should reflect their new state of mind
-
-Return the COMPLETE rewritten personality JSON (preserve all original keys, update their content).
-Also set: "last_drifted_at": "{game_time.isoformat()}", "macro_drift_count": {drift_count}
-
+Return COMPLETE rewritten personality JSON (all original keys updated) w/ "last_drifted_at": "{game_time.isoformat()}", "macro_drift_count": {drift_count}
 Return ONLY valid JSON."""
 
     try:
         model = get_model(
-            DRIFT_MODEL,
-            system_prompt=f"You are rewriting {npc_id}'s personality after a life-altering event. The character must feel fundamentally changed yet still recognizable.",
+            MACRO_DRIFT_MODEL,
+            system_prompt=f"Rewriting {npc_id}'s personality after a life-altering event. Must feel fundamentally changed yet still recognizable.",
         )
         resp = await model.generate_content_async(
             prompt,

@@ -153,35 +153,20 @@ async def _generate_item_actions(
         for item in candidates
     ]
 
-    prompt = f"""You update Item nodes for a roleplay simulation.
-Only update an existing item when the scene explicitly changes it or gives it new narrative weight.
+    prompt = f"""Update Item nodes only when explicitly changed or given new narrative weight.
+npc={npc_id} | pc={pc_id} | loc={location_id}
 
-Characters:
-- npc_id: {npc_id}
-- pc_id: {pc_id}
-- current_location_id: {location_id}
+Actions: anchor_memory (new association) / move (explicit relocation) / transfer_owner (given/taken) / mark_lost / update_description (new physical detail)
 
-Allowed actions:
-- anchor_memory: the item gained a meaningful association this turn.
-- move: the item was explicitly placed at a new location.
-- transfer_owner: the item was explicitly given/taken and has a new owner.
-- mark_lost: the item was explicitly lost or left somewhere unknown.
-- update_description: a concrete new physical detail was added.
+Rules: item_id from candidates only. No new items/locations. importance 0-10; 3+ for stored memory. memory_summary: 1 short Korean sentence. Return [] if nothing changed.
 
-Rules:
-- Use only item_id values from Candidate Items.
-- Do not invent new items or locations.
-- importance 0-10. Use 3+ only for a stored memory.
-- memory_summary must be one short Korean sentence, grounded in the object.
-- Return [] when nothing practical changed.
-
-Candidate Items:
+Candidates:
 {json.dumps(payload, ensure_ascii=False, indent=2)}
 
 Scene:
 {scene_text[:2400]}
 
-Return ONLY a JSON array:
+Return ONLY JSON array:
 [
   {{
     "item_id": "existing_id",
@@ -197,7 +182,7 @@ Return ONLY a JSON array:
     try:
         model = get_model(
             ITEM_MODEL,
-            system_prompt="You are a conservative item state updater. Prefer no update over speculative updates.",
+            system_prompt="Conservative item state updater. Prefer no update over speculative.",
         )
         resp = await model.generate_content_async(
             prompt,

@@ -123,6 +123,9 @@ async def fetch_recent_events(npc_id: str, pc_id: str, limit: int = 3) -> list[d
                    e.timestamp         AS timestamp,
                    e.impact            AS impact,
                    e.memory_type       AS memory_type,
+                   e.status            AS status,
+                   e.content           AS content,
+                   e.turn_count        AS turn_count,
                    CASE
                        WHEN m_npc.narrative_summary IS NULL OR m_npc.narrative_summary = '' THEN m_npc.summary
                        ELSE m_npc.narrative_summary

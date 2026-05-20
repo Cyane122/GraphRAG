@@ -54,21 +54,17 @@ async def _distort_memories_with_hints(
         for i, m in enumerate(memories)
     )
 
-    prompt = f"""Rewrite each memory from {char_id}'s subjective perspective.
-Apply subtle distortion: {hint_str}
+    prompt = f"""Rewrite each memory from {char_id}'s perspective. Subtle distortion: {hint_str}
+Keep core facts; shift emphasis/tone/minor details only. 1-2 sentences. Korean OK.
 
-Rules: Keep core facts intact. Only shift emphasis, tone, minor details. 1~2 sentences max. Korean OK.
-
-Memories:
 {items}
 
-Return ONLY a JSON array:
-[{{"id": "<mid>", "summary": "<rewritten>"}}, ...]"""
+Return ONLY JSON array: [{{"id":"<mid>","summary":"<rewritten>"}},...]"""
 
     try:
         model = get_model(
             DECAY_MODEL,
-            system_prompt=f"You are {char_id}'s inner subconscious. Rewrite memories from their subjective perspective.",
+            system_prompt=f"{char_id}'s inner subconscious — rewrite memories from their subjective perspective.",
         )
         resp = await model.generate_content_async(
             prompt,

@@ -140,29 +140,20 @@ async def _generate_gossip_batch(
         else f"positive (integer from 1 to {max_delta})"
     )
 
-    prompt = f"""A significant {direction} event happened between {source_npc_id} and {pc_id}.
+    prompt = f"""{direction.capitalize()} event: {source_npc_id} ↔ {pc_id} — {event_summary}
 
-What happened: {event_summary}
+{source_npc_id} tells each recipient below. For each:
+gossip_summary: 1-2 Korean sentences, slightly colored by {source_npc_id}'s view (not perfectly accurate, slightly dramatized)
+affinity_delta: {delta_hint}. Closer to source = stronger effect. Prior dislike amplifies negative reaction.
 
-{source_npc_id} will tell each person below about this. Generate:
-1. What they heard — slightly colored by {source_npc_id}'s perspective (gossip, not objective)
-2. How it affects their view of {pc_id}
+Recipients: {items}
 
-Rules:
-- gossip_summary: 1–2 sentences Korean. Realistic gossip — not perfectly accurate, slightly dramatized.
-- affinity_delta: {delta_hint}. Closer to source = stronger effect.
-- Someone who already dislikes {pc_id} reacts more strongly to negative news.
-
-Recipients:
-{items}
-
-Return ONLY a JSON array:
-[{{"target_id": "...", "gossip_summary": "...", "affinity_delta": 0}}, ...]"""
+Return ONLY JSON array: [{{"target_id":"...","gossip_summary":"...","affinity_delta":0}},...]"""
 
     try:
         model = get_model(
             GOSSIP_MODEL,
-            system_prompt="You are simulating gossip ripple effects in a social network. Output realistic, nuanced reactions.",
+            system_prompt="Simulate gossip ripple effects in a social network. Realistic, nuanced reactions.",
         )
         resp = await model.generate_content_async(
             prompt,

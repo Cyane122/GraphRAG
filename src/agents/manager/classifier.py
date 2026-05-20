@@ -4,8 +4,13 @@
 # Scene classification and time parsing for the Manager pipeline.
 #
 # Functions
-#   - _try_rule_based(user_input: str) -> dict | None : Fast-path classification for short inputs
+#   - _try_rule_based(user_input: str, recent_story: str = "") -> dict | None : Fast-path classification for short inputs
 #   - _classify_and_parse_time(user_input: str, recent_story: str, global_state: dict, allowed_locs: str, scene_descriptions: dict[str, str] | None = None, schedule_context: dict | None = None) -> dict : LLM-based scene and time parsing
+#   - _generate_classifier_text(model: Any, prompt: str) -> str : Generate classifier JSON text with larger-budget retry
+#   - _coerce_classifier_result(parsed: object) -> dict | None : Accept common JSON shape variants
+#   - _log_invalid_classifier_result(raw: str, parsed: object) -> None : Print compact invalid classifier diagnostics
+#   - _normalize_classifier_result(parsed: dict, scene_descriptions: dict[str, str]) -> dict : Repair empty classifier fields
+#   - _fallback_classification() -> dict : Return a conservative daily scene parse
 #   - _render_schedule_context_for_classifier(schedule_context: dict) -> str : Render schedule constraints for the classifier prompt
 #   - _format_schedule_for_classifier(schedule: dict, detailed: bool) -> str : Format one schedule constraint line
 #   - _format_time_rule_for_classifier(rule: dict) -> str : Format one time rule constraint line
@@ -13,9 +18,15 @@
 import asyncio
 import re
 from datetime import datetime
+from typing import Any
 
-from src.config import MODEL_CLASSIFIER as CLASSIFIER_MODEL
-from src.core.llm.client import extract_json_from_llm, get_model, get_response_text
+from src.config import MODEL_PRO_UPDATER as CLASSIFIER_MODEL
+from src.core.llm.client import (
+    extract_json_from_llm,
+    get_model,
+    get_response_text,
+    log_empty_response_diagnostics,
+)
 
 _NEEDS_LLM_PATTERN = re.compile(
     r"\*|다음\s*날|내일|어제|시간\s*후|분\s*후|나중에|며칠|다음\s*주|"
@@ -39,6 +50,8 @@ _INTIMATE_CONTEXT_PATTERN = re.compile(
 _OOC_SPAN_RE = re.compile(r"(?<!\*)\*(?!\*)(.*?)(?<!\*)\*(?!\*)", re.DOTALL)
 _RULE_BASED_MAX_LEN = 60
 _CLASSIFIER_TIMEOUT_SECONDS = 20
+_CLASSIFIER_OUTPUT_TOKENS = 1024
+_CLASSIFIER_RETRY_OUTPUT_TOKENS = 2048
 
 
 # ════════════════════════════════════════════════════════════
@@ -116,6 +129,7 @@ def _format_schedule_for_classifier(schedule: dict, detailed: bool) -> str:
 
 
 def _try_rule_based(user_input: str, recent_story: str = "") -> dict | None:
+    """Return a deterministic parse for short/simple inputs, or None when LLM parsing is needed."""
     # 1. OOC 포함 원문에서 intimate 키워드 감지 (팬티/자지 등이 *...*블록에 있을 수 있음)
     if _INTIMATE_INPUT_PATTERN.search(user_input):
         return _INTIMATE_RESULT
@@ -157,56 +171,30 @@ async def _classify_and_parse_time(
     scene_types_block = "\n".join(f"  - {name}: {desc}" for name, desc in _scenes.items())
     schedule_block = _render_schedule_context_for_classifier(schedule_context or {})
 
-    system_instruction = "You are a combined scene classifier and time parser for a Korean roleplay system."
+    system_instruction = "Korean roleplay scene classifier & time parser. Return ONLY valid JSON."
 
-    prompt = f"""Analyze the user input and return a single JSON object. No explanation, no markdown.
-Return ONLY valid JSON. No markdown fences. No ellipsis. No truncation.
-If a field is uncertain, use null — never use "...".
+    prompt = f"""Return ONLY valid JSON. null=uncertain.
 
-[Current World State]
-Time: {current_time.strftime("%Y-%m-%d %H:%M")} | Weather: {global_state["weather"]} | Location: {global_state["currentLocationId"]}
+[State] {current_time.strftime("%Y-%m-%d %H:%M")} | {global_state["weather"]} | loc={global_state["currentLocationId"]}
+[Locations] {allowed_locs}
+[Schedule] {schedule_block}
+[Context] {context_snippet}
+[Input] {user_input}
 
-[Allowed Locations]
-{allowed_locs}
-
-[Schedule Context]
-{schedule_block}
-
-[Context]
-{context_snippet}
-
-[User Input]
-{user_input}
-
-[Rules]
-scene_types: pick 1+ from the list below (use exact keys):
+[Fields]
+scene_types: 1+ exact keys ↓
 {scene_types_block}
-action_type: "dialogue" | "action" | "movement" | "ooc_jump"
-target_hour: int (0-23) only for ooc_jump. Map: 새벽→3, 아침→8, 점심→12, 오후→15, 저녁→19, 밤→23
-elapsed_minutes: estimate the actual clock time the depicted scene would occupy.
-  - Estimate the WHOLE scene as one continuous event — do NOT sum per-component defaults.
-  - dialogue: short exchange (1-3 sentences each side) = 1-2 min. Extended back-and-forth = 3-5 min.
-  - action: brief physical contact, single gesture, one quick move = 1-3 min.
-            sustained physical activity (sparring, cooking, prolonged struggle) = 5-15 min.
-  - movement: same floor/building = 3-8 min. Cross-area or travel = 15-30 min.
-  - If user input is short (1-2 sentences) or describes a momentary event, use 1-3 min.
-schedule:
-  - Treat active/upcoming schedules as time pressure when choosing elapsed_minutes and movement plausibility.
-  - Treat time rules as stable world constraints, such as school hours, closing times, curfew, commute windows, and meal periods.
-  - Do not teleport characters to a schedule location unless the user asks for movement or the context already implies transition.
-  - Include preparation_time_min/travel_time_min when a requested action would collide with a schedule.
-  - Routine schedules are stable knowledge; only same-day active/upcoming schedules should strongly constrain this turn.
-new_location_id:
-  - If the destination exists in Allowed Locations, use that exact existing ID.
-  - If the destination is clearly a new concrete place, create a stable lowercase snake_case ID.
-  - Use null only when no location change is requested.
-new_location:
-  - null when using an existing location or no location change.
-  - object only when new_location_id is a new ID not listed in Allowed Locations.
-  - shape: {{"name": "display name", "description": "short factual description", "prompt_hint": "sensory/context hint", "parent_location_id": "existing_parent_id_or_null", "tags": ["dynamic"], "prompt_priority": 8}}
-  - parent_location_id should be the nearest existing broader place from Allowed Locations, or null for a new region/trip.
-  - Use concise concrete metadata. Do not invent detailed lore beyond the user input and immediate context.
-new_weather: from [Clear,Cloudy,Foggy,Drizzle,Rain,Heavy Rain,Thunderstorm,Snow,Heavy Snow,Windy] or null
+action_type: dialogue/action/movement/ooc_jump
+target_hour: 0-23 (ooc_jump only; 새벽=3,아침=8,점심=12,오후=15,저녁=19,밤=23)
+elapsed_minutes: whole-scene clock time (not sum of parts)
+  dialogue: 1-2min brief | 3-5min extended
+  action: 1-3min single | 5-15min sustained
+  movement: 3-8min same-floor | 15-30min cross-area
+  ≤2-sentence input → 1-3min
+schedule: active/upcoming=pressure on elapsed & movement. time_rules=stable constraints (school hrs/curfew/meals). No auto-teleport to schedule loc. Add prep/travel_time when collision. Routines=ref only; same-day active/upcoming=binding.
+new_location_id: existing→exact ID / new concrete→snake_case / no change→null
+new_location: null(existing/no change) | object(new ID only): {{"name","description","prompt_hint","parent_location_id","tags":["dynamic"],"prompt_priority":8}}. parent=nearest existing broader loc. Concise only.
+new_weather: Clear/Cloudy/Foggy/Drizzle/Rain/Heavy Rain/Thunderstorm/Snow/Heavy Snow/Windy / null
 
 [Output — ONLY this JSON]
 {{
@@ -224,42 +212,141 @@ new_weather: from [Clear,Cloudy,Foggy,Drizzle,Rain,Heavy Rain,Thunderstorm,Snow,
     try:
         model = get_model(model_name=CLASSIFIER_MODEL, system_prompt=system_instruction)
 
-        resp = await asyncio.wait_for(
-            model.generate_content_async(
-                prompt,
-                generation_config={
-                    "max_output_tokens": 256,
-                    "temperature": 0.0,
-                    "thinking_config": {"thinking_level": "LOW"},
-                    "response_mime_type": "application/json",
-                },
-            ),
-            timeout=_CLASSIFIER_TIMEOUT_SECONDS,
-        )
-        raw    = get_response_text(resp)
-        parsed = extract_json_from_llm(raw, source="manager_agent")
-        if not isinstance(parsed, dict) or "scene_types" not in parsed:
+        raw = await _generate_classifier_text(model, prompt)
+        parsed = extract_json_from_llm(raw, source="manager_agent", log_errors=False)
+        coerced = _coerce_classifier_result(parsed)
+        if coerced is None:
+            _log_invalid_classifier_result(raw, parsed)
             raise ValueError("invalid structure")
+        parsed = coerced
+        parsed = _normalize_classifier_result(parsed, _scenes)
         print(f"[Classify+Time / {CLASSIFIER_MODEL}] scene={parsed.get('scene_types')} elapsed={parsed.get('elapsed_minutes')}min")
         return parsed
     except asyncio.TimeoutError:
         print(f"[Classify+Time timeout] {CLASSIFIER_MODEL} > {_CLASSIFIER_TIMEOUT_SECONDS}s -> fallback")
-        return {
-            "scene_types":     ["daily"],
-            "action_type":     "dialogue",
-            "elapsed_minutes": 2,
-            "new_weather":     None,
-            "new_location_id": None,
-        }
+        return _fallback_classification()
     except Exception as e:
         print(f"[Classify+Time 실패] {e} → fallback")
-        return {
-            "scene_types":     ["daily"],
-            "action_type":     "dialogue",
-            "elapsed_minutes": 2,
-            "new_weather":     None,
-            "new_location_id": None,
-        }
+        return _fallback_classification()
+
+
+async def _generate_classifier_text(model: Any, prompt: str) -> str:
+    """Generate classifier JSON and retry with a larger budget if Gemini returns no text."""
+    base_config = {
+        "max_output_tokens": _CLASSIFIER_OUTPUT_TOKENS,
+        "temperature": 0.0,
+        "thinking_config": {"thinking_budget": 0},
+    }
+    resp = await asyncio.wait_for(
+        model.generate_content_async(
+            prompt,
+            generation_config={**base_config, "response_mime_type": "application/json"},
+        ),
+        timeout=_CLASSIFIER_TIMEOUT_SECONDS,
+    )
+    raw = get_response_text(resp)
+    if raw.strip():
+        return raw
+
+    log_empty_response_diagnostics(resp, "manager_classifier:json_mode")
+    print("[Classify+Time] empty JSON response -> retrying with larger JSON budget")
+    retry_resp = await asyncio.wait_for(
+        model.generate_content_async(
+            prompt,
+            generation_config={
+                **base_config,
+                "max_output_tokens": _CLASSIFIER_RETRY_OUTPUT_TOKENS,
+                "response_mime_type": "application/json",
+            },
+        ),
+        timeout=_CLASSIFIER_TIMEOUT_SECONDS,
+    )
+    retry_raw = get_response_text(retry_resp)
+    if not retry_raw.strip():
+        log_empty_response_diagnostics(retry_resp, "manager_classifier:retry")
+    return retry_raw
+
+
+def _coerce_classifier_result(parsed: object) -> dict | None:
+    """Accept common classifier JSON variants and return a normalized dict shell."""
+    if isinstance(parsed, list):
+        dict_items = [item for item in parsed if isinstance(item, dict)]
+        if len(dict_items) == 1:
+            parsed = dict_items[0]
+        else:
+            return None
+
+    if not isinstance(parsed, dict):
+        return None
+
+    result = dict(parsed)
+    if "scene_types" not in result:
+        for alias in ("scene_type", "scene", "scenes"):
+            if alias in result:
+                result["scene_types"] = result.get(alias)
+                break
+    return result if "scene_types" in result else None
+
+
+def _log_invalid_classifier_result(raw: str, parsed: object) -> None:
+    """Print compact diagnostics when classifier JSON has an unusable structure."""
+    preview = (raw or "").replace("\n", "\\n")[:500]
+    if len(raw or "") > 500:
+        preview += "... [log truncated]"
+    print(
+        "[Classify+Time invalid structure] "
+        f"parsed_type={type(parsed).__name__} raw={preview or '(empty)'}"
+    )
+
+
+def _normalize_classifier_result(parsed: dict, scene_descriptions: dict[str, str]) -> dict:
+    """Repair structurally valid classifier JSON that contains empty or unusable fields."""
+    repaired = dict(parsed)
+
+    allowed_scene_list = list(scene_descriptions) or ["daily"]
+    allowed_scenes = set(allowed_scene_list)
+    raw_scenes = repaired.get("scene_types")
+    if isinstance(raw_scenes, str):
+        raw_scenes = [raw_scenes]
+    if not isinstance(raw_scenes, list):
+        raw_scenes = []
+
+    scenes = [
+        str(scene).strip()
+        for scene in raw_scenes
+        if str(scene or "").strip() in allowed_scenes
+    ]
+    if not scenes:
+        scenes = ["daily" if "daily" in allowed_scenes else allowed_scene_list[0]]
+    repaired["scene_types"] = scenes
+
+    action_type = str(repaired.get("action_type") or "dialogue").strip().lower()
+    if action_type not in {"dialogue", "action", "movement", "ooc_jump"}:
+        action_type = "dialogue"
+    repaired["action_type"] = action_type
+
+    if repaired.get("elapsed_minutes") is None and action_type != "ooc_jump":
+        repaired["elapsed_minutes"] = 2 if action_type == "dialogue" else 5
+
+    for nullable_key in ("target_hour", "new_weather", "new_location_id", "new_location"):
+        if repaired.get(nullable_key) in ("", "null", "None"):
+            repaired[nullable_key] = None
+
+    if not repaired.get("reason"):
+        repaired["reason"] = "classifier output normalized"
+
+    return repaired
+
+
+def _fallback_classification() -> dict:
+    """Return the conservative fallback used when manager scene/time parsing fails."""
+    return {
+        "scene_types":     ["daily"],
+        "action_type":     "dialogue",
+        "elapsed_minutes": 2,
+        "new_weather":     None,
+        "new_location_id": None,
+    }
 
 
 # ════════════════════════════════════════════════════════════
