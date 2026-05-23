@@ -71,6 +71,7 @@ def build_fixed_section(
     resolved_perspective = _perspective_from_pov_mode(pov_mode)
 
     operator = _select_operator(world_config.get("rating", "r18"))
+    prompt_sections = world_config.get("prompt", {}).get("sections", {})
 
     parts = [
         operator,
@@ -79,8 +80,9 @@ def build_fixed_section(
         _render_prompt_block("core", _select_core_section(resolved_perspective)),
         _render_prompt_block("emotion", _select_emotion_section()),
         _render_prompt_block("style", _select_style_section(resolved_perspective)),
-        _render_prompt_block("world_lore", (world_config.get("prompt", {}).get("sections", {})).get("world")),
-        _render_prompt_block("world_specific_prose_prompt", world_config.get("prose_rules", "")),
+        _render_prompt_block("world_lore", prompt_sections.get("world")),
+        _render_prompt_block("scenario_lore", prompt_sections.get("scenario")),
+        _render_prompt_block("world_specific_prose_prompt", prompt_sections.get("prose") or world_config.get("prose_rules", "")),
         _render_prompt_block("character_focus_prompt", _resolve_char_focus(world_config, char_name)),
         _render_prompt_block("blacklist", _select_blacklist_section(world_config, char_name, user_name, additional_blacklist)),
         _render_prompt_block("npc_behavior", _select_npc_behavior_section()),

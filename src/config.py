@@ -15,7 +15,7 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 # ── 앱 설정 ─────────────────────────────────────────────────
 WORLD_ID    = os.getenv("WORLD_ID",    "babe_univ")
 PERSPECTIVE = int(os.getenv("PERSPECTIVE", 3))
-MAX_TOKEN   = int(os.getenv("MAX_TOKEN",   8192))
+MAX_TOKEN   = int(os.getenv("MAX_TOKEN",   12288))
 
 # ── LLM 모델 ────────────────────────────────────────────────
 MODEL_ACTOR           = os.getenv("MODEL_ACTOR",           "gemini-3.1-pro-preview")

@@ -275,6 +275,10 @@ def render_world_section(world_context: dict) -> str:
     _append_schedules(parts, world_context.get("schedules", []))
     _append_nearby_activity(parts, world_context.get("nearby_activity", []))
     _append_sns(parts, world_context.get("sns_posts", []))
+    kakao_turn_context = world_context.get("kakao_turn_context", {})
+    _append_kakao_turn_context(parts, kakao_turn_context)
+    if not kakao_turn_context:
+        _append_kakao(parts, world_context.get("kakao_rooms", []))
     _append_goals(parts, world_context.get("life_goals", []))
     _append_item_memories(parts, world_context.get("object_memories", []))
     _append_secrets(parts, world_context.get("secret_hints", []))
@@ -517,6 +521,51 @@ def _append_sns(parts: list[str], sns_posts: list[str]) -> None:
     """Append SNS feed snippets."""
     if sns_posts:
         parts.append("[SNS Feed]\n" + "\n".join(f"- {post}" for post in sns_posts))
+
+
+def _append_kakao(parts: list[str], kakao_rooms: list[dict]) -> None:
+    """Append KakaoTalk room snippets."""
+    if not kakao_rooms:
+        return
+    room_blocks: list[str] = []
+    for room in kakao_rooms:
+        name = room.get("room") or "톡방"
+        members = ", ".join(room.get("members") or [])
+        topic = room.get("topic") or ""
+        header = f"- {name}"
+        if members:
+            header += f" ({members})"
+        if topic:
+            header += f": {topic}"
+        messages = [
+            f"  - {message}"
+            for message in room.get("recent_messages") or []
+            if message
+        ]
+        room_blocks.append("\n".join([header, *messages]))
+    if room_blocks:
+        parts.append("[KakaoTalk Rooms]\n" + "\n".join(room_blocks))
+
+
+def _append_kakao_turn_context(parts: list[str], kakao_turn_context: dict) -> None:
+    """Append this-turn KakaoTalk messages as context, not output format."""
+    messages = kakao_turn_context.get("messages") if isinstance(kakao_turn_context, dict) else []
+    if not messages:
+        return
+    lines = [
+        "[KakaoTalk Before Current Input]",
+        "- These KakaoTalk messages are situation context only.",
+        "- Actor must not output KakaoTalk chat UI, chat logs, timestamps, or message bubbles.",
+    ]
+    for message in messages:
+        room = message.get("room") or "톡방"
+        sender = message.get("sender_name") or message.get("sender_id") or "unknown"
+        content = message.get("content") or ""
+        timestamp = message.get("timestamp") or ""
+        time_label = timestamp[11:16] if len(timestamp) >= 16 else timestamp
+        prefix = f"- {time_label} " if time_label else "- "
+        lines.append(f"{prefix}{room} / {sender}: {content}")
+    parts.append("\n".join(lines))
 
 
 def _append_goals(parts: list[str], goals: list[dict]) -> None:

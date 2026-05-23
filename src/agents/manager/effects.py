@@ -17,6 +17,7 @@ from src.simulation.systems.needs import run_needs_update
 from src.simulation.systems.organic import tick_all_cycles
 from src.simulation.systems.personal_facts import commit_personal_facts
 from src.simulation.systems.schedule_tick import run_schedule_tick
+from src.simulation.systems.schedules import _fetch_schedule_rows
 
 
 def _parse_effect_datetime(value: object) -> datetime | None:
@@ -67,6 +68,13 @@ async def commit_manager_auxiliary_effects(
         return {}
 
     needs_result: dict = {}
+    schedule_rows: list[dict] | None = None
+
+    if current_dt:
+        try:
+            schedule_rows = await _fetch_schedule_rows()
+        except Exception as e:
+            print(f"[ManagerCommit] schedule fetch failed (ignored): {e}")
 
     needs_plan = effects.get("needs_update") or {}
     if needs_plan:
@@ -78,6 +86,7 @@ async def commit_manager_auxiliary_effects(
                 elapsed_minutes = float(elapsed_minutes if elapsed_minutes is not None else 1.0),
                 current_time    = needs_time,
                 scene_chars     = scene_chars,
+                schedule_rows   = schedule_rows,
             )
         except Exception as e:
             print(f"[ManagerCommit] needs update failed (ignored): {e}")
@@ -121,6 +130,7 @@ async def commit_manager_auxiliary_effects(
                     prev_time=prev_dt,
                     current_time=current_dt,
                     scene_chars=scene_chars,
+                    schedule_rows=schedule_rows,
                 )
         except Exception as e:
             print(f"[ManagerCommit] schedule tick failed (ignored): {e}")

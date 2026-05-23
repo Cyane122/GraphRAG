@@ -4,7 +4,7 @@
 # 욕구(Needs) 초과 시 NPC 자율 행동을 결정하고 Event + 욕구 감소를 반영합니다.
 #
 # Functions
-#   - resolve_action(npc_id: str, need_name: str, overflow_time: datetime, location_id: str, personality: str, traits: dict, extra_context: str) -> dict | None : 욕구 초과 NPC 행동 결정 및 이벤트 생성
+#   - resolve_action(npc_id: str, need_name: str, overflow_time: datetime, location_id: str, personality: str, traits: dict, extra_context: str = "", valid_locations: list[dict] | None = None) -> dict | None : 욕구 초과 NPC 행동 결정 및 이벤트 생성
 # ================================
 
 from datetime import datetime
@@ -55,12 +55,25 @@ async def _unique_event_id(base_id: str) -> str:
     return f"{base_id}_{datetime.now().strftime('%H%M%S%f')}"
 
 
-async def _fetch_valid_locations() -> list[tuple[str, str]]:
-    """DB에서 유효한 Location ID + 이름 목록 반환."""
+async def _fetch_valid_locations() -> list[dict]:
+    """DB에서 유효한 Location ID, 이름, 태그, 상위 장소 목록을 반환합니다."""
     async with async_driver.session() as session:
-        rec = await session.run("MATCH (l:Location) RETURN l.id AS id, l.name AS name")
+        rec = await session.run("""
+            MATCH (l:Location)
+            OPTIONAL MATCH (l)-[:PART_OF]->(p:Location)
+            RETURN l.id AS id, l.name AS name, l.tags AS tags, collect(p.id) AS parent_ids
+        """)
         rows = await rec.fetch_all()
-    return [(r["id"], r["name"]) for r in rows]
+    return [
+        {
+            "id": r["id"],
+            "name": r.get("name") or r["id"],
+            "tags": r.get("tags") or [],
+            "parent_ids": r.get("parent_ids") or [],
+        }
+        for r in rows
+        if r["id"]
+    ]
 
 
 async def resolve_action(
@@ -71,18 +84,27 @@ async def resolve_action(
     personality:   str,
     traits:        dict,
     extra_context: str = "",
+    valid_locations: list[dict] | None = None,
 ) -> dict | None:
     """
     Haiku에게 npc_id가 overflow_time에 뭘 했는지 결정하게 함.
     Event 노드 생성 후 DynamicState 욕구 수치 감소.
 
     extra_context: libido처럼 추가 정보가 필요한 욕구에서 프롬프트에 삽입할 문자열.
+    valid_locations: 욕구별로 사전 필터링된 장소 후보. None이면 전체 Location을 사용.
     Returns: 생성된 event dict, 실패 시 None.
     """
     if need_name not in SETTLE_LEVELS:
         return None
 
-    valid_locations = await _fetch_valid_locations()
+    valid_locations = valid_locations if valid_locations is not None else await _fetch_valid_locations()
+    if not valid_locations:
+        valid_locations = [{
+            "id": location_id,
+            "name": location_id,
+            "tags": [],
+            "parent_ids": [],
+        }]
     hint   = NEED_ACTION_HINTS.get(need_name, "doing something to address their needs")
     action = await _decide_action(
         npc_id, need_name, hint, overflow_time, location_id, personality, traits,
@@ -92,7 +114,7 @@ async def resolve_action(
     if not action:
         return None
 
-    valid_loc_ids = {loc_id for loc_id, _ in valid_locations}
+    valid_loc_ids = {str(loc.get("id")) for loc in valid_locations if loc.get("id")}
     event_id = await _create_event(
         npc_id, action, overflow_time, location_id,
         need_name=need_name,
@@ -115,7 +137,7 @@ async def _decide_action(
     location_id:     str,
     personality:     str,
     traits:          dict,
-    valid_locations: list[tuple[str, str]] | None = None,
+    valid_locations: list[dict] | None = None,
     extra_context:   str = "",
 ) -> dict | None:
     """LLM에게 욕구 해소 행동을 결정하게 하고 구조화된 dict를 반환한다."""
@@ -126,7 +148,11 @@ async def _decide_action(
     )
     time_str = overflow_time.strftime("%Y-%m-%d %H:%M")
 
-    loc_list = "\n".join(f'  - "{lid}" ({name})' for lid, name in (valid_locations or []))
+    loc_list = "\n".join(
+        f'  - "{loc.get("id")}" ({loc.get("name") or loc.get("id")})'
+        for loc in (valid_locations or [])
+        if loc.get("id")
+    )
     if not loc_list:
         loc_list = f'  - "{location_id}" (current location)'
 

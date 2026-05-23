@@ -18,7 +18,7 @@ import hashlib
 import re
 from datetime import datetime, timedelta
 
-from src.config import MODEL_PRO_UPDATER as MODEL_STATE_UPDATER
+from src.config import MODEL_STATE_UPDATER
 from src.core.database import async_driver
 from src.core.llm.client import extract_json_from_llm, get_model, get_response_text
 

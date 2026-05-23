@@ -160,6 +160,517 @@ em {
   -webkit-backdrop-filter: none !important;
 }
 
+.cl-message:has(.kakao-panel-host),
+[data-testid*="message"]:has(.kakao-panel-host),
+[class*="Message"]:has(.kakao-panel-host),
+[class*="message"]:has(.kakao-panel-host) {
+  display: none !important;
+}
+
+html.has-kakao-panel main,
+html.has-kakao-panel main [class*="Chat"],
+html.has-kakao-panel main [class*="chat"],
+html.has-kakao-panel main [class*="Thread"],
+html.has-kakao-panel main [class*="thread"],
+html.has-kakao-panel main [class*="Messages"],
+html.has-kakao-panel main [class*="messages"] {
+  padding-right: 392px;
+}
+
+.kakao-panel-host.is-stale {
+  display: none !important;
+}
+
+.kakao-side-panel {
+  position: fixed;
+  top: 76px;
+  right: 18px;
+  bottom: 18px;
+  z-index: 9000;
+  width: min(360px, calc(100vw - 28px));
+  pointer-events: none;
+}
+
+.kakao-side-panel.is-collapsed {
+  width: 58px;
+}
+
+.kakao-phone {
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  overflow: hidden;
+  pointer-events: auto;
+  border: 1px solid rgba(31, 35, 42, 0.18) !important;
+  border-radius: 8px !important;
+  background: #bacee0 !important;
+  color: #1d1f22 !important;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.36) !important;
+}
+
+.kakao-side-panel.is-collapsed .kakao-phone {
+  display: block;
+  background: #fee500 !important;
+}
+
+.kakao-topbar {
+  display: grid;
+  grid-template-columns: 34px 1fr;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08) !important;
+  background: #fee500 !important;
+}
+
+.app-sns .kakao-topbar {
+  background: linear-gradient(135deg, #f58529 0%, #dd2a7b 48%, #515bd4 100%) !important;
+}
+
+.app-sns .kakao-title,
+.app-sns .kakao-subtitle {
+  color: #ffffff !important;
+}
+
+.kakao-collapse,
+.kakao-room,
+.kakao-compose button,
+.sns-app-tabs button {
+  cursor: pointer;
+  border: 0;
+  font: inherit;
+}
+
+.kakao-collapse {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.08) !important;
+  color: #2b2b2b !important;
+}
+
+.app-sns .kakao-collapse {
+  background: rgba(255, 255, 255, 0.22) !important;
+  color: #ffffff !important;
+}
+
+.kakao-title {
+  color: #1d1f22 !important;
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.kakao-subtitle {
+  margin-top: 2px;
+  max-width: 260px;
+  overflow: hidden;
+  color: rgba(0, 0, 0, 0.58) !important;
+  font-size: 12px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sns-app-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  padding: 8px;
+  background: #ffffff !important;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08) !important;
+}
+
+.sns-app-tabs button {
+  height: 30px;
+  border-radius: 7px !important;
+  background: #f1f3f5 !important;
+  color: rgba(0, 0, 0, 0.62) !important;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.sns-app-tabs button.is-active {
+  background: #202124 !important;
+  color: #ffffff !important;
+}
+
+.kakao-room-list {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(126px, 1fr);
+  gap: 6px;
+  overflow-x: auto;
+  padding: 8px;
+  background: #f6f2df !important;
+}
+
+.kakao-room {
+  min-height: 48px;
+  display: grid;
+  gap: 2px;
+  align-content: center;
+  padding: 7px 9px;
+  border-radius: 7px !important;
+  background: rgba(255, 255, 255, 0.58) !important;
+  color: #222 !important;
+  text-align: left;
+}
+
+.kakao-room.is-active {
+  background: #ffffff !important;
+  box-shadow: inset 0 0 0 2px rgba(254, 229, 0, 0.95) !important;
+}
+
+.kakao-room-name,
+.kakao-room-last {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kakao-room-name {
+  color: #1d1f22 !important;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.kakao-room-last {
+  color: rgba(0, 0, 0, 0.54) !important;
+  font-size: 11px;
+}
+
+.kakao-chat-log {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 12px 16px;
+}
+
+.kakao-message-row {
+  display: grid;
+  gap: 3px;
+  margin-bottom: 10px;
+}
+
+.kakao-message-row.from-player {
+  justify-items: end;
+}
+
+.kakao-message-row.from-character {
+  justify-items: start;
+}
+
+.kakao-sender {
+  max-width: 76%;
+  color: rgba(0, 0, 0, 0.68) !important;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.kakao-bubble {
+  max-width: 78%;
+  padding: 8px 10px;
+  border-radius: 7px !important;
+  background: #ffffff !important;
+  color: #161616 !important;
+  font-size: 13px;
+  line-height: 1.42;
+  word-break: break-word;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.04) !important;
+}
+
+.from-player .kakao-bubble {
+  background: #fee500 !important;
+}
+
+.kakao-time {
+  color: rgba(0, 0, 0, 0.44) !important;
+  font-size: 10px;
+}
+
+.kakao-status {
+  color: rgba(89, 78, 0, 0.78) !important;
+  font-size: 10px;
+  margin-top: 3px;
+}
+
+.kakao-empty {
+  padding: 14px;
+  color: rgba(0, 0, 0, 0.54) !important;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.kakao-compose {
+  display: grid;
+  gap: 7px;
+  padding: 9px;
+  border-top: 1px solid rgba(0, 0, 0, 0.08) !important;
+  background: #f7f7f7 !important;
+}
+
+.kakao-invite-row,
+.kakao-input-row {
+  display: grid;
+  gap: 6px;
+}
+
+.kakao-invite-row {
+  grid-template-columns: 1fr 54px;
+}
+
+.kakao-input-row {
+  grid-template-columns: 1fr 58px;
+  align-items: end;
+}
+
+.kakao-compose select,
+.kakao-compose textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid rgba(0, 0, 0, 0.12) !important;
+  border-radius: 7px !important;
+  background: #ffffff !important;
+  color: #171717 !important;
+  box-sizing: border-box;
+  font-size: 12px;
+  outline: none;
+}
+
+.kakao-compose select {
+  height: 32px;
+  padding: 0 8px;
+}
+
+.kakao-compose textarea {
+  height: 54px;
+  max-height: 120px;
+  padding: 8px;
+  resize: none;
+}
+
+.kakao-compose button {
+  min-height: 32px;
+  border-radius: 7px;
+  background: #2f3438 !important;
+  color: #ffffff !important;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.kakao-compose button:disabled,
+.kakao-compose select:disabled,
+.kakao-compose textarea:disabled {
+  cursor: default;
+  opacity: 0.48;
+}
+
+.insta-feed {
+  grid-row: 3 / 6;
+  min-height: 0;
+  overflow-y: auto;
+  background: #fafafa !important;
+}
+
+.insta-empty {
+  margin: 16px;
+  padding: 16px;
+  border: 1px dashed rgba(0, 0, 0, 0.14) !important;
+  border-radius: 8px !important;
+  color: rgba(0, 0, 0, 0.54) !important;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.insta-post {
+  background: #ffffff !important;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08) !important;
+}
+
+.insta-post-head {
+  display: grid;
+  grid-template-columns: 36px 1fr auto;
+  gap: 9px;
+  align-items: center;
+  padding: 10px 12px;
+}
+
+.insta-avatar {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 50% !important;
+  color: #ffffff !important;
+  font-size: 14px;
+  font-weight: 850;
+}
+
+.insta-post-head strong,
+.insta-post-head small {
+  display: block;
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.insta-post-head strong {
+  color: #111111 !important;
+  font-size: 13px;
+  line-height: 1.2;
+}
+
+.insta-post-head small,
+.insta-post-head time {
+  color: rgba(0, 0, 0, 0.52) !important;
+  font-size: 11px;
+}
+
+.insta-photo {
+  aspect-ratio: 1 / 1;
+  display: grid;
+  place-items: end start;
+  padding: 12px;
+  color: rgba(255, 255, 255, 0.84) !important;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.insta-photo span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 999px !important;
+  padding: 5px 8px;
+  background: rgba(0, 0, 0, 0.28) !important;
+}
+
+.tone-0 { background: linear-gradient(135deg, #dd2a7b, #feda77) !important; }
+.tone-1 { background: linear-gradient(135deg, #515bd4, #8134af) !important; }
+.tone-2 { background: linear-gradient(135deg, #0f9b8e, #6dd5ed) !important; }
+.tone-3 { background: linear-gradient(135deg, #f58529, #dd2a7b) !important; }
+.tone-4 { background: linear-gradient(135deg, #111827, #6b7280) !important; }
+.tone-5 { background: linear-gradient(135deg, #2563eb, #22c55e) !important; }
+
+.insta-actions {
+  display: flex;
+  gap: 14px;
+  padding: 9px 12px 4px;
+  color: #111111 !important;
+  font-size: 19px;
+  line-height: 1;
+}
+
+.insta-likes,
+.insta-caption,
+.insta-comments {
+  margin: 0;
+  padding: 0 12px;
+  color: #111111 !important;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.insta-likes {
+  font-weight: 750;
+}
+
+.insta-caption {
+  padding-top: 3px;
+}
+
+.insta-caption strong {
+  font-weight: 850;
+}
+
+.insta-comments {
+  padding-top: 3px;
+  padding-bottom: 12px;
+  color: rgba(0, 0, 0, 0.48) !important;
+}
+
+.social-settings-panel {
+  grid-row: 3 / 6;
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px;
+  background: #ffffff !important;
+}
+
+.social-toggle {
+  min-height: 54px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid rgba(0, 0, 0, 0.1) !important;
+  border-radius: 8px !important;
+  background: #f8f9fa !important;
+  color: #171717 !important;
+}
+
+.social-toggle strong,
+.social-toggle small {
+  display: block;
+}
+
+.social-toggle strong {
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.social-toggle small {
+  margin-top: 2px;
+  color: rgba(0, 0, 0, 0.54) !important;
+  font-size: 11px;
+}
+
+.social-toggle input {
+  width: 18px;
+  height: 18px;
+  accent-color: #202124;
+}
+
+.social-toggle.is-forced {
+  opacity: 0.58;
+}
+
+@media (max-width: 900px) {
+  html.has-kakao-panel main,
+  html.has-kakao-panel main [class*="Chat"],
+  html.has-kakao-panel main [class*="chat"],
+  html.has-kakao-panel main [class*="Thread"],
+  html.has-kakao-panel main [class*="thread"],
+  html.has-kakao-panel main [class*="Messages"],
+  html.has-kakao-panel main [class*="messages"] {
+    padding-right: 0;
+  }
+
+  .kakao-side-panel {
+    top: auto;
+    left: 10px;
+    right: 10px;
+    bottom: 10px;
+    width: auto;
+    height: min(58vh, 520px);
+  }
+
+  .kakao-side-panel.is-collapsed {
+    left: auto;
+    width: 58px;
+    height: 52px;
+  }
+}
+
 .cl-step,
 [class*="Step"] {
   background: rgba(128, 128, 128, 0.18) !important;

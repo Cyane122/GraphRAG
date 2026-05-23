@@ -503,7 +503,6 @@ CHARACTERS: [physically present or directly active women first, then other prese
 CHOREOGRAPHY: [목록에 있는 각 캐릭터들이 이 턴에서 보여줄 짧은 행동이나 대사 계획을 각각 10자 내외로 작성]
 STATE: {{state_line}}
 CURRENT_POV: {{current_pov_line}}
-POV_CANDIDATES: {{pov_candidates_line}}
 EMOTION: Lv[1–10]. Hot→[body:verb]. Cold→[body:verb]. Same axis last turn? [yes→switch/no]
 TONE: {user}=[word]. output=[word]. match=[yes/no]
 CUT: last line=[env/body/action/sfx/thought-fragment]. resolved=[yes/no]

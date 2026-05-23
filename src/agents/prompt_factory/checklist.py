@@ -19,9 +19,6 @@ _CYCLE_PLACEHOLDER = (
     "If condom omitted AND pregnancy_risk=있음 -> flag in interior monologue."
 )
 
-_MAX_COT_CHARACTERS = 15
-
-
 def build_turn_checklist(
     template: str,
     scene_types: list[str],
@@ -36,7 +33,6 @@ def build_turn_checklist(
     checklist = checklist.replace(_CYCLE_PLACEHOLDER, _build_all_cycle_lines(char_data, npc_data_list or []))
     checklist = checklist.replace("{state_line}", render_state_line(dyn_state, world_config))
     checklist = checklist.replace("{current_pov_line}", _render_current_pov_line(current_pov or {}))
-    checklist = checklist.replace("{pov_candidates_line}", _render_pov_candidates_line(current_pov or {}))
     return checklist
 
 
@@ -136,31 +132,12 @@ def _render_current_pov_line(current_pov: dict) -> str:
         "id": selected.get("id"),
         "name": selected.get("name"),
         "aliases": selected.get("aliases") or [],
-        "reason": selected.get("selection_reason"),
+        "source": selected.get("source"),
         "rule": current_pov.get("rule"),
         "profile": selected.get("profile") or {},
         "dynamic_state": selected.get("dynamic_state") or {},
         "relationship_to_pc": selected.get("relationship_to_pc") or {},
     }
-    return _to_json(payload)
-
-
-def _render_pov_candidates_line(current_pov: dict) -> str:
-    """Render candidate POV character nodes available for in-analysis POV switching."""
-    candidates = current_pov.get("candidates") or []
-    if not candidates:
-        return "[]"
-    payload = [
-        {
-            "id": candidate.get("id"),
-            "name": candidate.get("name"),
-            "aliases": candidate.get("aliases") or [],
-            "source": candidate.get("source"),
-            "profile": candidate.get("profile") or {},
-            "relationship_to_pc": candidate.get("relationship_to_pc") or {},
-        }
-        for candidate in candidates[:_MAX_COT_CHARACTERS]
-    ]
     return _to_json(payload)
 
 

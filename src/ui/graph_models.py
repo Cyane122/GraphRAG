@@ -40,6 +40,7 @@ class GraphSnapshot(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
+    thread_id: str = Field(default="", alias="threadId")
     world_id: str = Field(default="", alias="worldId")
     generated_at: str = Field(default="", alias="generatedAt")
     visible_time: str | None = Field(default=None, alias="visibleTime")

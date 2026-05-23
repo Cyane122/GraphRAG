@@ -259,6 +259,7 @@ def _pending_time_state() -> dict[str, str | None]:
 def _profile_node(
     char_id: str,
     char_name: str,
+    node_id_prefix: str,
     node_type: str,
     profile: Any,
 ) -> GraphNode | None:
@@ -266,10 +267,10 @@ def _profile_node(
     data = _clean(profile)
     if not isinstance(data, dict) or not data:
         return None
-    label = f"{char_name} static" if node_type == "static" else f"{char_name} info"
+    label = f"{char_name} StaticInformation" if node_id_prefix == "static" else f"{char_name} DynamicInformation"
     subtitle = data.get("role") or data.get("grade_class") or data.get("nationality") or ""
     return _node(
-        f"{node_type}:{char_id}",
+        f"{node_id_prefix}:{char_id}",
         label,
         node_type,
         str(subtitle),
@@ -375,12 +376,24 @@ async def build_debug_graph(pc_id: str, npc_id: str, world_id: str) -> GraphSnap
             )
             edges.append(_edge(char_node_id, state_node_id, "HAS_STATE"))
 
-        static_node = _profile_node(char_id, row.get("name") or char_id, "static", row.get("static_profile"))
+        static_node = _profile_node(
+            char_id,
+            row.get("name") or char_id,
+            "static",
+            "static_information",
+            row.get("static_profile"),
+        )
         if static_node:
             nodes.append(static_node)
             edges.append(_edge(char_node_id, static_node.id, "HAS_PROFILE"))
 
-        info_node = _profile_node(char_id, row.get("name") or char_id, "info", row.get("dynamic_info"))
+        info_node = _profile_node(
+            char_id,
+            row.get("name") or char_id,
+            "info",
+            "dynamic_information",
+            row.get("dynamic_info"),
+        )
         if info_node:
             nodes.append(info_node)
             edges.append(_edge(char_node_id, info_node.id, "HAS_INFO"))
@@ -433,7 +446,13 @@ async def build_debug_graph(pc_id: str, npc_id: str, world_id: str) -> GraphSnap
         if subject_id in included_char_ids:
             edges.append(_edge(fact_node_id, f"character:{subject_id}", "ABOUT"))
 
+    try:
+        _thread_id = cl.context.session.thread_id
+    except Exception:
+        _thread_id = ""
+
     return GraphSnapshot(
+        thread_id=_thread_id,
         world_id=world_id,
         generated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         visible_time=effective_time,

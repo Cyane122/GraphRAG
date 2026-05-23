@@ -4,7 +4,7 @@
 # Create Event records and handle event-only complex updates.
 #
 # Functions
-#   - _create_event(event_data: dict, npc_id: str, pc_id: str) -> None : Create Event and Memory nodes
+#   - _create_event(event_data: dict, npc_id: str, pc_id: str, actor_response: str = "", participant_ids: list[str] | None = None) -> None : Create Event and Memory nodes
 #   - _update_acceptance_scores(npc_id: str, ts_delta: int, na_delta: int) -> None : Apply TS/NA deltas
 #   - _get_current_iso_time() -> str : Fetch current game time as an ISO string
 #   - delegate_complex_update(actor_response: str, npc_id: str, pc_id: str, initial_changes: dict | None, event_only: bool, world_config: dict | None, scene_chars: list[str] | None) -> None : Delegate complex updates including event-only mode
@@ -61,9 +61,9 @@ async def _compress_event_content(content: str, turns: int) -> dict:
 Content:
 {content[:5000]}
 
-Return ONLY valid JSON:
+Return ONLY valid JSON with factual Event text only. Do not add speculation, emotion attribution, or memory distortion:
 {{
-  "summary": "2-4 sentence Korean narrative (comprehensive — who, what, how it concluded)",
+  "summary": "2-4 sentence Korean factual record (who, what, how it concluded)",
   "narrative_summary": "1 sentence actor hook",
   "state_summary": "1 sentence factual (who did what, outcome)"
 }}"""
@@ -71,7 +71,7 @@ Return ONLY valid JSON:
     try:
         model = get_model(
             model_name=NARRATIVE_MODEL,
-            system_prompt="Compress roleplay event content into a final record.",
+            system_prompt="Compress roleplay event content into an objective factual event record.",
         )
         resp = await model.generate_content_async(
             prompt,
@@ -188,12 +188,13 @@ Importance:
 8-10: Major (hospitalization/surgery/accident/confession)
 5-7: Significant (major injury/near-breakup/VERY FIRST emotional intimacy/public humiliation)
 2-4: Minor durable (new injury/new named char/promise/secret/gift/location transition/small durable conflict/repeated sex incl. arrangement)
-0-1: Skip (routine/atmosphere/repeated follow-up)
+0-1: Routine or atmospheric, but still create when a concrete in-world event occurred.
 
-Create if importance >= 2. Uncertain → prefer importance 2.
+Create for any concrete accepted event regardless of importance. Return null only when no in-world event occurred.
 id: {{location}}_{{description}}_{{YYYYMMDD_HHMM}}
 importance >= 7 → new_relationship_status: 1-3 English sentences (state AFTER).
-Include: memory_type (episodic/emotional/relational), narrative_summary (1 sentence Actor hook), state_summary (1 sentence factual).
+summary: 1-2 sentence Korean factual record; only observed facts, no subjective distortion or speculation.
+Include: importance 0-10, memory_type (episodic/emotional/relational), narrative_summary (1 sentence Actor hook), state_summary (1 sentence factual).
 
 Return ONLY valid JSON:
 {{
@@ -271,8 +272,9 @@ async def _create_event(
     npc_id: str,
     pc_id: str,
     actor_response: str = "",
+    participant_ids: list[str] | None = None,
 ) -> None:
-    """Event 노드 생성 + Memory 노드 생성까지 처리한다."""
+    """Event 노드와 관련 캐릭터별 Memory 노드를 생성한다."""
     if not event_data or not event_data.get("id"):
         return
 
@@ -281,7 +283,8 @@ async def _create_event(
     timestamp_iso = await _get_current_iso_time()
     prepared = _prepare_event_summaries(event_data)
     summary = prepared["summary"]
-    importance = prepared["importance"] or 5
+    importance = prepared["importance"]
+    related_char_ids = list(dict.fromkeys(participant_ids or [npc_id, pc_id]))
 
     embedding = None
     embedding_text = prepared["narrative_summary"] or summary
@@ -321,7 +324,7 @@ async def _create_event(
             embedding=embedding,
         )
 
-        for char_id in [npc_id, pc_id]:
+        for char_id in related_char_ids:
             await session.run("""
                 MATCH (c:Character {id: $char_id})
                 MATCH (e:Event {id: $event_id})
@@ -341,7 +344,7 @@ async def _create_event(
         event_id   = event_data["id"],
         summary    = summary,
         importance = importance,
-        char_ids   = [npc_id, pc_id],
+        char_ids   = related_char_ids,
         timestamp  = timestamp_iso,
         embedding  = embedding,
         memory_type=prepared["memory_type"],
@@ -426,6 +429,19 @@ async def delegate_complex_update(
     from src.simulation.systems.social import resolve_and_update as wb_resolve
     from src.simulation.state.relationships import apply_scene_relationship_updates
 
+    participant_ids = [pc_id, npc_id]
+    if world_config and scene_chars:
+        try:
+            resolved_ids = await wb_resolve(
+                char_names       = scene_chars,
+                main_npc_id      = npc_id,
+                pc_id            = pc_id,
+                world_config     = world_config,
+            )
+            participant_ids = [pc_id, npc_id, *resolved_ids]
+        except Exception as e:
+            print(f"[WorldBuilder] resolve 실패 (무시): {e}")
+
     plan = await _generate_event_plan(
         input_text      = actor_response,
         npc_id          = npc_id,
@@ -435,24 +451,22 @@ async def delegate_complex_update(
 
     new_event = plan.get("new_event")
     if new_event:
-        await _create_event(new_event, npc_id, pc_id, actor_response)
+        await _create_event(
+            new_event,
+            npc_id,
+            pc_id,
+            actor_response,
+            participant_ids=participant_ids,
+        )
         new_status = new_event.get("new_relationship_status")
         if new_status and new_event.get("importance", 0) >= 7:
             await _apply_relationship_status(npc_id, pc_id, new_status)
 
     if world_config and scene_chars:
         try:
-            participant_ids = await wb_resolve(
-                char_names       = scene_chars,
-                main_npc_id      = npc_id,
-                pc_id            = pc_id,
-                world_config     = world_config,
-                event_id         = new_event.get("id") if new_event else None,
-                event_importance = new_event.get("importance", 0) if new_event else 0,
-            )
             await apply_scene_relationship_updates(
                 actor_response,
-                [pc_id, npc_id, *participant_ids],
+                participant_ids,
                 primary_pair=(npc_id, pc_id),
             )
         except Exception as e:

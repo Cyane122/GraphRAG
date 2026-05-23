@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -29,6 +30,13 @@ from src.core.database import (
     update_dynamic_state,
 )
 from src.simulation.state.audit import _audit_state_updates, _sanitize_stress_level
+
+
+_CLOTHING_TERMS_RE = (
+    r"옷|잠옷|상의|하의|셔츠|블라우스|티셔츠|바지|치마|원피스|교복|유니폼|"
+    r"코트|재킷|가디건|브래지어|브라|속옷|팬티|스타킹|양말"
+)
+_UNDRESS_VERBS_RE = r"벗기|벗겨|벗겼|벗김|벗어|벗었|벗고|내리|내렸|풀어|풀었|열어|열었"
 
 
 class StateUpdateTarget(BaseModel):
@@ -128,6 +136,64 @@ def _state_field_lines(field_types: dict[str, str]) -> str:
     )
 
 
+def _target_aliases(target: StateUpdateTarget) -> list[str]:
+    """Return unique non-empty aliases that can appear in Korean prose."""
+    aliases = [target.name or "", target.id, *target.aliases]
+    unique: list[str] = []
+    seen: set[str] = set()
+    for alias in aliases:
+        normalized = str(alias or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        unique.append(normalized)
+    return unique
+
+
+def _find_possessive_clothing_owner(
+    actor_response: str,
+    targets: list[StateUpdateTarget],
+) -> str | None:
+    """Find the character whose clothing is explicitly undressed in Korean possessive phrasing."""
+    text = actor_response or ""
+    for target in targets:
+        for alias in _target_aliases(target):
+            escaped_alias = re.escape(alias)
+            pattern = (
+                rf"{escaped_alias}\s*(?:의|가\s+입은|이\s+입은)\s*"
+                rf".{{0,30}}(?:{_CLOTHING_TERMS_RE}).{{0,30}}(?:{_UNDRESS_VERBS_RE})"
+            )
+            if re.search(pattern, text):
+                return target.id
+    return None
+
+
+def _redistribute_possessive_outfit_updates(
+    updates: list[CharacterStateUpdate],
+    actor_response: str,
+    targets: list[StateUpdateTarget],
+) -> list[CharacterStateUpdate]:
+    """Move misattributed outfit changes to the explicit clothing owner."""
+    owner_id = _find_possessive_clothing_owner(actor_response, targets)
+    if not owner_id:
+        return updates
+
+    redistributed: dict[str, dict[str, Any]] = {}
+    for item in updates:
+        state = dict(item.dynamic_state)
+        outfit = state.pop("outfit", None)
+        if state:
+            redistributed.setdefault(item.char_id, {}).update(state)
+        if outfit is not None:
+            redistributed.setdefault(owner_id, {})["outfit"] = outfit
+
+    return [
+        CharacterStateUpdate(char_id=char_id, dynamic_state=state)
+        for char_id, state in redistributed.items()
+        if state
+    ]
+
+
 async def _ensure_location_if_missing(location_id: str) -> None:
     """DB에 없는 위치만 최소 정보로 생성한다. 이미 존재하면 아무것도 하지 않는다."""
     async with async_driver.session() as session:
@@ -177,6 +243,7 @@ async def _run_multi_character_state_update(
 {_location_lines(known_locations)}
 
 Extract DynamicState updates for explicitly changed characters. PC is an in-world character — update when explicitly changed. Omit unchanged. Korean particles still refer to same target; match aliases w/ particles.
+For outfit/clothing, update the character who owns or wears the clothing, not the helper/actor. If "A가 B의 잠옷을 벗긴다", update B.outfit, never A.outfit.
 location_id: only when character EXPLICITLY DEPARTS to a clearly different location. Do NOT update if still at / walking around current location.
 - Known location → exact id from list.
 - Character's OWN personal space (own home / room / apt) → generate "{{char_id}}_house" (e.g. if char_id is "ko_haram" → "ko_haram_house"). These are auto-created.
@@ -247,7 +314,12 @@ async def apply_multi_character_state_updates(
         return []
 
     applied: list[dict[str, Any]] = []
-    for item in plan.character_updates:
+    updates = _redistribute_possessive_outfit_updates(
+        plan.character_updates,
+        actor_response,
+        targets,
+    )
+    for item in updates:
         if item.char_id not in allowed_ids:
             continue
         state = _sanitize_state_update(item.dynamic_state)

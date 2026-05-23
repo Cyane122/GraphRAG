@@ -20,7 +20,7 @@ import re
 from datetime import datetime
 from typing import Any
 
-from src.config import MODEL_PRO_UPDATER as CLASSIFIER_MODEL
+from src.config import MODEL_CLASSIFIER as CLASSIFIER_MODEL
 from src.core.llm.client import (
     extract_json_from_llm,
     get_model,

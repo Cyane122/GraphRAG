@@ -4,8 +4,10 @@
 # Build prompt-ready world context from nearby activity and SNS feeds.
 #
 # Functions
-#   - build_world_context(npc_id: str, pc_id: str, location_id: str, current_time: datetime) -> dict : Build nearby activity and SNS feed context
+#   - build_world_context(npc_id: str, pc_id: str, location_id: str, current_time: datetime, enable_sns: bool = True) -> dict : Build nearby activity and optional SNS feed context
+#   - fetch_sns_panel_state(npc_id: str, pc_id: str, current_time: datetime, limit: int = 12) -> dict : Build UI-ready SNS feed state
 # ================================
+import hashlib
 import json
 from datetime import datetime, timedelta
 
@@ -18,12 +20,15 @@ NEARBY_WINDOW_HOURS = 2
 WORLD_WINDOW_HOURS = 8
 MAX_SNS_POSTS = 2
 MAX_NEARBY = 3
+SNS_PANEL_WINDOW_HOURS = 36
+
 
 async def build_world_context(
     npc_id:       str,
     pc_id:        str,
     location_id:  str,
     current_time: datetime,
+    enable_sns: bool = True,
 ) -> dict:
     """
     manager_agent에서 위치 확정 직후 호출.
@@ -53,7 +58,7 @@ async def build_world_context(
     ]
 
     sns_posts: list[str] = []
-    if sns_candidates:
+    if enable_sns and sns_candidates:
         sns_posts = await _generate_sns_batch(sns_candidates[:MAX_SNS_POSTS])
 
     print(
@@ -65,6 +70,38 @@ async def build_world_context(
         "nearby_activity": nearby[:MAX_NEARBY],
         "sns_posts":       sns_posts,
     }
+
+
+async def fetch_sns_panel_state(
+    npc_id: str,
+    pc_id: str,
+    current_time: datetime,
+    limit: int = 12,
+) -> dict:
+    """Build UI-ready SNS feed state from recent social/fun autonomous events."""
+    events = await _fetch_recent_auto_events(npc_id, pc_id, current_time, SNS_PANEL_WINDOW_HOURS)
+    posts: list[dict] = []
+    for event in events:
+        handle = event.get("sns_handle")
+        if not handle or event.get("need_name") not in ("social", "fun"):
+            continue
+        post_id = str(event.get("event_id") or "")
+        if not post_id:
+            continue
+        posts.append({
+            "id": post_id,
+            "author": event.get("char_name") or handle,
+            "handle": handle,
+            "caption": _caption_from_summary(str(event.get("summary") or "")),
+            "timestamp": event.get("timestamp") or "",
+            "locationId": event.get("location_id") or "",
+            "likes": _stable_count(post_id, 18, 420),
+            "comments": _stable_count(f"{post_id}:comments", 0, 48),
+            "accent": _stable_count(f"{handle}:accent", 0, 5),
+        })
+        if len(posts) >= limit:
+            break
+    return {"snsPosts": posts}
 
 
 async def _fetch_recent_auto_events(
@@ -108,6 +145,24 @@ async def _fetch_recent_auto_events(
             row["sns_handle"] = None
         result.append(row)
     return result
+
+
+def _caption_from_summary(summary: str) -> str:
+    """Convert a recent activity summary into a short feed caption."""
+    text = " ".join(summary.split())
+    if not text:
+        return "오늘 기록 하나 남겨두기."
+    if len(text) > 90:
+        text = text[:87].rstrip() + "..."
+    return text
+
+
+def _stable_count(seed: str, low: int, high: int) -> int:
+    """Return a deterministic UI count for a post without storing extra graph state."""
+    if high <= low:
+        return low
+    digest = hashlib.blake2s(seed.encode("utf-8"), digest_size=4).hexdigest()
+    return low + (int(digest, 16) % (high - low + 1))
 
 
 async def _generate_sns_batch(candidates: list[dict]) -> list[str]:

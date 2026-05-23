@@ -13,22 +13,18 @@
 #   - commit_time_plan(time_plan: dict, pc_id: str, npc_id: str) -> datetime : Persist a computed time plan.
 #   - apply_time_updates(plan: dict, base_time: datetime, pc_id: str, npc_id: str) -> datetime : Compute and persist time changes.
 #   - delegate_complex_update(actor_response: str, npc_id: str, pc_id: str, initial_changes: dict | None, event_only: bool, world_config: dict | None, scene_chars: list[str] | None) -> str | None : Run complex updates for event-only paths.
+#   - _write_updater_diff_snapshot(plan: dict, state_candidates: list[dict], rel_candidate: dict | None, event_candidate: dict | None) -> None : LLM 출력과 diff 결과를 logs/updater_diff.json에 저장.
 # ================================
 import asyncio
 import json
-import re
-from datetime import datetime, timedelta
+from datetime import datetime
+from pathlib import Path
 
 from src.core.database import (
-    async_driver,
     update_dynamic_state,
     update_relationship_affinity,
-    move_location,
-    get_in_universe_time,
 )
-from src.config import MODEL_COMPLEX_UPDATER as COMPLEX_MODEL, MODEL_EVENT_CREATOR as EVENT_MODEL
-from src.core.embedding.encoder import embed_async
-from src.simulation.systems.memory import ensure_memories_for_event
+from src.config import MODEL_COMPLEX_UPDATER as COMPLEX_MODEL
 from src.simulation.systems.organic import process_ejaculation
 from src.simulation.state.audit import (
     _audit_event_candidate,
@@ -62,9 +58,15 @@ from src.simulation.state.time_plan import (
     build_time_plan,
     commit_time_plan,
 )
+from src.simulation.state.update_policy import (
+    has_event_signal,
+    should_run_auxiliary_character_updates,
+    should_run_life_depth_system,
+    should_run_secondary_relationship_updates,
+)
 
 
-# Combined LLM workers for state classification, relationship deltas, and events.
+# Primary and auxiliary LLM workers for accepted response updates.
 
 
 async def _run_auxiliary_character_updates(
@@ -90,22 +92,25 @@ async def _run_auxiliary_character_updates(
             print(f"[StateUpdater] auxiliary {label} update failed (ignored): {result}")
 
 
-async def _run_state_update(
+async def _run_primary_update(
     actor_response: str,
     npc_id:         str,
     pc_id:          str,
     world_config:   dict | None = None,
+    recent_context: str = "",
+    active_event:   dict | None = None,
+    allow_event:    bool = True,
 ) -> dict:
     """
-    Run the fast model for DynamicState extraction and relationship deltas.
-    Event creation is handled by the separate event model.
+    Run one extractor for main DynamicState, relationship deltas, and gated event actions.
 
-    Returns: {dynamic_state, relationship_delta, ts_acceptance_delta?, northern_attachment_delta?}
+    Returns:
+        {dynamic_state, relationship_delta, action, new_event,
+         ts_acceptance_delta?, northern_attachment_delta?}
     """
     from src.core.llm.client import get_model, extract_json_from_llm
 
     ts_scoring = bool(world_config and world_config.get("ts_scoring_enabled"))
-
     ts_section = ""
     ts_json_fields = ""
     if ts_scoring:
@@ -129,9 +134,43 @@ NEVER negative. Max +3 per turn.
 """
         ts_json_fields = '\n  "ts_acceptance_delta": 0,\n  "northern_attachment_delta": 0,'
 
-    system_instruction = f"""You are a precise state manager for a Korean roleplay system.
-Analyze the scene. Return updates ONLY for Main NPC ({npc_id}) and the ({npc_id})<->{pc_id}) relationship.
-CRITICAL: Do NOT assign secondary characters' injuries or emotions to {npc_id}."""
+    system_instruction = f"""You are a precise post-response state manager for a Korean roleplay system.
+Analyze the accepted scene. Return updates ONLY for Main NPC ({npc_id}) and the ({npc_id})<->{pc_id}) relationship.
+CRITICAL: Do NOT assign secondary characters' injuries, emotions, or clothing to {npc_id}."""
+
+    if active_event:
+        turns = active_event.get("turn_count", 1)
+        active_block = f"""
+Active event [{active_event['id']}] — turn {turns} — {active_event.get('summary', '')}
+→ "continue": same event still in progress. "close": event has concluded/topic changed. "close_create": closes AND a separate new event starts this turn.
+"""
+        actions_hint = '"continue"/"close"/"close_create"(close+new)/"create"(new, ignore active)/"none"'
+    else:
+        active_block = ""
+        actions_hint = '"create"(any concrete event, importance 0-10)/"none"'
+
+    event_block = f"""
+Event action is enabled.
+Importance:
+8-10: Major (hospitalization/confession/surgery/death/marriage)
+5-7: Significant (first meeting/major fight+reconciliation/VERY FIRST emotional intimacy/near-breakup/public humiliation)
+2-4: Minor durable (new injury/new named char/promise/secret/gift/location transition/new object or doc/repeated sex incl. arrangement)
+0-1: Routine or atmospheric, but still create when a concrete in-world event occurred.
+{active_block}
+action: {actions_hint}
+For create/close_create include event_data fields:
+  id: {{location}}_{{description}}_{{YYYYMMDD_HHMM}}
+  summary: 1-2 sentence Korean factual record; only observed facts, no subjective distortion or speculation
+  memory_type: episodic/emotional/relational
+  narrative_summary: 1 sentence Actor continuity hook
+  state_summary: 1 sentence factual (who did what)
+  importance: 0-10 | impact: brief phrase
+  importance >= 7 → new_relationship_status: 1-2 English sentences (state AFTER)
+
+Context: {recent_context[-2000:] if recent_context else "(none)"}
+""" if allow_event else """
+Event action is disabled for this turn. Return action="none" and new_event=null.
+"""
 
     prompt = f"""LITERAL=physical facts (injury/illness/clothing). FIGURATIVE=emotion/metaphor — never touch physical_condition/injury_detail.
 
@@ -152,10 +191,14 @@ null=routine/proximity/embarrassment/no change.
 ±1=small visible shift. ±2=clear scene-level shift. ±3=rare milestone (confession/betrayal/rescue/reconciliation/near-breakup).
 Sex (incl. first intimacy) ≠ affinity milestone. No growth from intimacy/politeness/arousal alone.
 {ts_section}
+{event_block}
+
 Return ONLY valid JSON:
 {{
   "dynamic_state": {{}},{ts_json_fields}
-  "relationship_delta": null
+  "relationship_delta": null,
+  "action": "none",
+  "new_event": null
 }}
 
 Scene:
@@ -165,151 +208,15 @@ Scene:
     try:
         response = await model.generate_content_async(
             prompt,
-            generation_config={"temperature": 0.0, "max_output_tokens": 1024,
+            generation_config={"temperature": 0.0, "max_output_tokens": 2048,
                                "response_mime_type": "application/json"},
         )
     except TimeoutError:
-        print("[StateUpdater] state_updater timeout")
+        print("[StateUpdater] primary updater timeout")
         return {}
 
-    plan = extract_json_from_llm(response.text, source="state_updater")
+    plan = extract_json_from_llm(response.text, source="primary_state_updater")
     return plan if isinstance(plan, dict) else {}
-
-
-async def _run_event_creation(
-    actor_response: str,
-    npc_id:         str,
-    pc_id:          str,
-    recent_context: str = "",
-    active_event:   dict | None = None,
-) -> dict:
-    """
-    Run the event model to decide whether the scene should create/continue/close an Event.
-
-    Returns: {action: "none|continue|close|close_create|create", new_event: null | {...}}
-    """
-    from src.core.llm.client import get_model, extract_json_from_llm
-
-    system_instruction = f"Narrative archivist for Korean roleplay. Decide event action for this scene. Focus on {npc_id}/{pc_id}."
-
-    if active_event:
-        turns = active_event.get("turn_count", 1)
-        active_block = f"""
-Active event [{active_event['id']}] — turn {turns} — {active_event.get('summary', '')}
-→ "continue": same event still in progress. "close": event has concluded/topic changed. "close_create": closes AND a separate new event starts this turn.
-"""
-        actions_hint = '"continue"/"close"/"close_create"(close+new)/"create"(new, ignore active)/"none"'
-    else:
-        active_block = ""
-        actions_hint = '"create"(importance≥2)/"none"'
-
-    prompt = f"""Importance:
-8-10: Major (hospitalization/confession/surgery/death/marriage)
-5-7: Significant (first meeting/major fight+reconciliation/VERY FIRST emotional intimacy/near-breakup/public humiliation)
-2-4: Minor durable (new injury/new named char/promise/secret/gift/location transition/new object or doc/repeated sex incl. arrangement)
-0-1: Skip (routine/atmosphere/repeated follow-up)
-{active_block}
-action: {actions_hint}
-For create/close_create include event_data fields:
-  id: {{location}}_{{description}}_{{YYYYMMDD_HHMM}}
-  summary: 1-2 sentence Korean narrative
-  memory_type: episodic/emotional/relational
-  narrative_summary: 1 sentence Actor continuity hook
-  state_summary: 1 sentence factual (who did what)
-  importance: 2-10 | impact: brief phrase
-  importance >= 7 → new_relationship_status: 1-2 English sentences (state AFTER)
-
-Return ONLY valid JSON:
-{{
-  "action": "none",
-  "new_event": null
-}}
-
-Context: {recent_context[-2000:] if recent_context else "(none)"}
-
-Scene:
-{actor_response[:2000]}"""
-
-    model = get_model(model_name=EVENT_MODEL, system_prompt=system_instruction)
-    try:
-        response = await model.generate_content_async(
-            prompt,
-            generation_config={"temperature": 0.0, "max_output_tokens": 1024,
-                               "response_mime_type": "application/json"},
-        )
-    except TimeoutError:
-        print("[StateUpdater] event_creator timeout")
-        return {}
-
-    plan = extract_json_from_llm(response.text, source="event_creator")
-    return plan if isinstance(plan, dict) else {}
-
-
-async def _run_combined_update(
-    actor_response: str,
-    npc_id:         str,
-    pc_id:          str,
-    world_config:   dict | None = None,
-    recent_context: str = "",
-    active_event:   dict | None = None,
-) -> dict:
-    """
-    Run both LLM workers concurrently:
-      - Flash (COMPLEX_MODEL): DynamicState extraction + relationship delta
-      - Pro (EVENT_MODEL): event creation/continuation decision
-
-    Returns:
-        {dynamic_state, relationship_delta, action, new_event,
-         ts_acceptance_delta?, northern_attachment_delta?}
-    """
-    state_result, event_result = await asyncio.gather(
-        _run_state_update(actor_response, npc_id, pc_id, world_config),
-        _run_event_creation(actor_response, npc_id, pc_id, recent_context, active_event),
-        return_exceptions=True,
-    )
-    if isinstance(state_result, Exception):
-        print(f"[StateUpdater] state update worker failed (ignored): {state_result}")
-        state_plan = {}
-    else:
-        state_plan = state_result
-    if isinstance(event_result, Exception):
-        print(f"[StateUpdater] event creation worker failed (ignored): {event_result}")
-        event_plan = {}
-    else:
-        event_plan = event_result
-    return {
-        **state_plan,
-        "action": event_plan.get("action", "none"),
-        "new_event": event_plan.get("new_event"),
-    }
-
-
-_EVENT_CREATION_SIGNAL_RE = re.compile(
-    r"(처음|만났|마주쳤|소개|약속|비밀|고백|선물|건넸|받았|다툼|싸움|갈등|"
-    r"떠났|도착|이동|장소|병원|다쳤|부상|키스|관계|소문|공개|"
-    r"first|met|promise|secret|confession|gift|fight|arrived|left|hospital)",
-    re.IGNORECASE,
-)
-
-
-def _has_event_creation_signal(
-    actor_response: str,
-    participant_ids: list[str],
-    manager_effects: dict | None = None,
-) -> bool:
-    """Return whether a low-state-change scene is still worth asking the Event model about."""
-    text = actor_response.strip()
-    if not text:
-        return False
-    if len(participant_ids) > 2:
-        return True
-    context_plan = (manager_effects or {}).get("context_plan") or {}
-    try:
-        if int(context_plan.get("importance") or 0) >= 6:
-            return True
-    except (TypeError, ValueError):
-        pass
-    return bool(_EVENT_CREATION_SIGNAL_RE.search(text))
 
 
 def _render_recent_event_context(
@@ -329,6 +236,43 @@ def _render_recent_event_context(
             if text:
                 lines.append(f"recent_{idx}: {text[-800:]}")
     return "\n\n".join(lines)
+
+
+_LOGS_DIR = Path("logs")
+
+
+def _write_updater_diff_snapshot(
+    plan: dict,
+    state_candidates: list[dict],
+    rel_candidate: dict | None,
+    event_candidate: dict | None,
+) -> None:
+    """LLM 원본 출력과 diff 결과를 logs/updater_diff.json에 저장한다 (매 턴 덮어쓰기)."""
+    try:
+        _LOGS_DIR.mkdir(exist_ok=True)
+        payload = {
+            "raw_plan": plan,
+            "state_candidates": state_candidates,
+            "relationship_candidate": rel_candidate,
+            "event_candidate": event_candidate,
+        }
+        (_LOGS_DIR / "updater_diff.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except OSError as e:
+        print(f"[StateAudit] updater_diff 저장 실패: {e}")
+
+
+def _fmt_state_diff(state_candidates: list[dict]) -> str:
+    """state_candidates를 commit/hold 구분한 한 줄 요약으로 변환한다."""
+    committed = [c for c in state_candidates if c.get("commit_policy") == "commit"]
+    held = [c for c in state_candidates if c.get("commit_policy") == "hold"]
+    parts = " | ".join(f"{c['field']}={c['new_value']}" for c in committed)
+    if held:
+        held_fields = ",".join(c["field"] for c in held)
+        parts = f"{parts}  (held: {held_fields})" if parts else f"(held only: {held_fields})"
+    return parts
 
 
 # State update main path
@@ -354,7 +298,8 @@ async def process_actor_response(
     guard = guard_actor_response(actor_response, npc_id, pc_id, world_config)
     feasibility_audit = _audit_time_location_schedule(manager_effects)
     if not guard["passed"]:
-        print(f"[StateGuard] rejected: {json.dumps(guard, ensure_ascii=False)}")
+        codes = ", ".join(i["code"] for i in guard.get("issues", []))
+        print(f"[StateGuard] rejected: {codes}")
         _write_state_audit_snapshot(
             actor_response,
             npc_id,
@@ -364,8 +309,10 @@ async def process_actor_response(
         )
         return None
     if guard["issues"]:
-        print(f"[StateGuard] warning: {json.dumps(guard, ensure_ascii=False)}")
+        codes = ", ".join(f"{i['code']}({i['severity']})" for i in guard.get("issues", []))
+        print(f"[StateGuard] warning: {codes}")
     recent_event_context = _render_recent_event_context(history_snapshot, recent_snapshot)
+    context_plan = (manager_effects or {}).get("context_plan") or {}
 
     participant_ids = [pc_id, npc_id]
     if world_config and scene_chars:
@@ -389,73 +336,49 @@ async def process_actor_response(
         except Exception as _ae_err:
             print(f"[EventAccum] active_event fetch failed (ignored): {_ae_err}")
 
-    if scene_types and not _needs_classification(actor_response, scene_types):
+    event_allowed = npc_id != pc_id and has_event_signal(
+        actor_response,
+        participant_ids,
+        manager_effects,
+        active_event,
+    )
+
+    if scene_types and not _needs_classification(actor_response, scene_types) and not event_allowed:
         print("[StateUpdater] skipped (no state-relevant change)")
-        # 두 추출 작업은 서로 독립적이므로 병렬 실행
-        await _run_auxiliary_character_updates(
-            actor_response,
-            pc_id,
-            scene_types,
-            participant_ids,
-        )
-        if len(participant_ids) > 2:
+        if should_run_auxiliary_character_updates(actor_response, participant_ids, context_plan):
+            await _run_auxiliary_character_updates(
+                actor_response,
+                pc_id,
+                scene_types,
+                participant_ids,
+            )
+        if should_run_secondary_relationship_updates(participant_ids):
             await apply_scene_relationship_updates(
                 actor_response,
                 participant_ids,
                 primary_pair=(npc_id, pc_id),
             )
-        if npc_id != pc_id and _has_event_creation_signal(actor_response, participant_ids, manager_effects):
-            try:
-                event_plan = await _run_event_creation(
-                    actor_response, npc_id, pc_id, recent_event_context, active_event
-                )
-                action = event_plan.get("action", "none")
-                new_event: dict | None = None
-                event_candidate: dict | None = None
-
-                if action == "continue" and active_event:
-                    await _append_to_event(active_event["id"], actor_response)
-                elif action == "close" and active_event:
-                    await _close_event(active_event["id"], npc_id, pc_id)
-                elif action in ("close_create", "create"):
-                    if active_event and action == "close_create":
-                        await _close_event(active_event["id"], npc_id, pc_id)
-                    new_event, event_candidate = _audit_event_candidate(
-                        event_plan.get("new_event"), actor_response
-                    )
-                elif event_plan.get("new_event"):
-                    new_event, event_candidate = _audit_event_candidate(
-                        event_plan.get("new_event"), actor_response
-                    )
-
-                if event_candidate:
-                    print(f"[EventDiff] {json.dumps(event_candidate, ensure_ascii=False)}")
-                _write_state_audit_snapshot(
-                    actor_response=actor_response,
-                    npc_id=npc_id,
-                    pc_id=pc_id,
-                    guard=guard,
-                    event_candidate=event_candidate,
-                    feasibility_audit=feasibility_audit,
-                )
-                if new_event:
-                    await _create_event(new_event, npc_id, pc_id, actor_response)
-            except Exception as e:
-                print(f"[StateUpdater] low-change event creation failed (ignored): {e}")
         return None
 
     if npc_id == pc_id:
         # NPC=PC self-state path: update DynamicState only and skip relationship/event/gossip.
         # multi_character 와 dynamic_info 는 독립적이므로 병렬 실행
         print("[StateUpdater] NPC=PC: DynamicState update only")
-        await _run_auxiliary_character_updates(
-            actor_response,
-            pc_id,
-            scene_types,
-            participant_ids,
-        )
+        if should_run_auxiliary_character_updates(actor_response, participant_ids, context_plan):
+            await _run_auxiliary_character_updates(
+                actor_response,
+                pc_id,
+                scene_types,
+                participant_ids,
+            )
         try:
-            state_plan = await _run_state_update(actor_response, npc_id, pc_id, world_config)
+            state_plan = await _run_primary_update(
+                actor_response,
+                npc_id,
+                pc_id,
+                world_config,
+                allow_event=False,
+            )
             state = dict(state_plan.get("dynamic_state") or {})
             for field in ("stress_level", "workplace_stress_level"):
                 if field in state:
@@ -469,7 +392,7 @@ async def process_actor_response(
                 await update_dynamic_state(npc_id, state)
         except Exception as e:
             print(f"[StateUpdater] NPC=PC DynamicState update failed (continuing): {e}")
-        if len(participant_ids) > 2:
+        if should_run_secondary_relationship_updates(participant_ids):
             try:
                 await apply_scene_relationship_updates(
                     actor_response,
@@ -478,34 +401,47 @@ async def process_actor_response(
                 )
             except Exception as e:
                 print(f"[WorldBuilder] resolve failed (continuing): {e}")
-        try:
-            # NPC==PC(남성 PC)일 때 npc_id 자체는 생리 주기가 없으므로
-            # scene_chars 전체를 intimate_char_ids로 전달해 has_menstrual_cycle 캐릭터를 검사
-            return await process_ejaculation(
-                npc_id, actor_response,
-                scene_char_ids=scene_chars,
-                intimate_char_ids=scene_chars,
-            )
-        except Exception as e:
-            print(f"[PregnancyMgr] processing failed (continuing): {e}")
+        if should_run_life_depth_system(
+            "organic", actor_response, context_plan, 0, 0, scene_types
+        ):
+            try:
+                # NPC==PC path can still affect a scene partner; organic.py narrows
+                # scene_chars to explicitly mentioned or single-partner candidates.
+                return await process_ejaculation(
+                    npc_id, actor_response,
+                    scene_char_ids=scene_chars,
+                    father_id=pc_id,
+                )
+            except Exception as e:
+                print(f"[PregnancyMgr] processing failed (continuing): {e}")
         return None
 
-    # multi_character / dynamic_info / combined_update 는 서로 독립적이므로 병렬 실행
-    auxiliary_task = asyncio.create_task(_run_auxiliary_character_updates(
-        actor_response,
-        pc_id,
-        scene_types,
-        participant_ids,
-    ))
+    # Auxiliary character extraction is independent, but only useful on multi-character or high-signal turns.
+    auxiliary_task = None
+    if should_run_auxiliary_character_updates(actor_response, participant_ids, context_plan):
+        auxiliary_task = asyncio.create_task(_run_auxiliary_character_updates(
+            actor_response,
+            pc_id,
+            scene_types,
+            participant_ids,
+        ))
     try:
-        plan = await _run_combined_update(
-            actor_response, npc_id, pc_id, world_config, recent_event_context, active_event
+        plan = await _run_primary_update(
+            actor_response,
+            npc_id,
+            pc_id,
+            world_config,
+            recent_event_context,
+            active_event,
+            allow_event=event_allowed,
         )
     except Exception as e:
-        print(f"[StateUpdater] combined update failed (ignored): {e}")
-        await auxiliary_task
+        print(f"[StateUpdater] primary update failed (ignored): {e}")
+        if auxiliary_task:
+            await auxiliary_task
         return None
-    await auxiliary_task
+    if auxiliary_task:
+        await auxiliary_task
     if not plan:
         return None
 
@@ -527,7 +463,7 @@ async def process_actor_response(
                     state[field] = sanitized
         state, state_candidates = _audit_state_updates(state, actor_response, npc_id)
         if state_candidates:
-            print(f"[StateDiff] {json.dumps(state_candidates, ensure_ascii=False)}")
+            print(f"[StateDiff] {_fmt_state_diff(state_candidates)}")
         if state:
             await update_dynamic_state(npc_id, state)
     except Exception as e:
@@ -539,7 +475,9 @@ async def process_actor_response(
             plan.get("relationship_delta"), actor_response, npc_id, pc_id
         )
         if rel_candidate:
-            print(f"[RelationshipDiff] {json.dumps(rel_candidate, ensure_ascii=False)}")
+            v = rel_candidate["new_value"]
+            sign = "+" if v > 0 else ""
+            print(f"[RelationshipDiff] affinity {sign}{v} [{rel_candidate['commit_policy']}]")
         if delta:
             d = int(delta)
             await update_relationship_affinity(npc_id, pc_id, d)
@@ -561,7 +499,7 @@ async def process_actor_response(
     # Create/continue/close Event based on action.
     new_event: dict | None = None
     try:
-        action = plan.get("action", "none")
+        action = plan.get("action", "none") if event_allowed else "none"
         event_candidate: dict | None = None
 
         if action == "continue" and active_event:
@@ -577,11 +515,13 @@ async def process_actor_response(
 
         else:
             # "none" or backward-compat: LLM may return new_event without action field
-            if plan.get("new_event"):
+            if event_allowed and plan.get("new_event"):
                 new_event, event_candidate = _audit_event_candidate(plan.get("new_event"), actor_response)
 
         if event_candidate:
-            print(f"[EventDiff] {json.dumps(event_candidate, ensure_ascii=False)}")
+            ev_summary = str(event_candidate.get("evidence") or event_candidate.get("new_value") or "")[:60]
+            print(f"[EventDiff] {ev_summary} [{event_candidate['commit_policy']}]")
+        _write_updater_diff_snapshot(plan, state_candidates, rel_candidate, event_candidate)
         _write_state_audit_snapshot(
             actor_response          = actor_response,
             npc_id                  = npc_id,
@@ -593,7 +533,13 @@ async def process_actor_response(
             feasibility_audit       = feasibility_audit,
         )
         if new_event:
-            await _create_event(new_event, npc_id, pc_id, actor_response)
+            await _create_event(
+                new_event,
+                npc_id,
+                pc_id,
+                actor_response,
+                participant_ids=participant_ids,
+            )
             new_status = new_event.get("new_relationship_status")
             event_importance = _safe_int(new_event.get("importance"), 0)
             if new_status and event_importance >= 7:
@@ -606,7 +552,7 @@ async def process_actor_response(
         print(f"[StateUpdater] event creation failed (ignored): {e}")
 
     # Apply non-primary participant relationship updates.
-    if len(participant_ids) > 2:
+    if should_run_secondary_relationship_updates(participant_ids):
         try:
             await apply_scene_relationship_updates(
                 actor_response,
@@ -634,6 +580,7 @@ async def process_actor_response(
                 source_npc_id      = npc_id,
                 pc_id              = pc_id,
                 timestamp_iso      = _depth_ts,
+                source_event_id    = new_event.get("id"),
             )
         except Exception as e:
             print(f"[Updater] gossip propagation failed (ignored): {e}")
@@ -647,62 +594,67 @@ async def process_actor_response(
             print(f"[Updater] memory distortion failed (ignored): {e}")
 
     # Personality drift check (micro / macro).
-    try:
-        from src.simulation.systems.personality import check_personality_drift
-        await check_personality_drift(
-            npc_id             = npc_id,
-            pc_id              = pc_id,
-            relationship_delta = _d,
-            event_importance   = _imp,
-            current_game_time  = _depth_dt,
-        )
-    except Exception as e:
-        print(f"[Updater] personality drift failed (ignored): {e}")
+    if should_run_life_depth_system("personality", actor_response, context_plan, _imp, _d, scene_types):
+        try:
+            from src.simulation.systems.personality import check_personality_drift
+            await check_personality_drift(
+                npc_id             = npc_id,
+                pc_id              = pc_id,
+                relationship_delta = _d,
+                event_importance   = _imp,
+                current_game_time  = _depth_dt,
+            )
+        except Exception as e:
+            print(f"[Updater] personality drift failed (ignored): {e}")
 
     # Life-depth postprocessors keep long-running goals, meaningful objects,
     # and conditional secrets in step with the accepted actor response.
     _event_id = new_event.get("id") if new_event else None
-    try:
-        from src.simulation.systems.goals import apply_goal_updates
+    if should_run_life_depth_system("goals", actor_response, context_plan, _imp, _d, scene_types):
+        try:
+            from src.simulation.systems.goals import apply_goal_updates
 
-        await apply_goal_updates(
-            actor_response = actor_response,
-            owner_id       = npc_id,
-            pc_id          = pc_id,
-            current_time   = _depth_dt,
-            event_id       = _event_id,
-        )
-    except Exception as e:
-        print(f"[LifeDepth] goal update failed (ignored): {e}")
+            await apply_goal_updates(
+                actor_response = actor_response,
+                owner_id       = npc_id,
+                pc_id          = pc_id,
+                current_time   = _depth_dt,
+                event_id       = _event_id,
+            )
+        except Exception as e:
+            print(f"[LifeDepth] goal update failed (ignored): {e}")
 
-    try:
-        from src.simulation.systems.items import apply_item_updates
+    if should_run_life_depth_system("items", actor_response, context_plan, _imp, _d, scene_types):
+        try:
+            from src.simulation.systems.items import apply_item_updates
 
-        await apply_item_updates(
-            actor_response = actor_response,
-            owner_id       = npc_id,
-            pc_id          = pc_id,
-            current_time   = _depth_dt,
-            event_id       = _event_id,
-        )
-    except Exception as e:
-        print(f"[LifeDepth] item update failed (ignored): {e}")
+            await apply_item_updates(
+                actor_response = actor_response,
+                owner_id       = npc_id,
+                pc_id          = pc_id,
+                current_time   = _depth_dt,
+                event_id       = _event_id,
+            )
+        except Exception as e:
+            print(f"[LifeDepth] item update failed (ignored): {e}")
 
-    try:
-        from src.simulation.systems.secrets import apply_secret_updates
+    if should_run_life_depth_system("secrets", actor_response, context_plan, _imp, _d, scene_types):
+        try:
+            from src.simulation.systems.secrets import apply_secret_updates
 
-        await apply_secret_updates(
-            actor_response = actor_response,
-            owner_id       = npc_id,
-            pc_id          = pc_id,
-            current_time   = _depth_dt,
-            event_id       = _event_id,
-        )
-    except Exception as e:
-        print(f"[LifeDepth] secret update failed (ignored): {e}")
+            await apply_secret_updates(
+                actor_response = actor_response,
+                owner_id       = npc_id,
+                pc_id          = pc_id,
+                current_time   = _depth_dt,
+                event_id       = _event_id,
+            )
+        except Exception as e:
+            print(f"[LifeDepth] secret update failed (ignored): {e}")
 
-    try:
-        return await process_ejaculation(npc_id, actor_response, scene_char_ids=scene_chars)
-    except Exception as e:
-        print(f"[PregnancyMgr] processing failed (ignored): {e}")
+    if should_run_life_depth_system("organic", actor_response, context_plan, _imp, _d, scene_types):
+        try:
+            return await process_ejaculation(npc_id, actor_response, scene_char_ids=scene_chars, father_id=pc_id)
+        except Exception as e:
+            print(f"[PregnancyMgr] processing failed (ignored): {e}")
     return None

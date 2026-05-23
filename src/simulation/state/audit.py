@@ -321,10 +321,11 @@ def _audit_event_candidate(new_event: object, actor_response: str) -> tuple[dict
     if not isinstance(new_event, dict):
         return None, None
     importance = max(0, min(10, _safe_int(new_event.get("importance"), 0)))
+    new_event["importance"] = importance
     summary = str(new_event.get("summary") or "").strip()
     evidence = summary or actor_response[:220].strip()
-    confidence = 0.8 if importance >= 2 and summary else 0.4
-    policy = "commit" if confidence >= _COMMIT_CONFIDENCE and importance >= 2 and summary else "hold"
+    confidence = 0.8 if summary else 0.4
+    policy = "commit" if confidence >= _COMMIT_CONFIDENCE and summary else "hold"
     return (
         new_event if policy == "commit" else None,
         _candidate(

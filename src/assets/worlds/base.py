@@ -12,6 +12,7 @@
 #             SCENE_TYPES: dict[str, str] — 씬 타입 이름 → 영문 설명 (classifier 프롬프트에 주입)
 #             get_scene_types() -> list[str]           : 타입 이름 목록 (내부 키 조회용)
 #             get_scene_descriptions() -> dict[str, str] : 전체 dict (classifier 주입용)
+#             get_social_media_config() -> dict          : 카카오톡/SNS 기능 기본값과 월드 강제 비활성화 설정
 #             _build_tables(conn) -> None              : DDL 전용 (노드·관계 테이블, 벡터 인덱스, GlobalState)
 #             build_schema(conn, scenario_id) -> None  : 기본 구현은 _build_tables + build_scenario_data 호출
 #             build_scenario_data(conn, scenario_id) -> None : 시나리오별 초기 데이터 훅 (no-op)
@@ -265,6 +266,12 @@ class World:
     # 비어 있으면 이 세계는 단일 ChatProfile로 노출됩니다.
     # 항목이 있으면 각 Scenario가 별도 ChatProfile ('{world_id}/{scenario_id}')로 노출됩니다.
     SCENARIOS: dict[str, Scenario] = {}
+    SOCIAL_MEDIA: dict[str, bool] = {
+        "kakao_enabled": True,
+        "instagram_enabled": True,
+        "force_disable_kakao": False,
+        "force_disable_instagram": False,
+    }
 
     def __init__(
         self,
@@ -335,6 +342,10 @@ class World:
             "daily": {"good": [], "bad": []},
         }
 
+    def get_social_media_config(self) -> dict:
+        """카카오톡/SNS 기능 기본값과 월드 강제 비활성화 설정을 반환합니다."""
+        return dict(self.SOCIAL_MEDIA)
+
     def get_blacklist(self) -> str:
         """블랙리스트 항목 문자열을 반환합니다."""
         return ""
@@ -358,6 +369,7 @@ class World:
             "npc_name_kor":         self.npc_name_kor(),
             "default_location_id":  default_location,
             "scenario_id":          _sid,
+            "social_media":         self.get_social_media_config(),
         }
 
     def get_default_location_id(self) -> str:
@@ -428,6 +440,7 @@ class World:
                 outfit STRING, injury_marks STRING,
                 has_menstrual_cycle BOOLEAN,
                 pregnant BOOLEAN, pregnancy_day INT64, cum_shots_this_cycle INT64,
+                pregnancy_father_id STRING,
                 body_perception STRING, behavioral_facade STRING,
                 hygiene DOUBLE, appearance DOUBLE, physique STRING,
                 age_presentation STRING, nervousness DOUBLE, attitude STRING,
@@ -629,6 +642,28 @@ class World:
                 updated_at STRING,
                 PRIMARY KEY(id)
             )""",
+
+            """CREATE NODE TABLE IF NOT EXISTS KakaoRoom(
+                id STRING,
+                name STRING,
+                topic STRING,
+                status STRING,
+                created_at STRING,
+                last_active_at STRING,
+                PRIMARY KEY(id)
+            )""",
+
+            """CREATE NODE TABLE IF NOT EXISTS KakaoMessage(
+                id STRING,
+                room_id STRING,
+                sender_id STRING,
+                sender_name STRING,
+                content STRING,
+                timestamp STRING,
+                source STRING,
+                status STRING,
+                PRIMARY KEY(id)
+            )""",
         ]
         for ddl in node_tables:
             conn.execute(ddl)
@@ -673,6 +708,9 @@ class World:
             "CREATE REL TABLE IF NOT EXISTS SCHEDULED_AT(FROM Schedule TO Location)",
             "CREATE REL TABLE IF NOT EXISTS PART_OF(FROM Location TO Location)",
             "CREATE REL TABLE IF NOT EXISTS KNOWS_FACT(FROM Character TO PersonalFact)",
+            "CREATE REL TABLE IF NOT EXISTS MEMBER_OF(FROM Character TO KakaoRoom)",
+            "CREATE REL TABLE IF NOT EXISTS ROOM_HAS_MESSAGE(FROM KakaoRoom TO KakaoMessage)",
+            "CREATE REL TABLE IF NOT EXISTS SENT_KAKAO(FROM Character TO KakaoMessage)",
         ]
         for ddl in rel_tables:
             conn.execute(ddl)

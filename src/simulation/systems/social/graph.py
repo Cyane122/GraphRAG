@@ -8,8 +8,10 @@
 #   - _get_known_chars() -> dict[str, str] : Fetch character names and aliases (per-session cached)
 #   - _invalidate_cache() -> None : Invalidate the current session's character cache
 #   - _resolve_identity(name: str, known: dict[str, str]) -> str | None : Resolve a name to char_id
-#   - _create_stub(name_kor: str, main_npc_id: str, pc_id: str, world_config: dict) -> str | None : Create a transient NPC
+#   - _create_stub(name_kor: str, main_npc_id: str, pc_id: str, world_config: dict) -> str | None : Create a conservative transient NPC
+#   - _is_stub_candidate(name_kor: str) -> bool : Return whether text is concrete enough to create a stub
 #   - _normalize_relation_descriptor_for_family(name_kor: str) -> str | None : Validate sibling descriptors against StaticProfile.family
+#   - _build_conservative_stub_profile(name_kor: str, main_npc_id: str) -> dict : Build a minimal non-hallucinated stub
 #   - _increment_appearance(char_id: str) -> None : Increment appearance_count
 #   - _link_to_event(char_id: str, event_id: str) -> None : Link a character to an event
 #   - _kor_to_roman_id(name_kor: str) -> str : Hash-based fallback romanization for Korean names
@@ -19,10 +21,8 @@ import json
 import re
 from datetime import datetime
 
-from src.config import MODEL_EVENT_CREATOR as STUB_MODEL
 from src.core.database import async_driver
 from src.core.database.helpers import ensure_relationship
-from src.core.llm.client import get_model, extract_json_from_llm
 
 # db_path → {name/alias/id: char_id}. 세션별로 격리해 멀티세션 오염을 방지한다.
 _known_chars_cache: dict[str, dict[str, str]] = {}
@@ -196,6 +196,9 @@ async def _create_stub(
     if not normalized_name:
         return None
     name_kor = normalized_name
+    if not _is_stub_candidate(name_kor):
+        print(f"[WorldBuilder] transient stub rejected: {name_kor}")
+        return None
 
     # 이름 또는 aliases로 이미 존재하는지 확인
     async with async_driver.session() as session:
@@ -209,16 +212,14 @@ async def _create_stub(
         if row:
             return row["id"]
 
-    stub = await _generate_stub_profile(name_kor, world_config, main_npc_id)
-    if not isinstance(stub, dict):
-        stub = await _fallback_stub_profile(name_kor, main_npc_id)
+    stub = await _build_conservative_stub_profile(name_kor, main_npc_id)
 
-    # LLM이 생성한 이름을 우선 사용하고, 실패하면 관계 지칭에 맞는 한국식 이름을 만든다.
+    # 관계 서술어는 고유 이름만 생성하고, 인물 설정은 명시된 정보만 보존한다.
     generated = (stub.get("name_kor") or "").strip()
     if _is_usable_generated_name(generated, name_kor):
         display_name = generated
     else:
-        fallback_stub = await _fallback_stub_profile(name_kor, main_npc_id)
+        fallback_stub = await _build_conservative_stub_profile(name_kor, main_npc_id)
         display_name = fallback_stub["name_kor"]
         # display_name이 fallback이면 name_roman도 fallback 것을 유지해 id-name 불일치를 방지
         stub = {**fallback_stub, **{k: v for k, v in stub.items() if v and k not in ("name_kor", "name_roman")}}
@@ -580,34 +581,42 @@ def _is_usable_generated_name(generated: str, original: str) -> bool:
     return True
 
 
+def _is_stub_candidate(name_kor: str) -> bool:
+    """Return whether text is concrete enough to persist as a transient character."""
+    value = str(name_kor or "").strip()
+    if _KOREAN_NAME_RE.match(value):
+        return True
+    return _parse_relation_descriptor(value) is not None
+
+
 def _fallback_given_name(seed_text: str) -> str:
     """Pick a deterministic Korean given name from the descriptor."""
     digest = hashlib.sha1(seed_text.encode("utf-8")).digest()[0]
     return _FALLBACK_GIVEN_NAMES[digest % len(_FALLBACK_GIVEN_NAMES)]
 
 
-async def _fallback_stub_profile(name_kor: str, main_npc_id: str) -> dict:
-    """Build a deterministic fallback stub when the LLM name generator is unavailable."""
+async def _build_conservative_stub_profile(name_kor: str, main_npc_id: str) -> dict:
+    """Build a minimal stub without inventing biography, appearance, or personality."""
     parsed = _parse_relation_descriptor(name_kor)
     related_to, role = parsed if parsed else ("", name_kor)
-    surname = ""
-    if related_to and role in _SAME_SURNAME_ROLE_SET:
-        surname = await _lookup_surname(related_to)
-    if not surname:
-        surname = "\uae40"
-
-    generated_name = f"{surname}{_fallback_given_name(name_kor)}"
-    context = (
-        f"{related_to}의 {role} 관계로 언급되어 처음 인식된 인물."
-        if related_to
-        else f"{name_kor}로 언급되어 처음 인식된 인물."
-    )
-
-    # 성씨 로마자 + 이름 로마자로 fallback char_id 구성
-    surname_roman = _KOREAN_SURNAME_ROMAN.get(surname[0] if surname else "\uae40", "kim")
-    digest = hashlib.sha1(name_kor.encode("utf-8")).digest()[0]
-    given_roman = _FALLBACK_GIVEN_NAMES_ROMAN[digest % len(_FALLBACK_GIVEN_NAMES_ROMAN)]
-    name_roman = f"{surname_roman}_{given_roman}"
+    if parsed:
+        surname = ""
+        if role in _SAME_SURNAME_ROLE_SET:
+            surname = await _lookup_surname(related_to)
+        if not surname:
+            surname = "\uae40"
+        generated_name = f"{surname}{_fallback_given_name(name_kor)}"
+        surname_roman = _KOREAN_SURNAME_ROMAN.get(surname[0] if surname else "\uae40", "kim")
+        digest = hashlib.sha1(name_kor.encode("utf-8")).digest()[0]
+        given_roman = _FALLBACK_GIVEN_NAMES_ROMAN[digest % len(_FALLBACK_GIVEN_NAMES_ROMAN)]
+        name_roman = f"{surname_roman}_{given_roman}"
+        context = f"{related_to}의 {role} 관계로 언급되어 처음 인식된 인물."
+        relation_type = "family" if role in _SAME_SURNAME_ROLE_SET else "acquaintance"
+    else:
+        generated_name = name_kor
+        name_roman = _kor_to_roman_id(name_kor)
+        context = f"{name_kor}로 명시적으로 언급되어 처음 인식된 인물."
+        relation_type = "acquaintance"
 
     return {
         "name_kor":             generated_name,
@@ -623,96 +632,10 @@ async def _fallback_stub_profile(name_kor: str, main_npc_id: str) -> dict:
         "personality":          "unknown",
         "speech_style":         "",
         "context":              context,
-        "relation_type":        "family" if role in _SAME_SURNAME_ROLE_SET else "acquaintance",
+        "relation_type":        relation_type,
         "relation_status":      f"first known as {name_kor}; not yet personally established with {main_npc_id}",
         "initial_affinity":     0,
     }
-
-
-async def _generate_stub_profile(
-    name_kor:    str,
-    world_config: dict,
-    main_npc_id: str,
-) -> dict | list | None:
-    """Haiku 1회 — stub 프로필 초안 생성."""
-    world_ctx = world_config.get("world_section", "")[:300]
-
-    # 관계 서술어 파싱: "A의 남동생"/"A 남동생" → related_to="A", role="남동생"
-    parsed = _parse_relation_descriptor(name_kor)
-    related_to, role = parsed if parsed else ("", name_kor)
-
-    # Determine surname constraint and pass it to the LLM in English
-    surname_rule = "Choose a natural Korean surname that fits the world."
-    if related_to and role in _SAME_SURNAME_ROLE_SET:
-        surname = await _lookup_surname(related_to)
-        if surname:
-            surname_rule = f'Must start with "{surname}" — paternal blood relative (shares the same father).'
-    elif related_to:
-        surname = await _lookup_surname(related_to)
-        if surname:
-            surname_rule = f'Must NOT start with "{surname}" — not a paternal blood relative (e.g. mother, in-law, friend).'
-
-    system_instruction = (
-        "You generate minimal NPC stubs for a Korean slice-of-life roleplay. "
-        "Output JSON only. No extra text."
-    )
-
-    prompt = json.dumps({
-        "world":          world_ctx,
-        "reference_npc":  main_npc_id,
-        "character_hint": {
-            "value": name_kor,
-            "note":  "Proper name → keep as-is. 'X의 Y' descriptor → invent a new person for role Y.",
-        },
-        "surname_rule": surname_rule,
-        "output_schema": {
-            "name_kor":            "Korean full name — surname_rule is mandatory",
-            "name_roman":          "romanized char_id: lowercase surname_givenname (e.g. han_yuram, kim_minjun)",
-            "biological_sex":      "Male or Female",
-            "age":                 "integer: estimated age",
-            "height":              "e.g. 170cm",
-            "weight":              "e.g. 60kg",
-            "appearance":          "1 Korean sentence: physical features",
-            "personality":         "2-3 English adjectives, +-separated",
-            "speech_style":        "brief Korean: honorific level + tone (e.g. '반말, 조용한 어조')",
-            "context":             "1 Korean sentence: who this person is",
-            "family":              "1 Korean sentence: family composition",
-            "formative_background": "1 Korean sentence: key formative experience",
-            "initial_mood":        "calm | cheerful | tired | tense | melancholic",
-            "relation_type":       "acquaintance | classmate | coworker | customer | stranger | family",
-            "relation_status":     "1 English sentence: current standing with reference_npc",
-            "initial_affinity":    0,
-        },
-        "example_output": {
-            "name_kor":            "박하름",
-            "name_roman":          "park_harum",
-            "biological_sex":      "Male",
-            "age":                 16,
-            "height":              "168cm",
-            "weight":              "58kg",
-            "appearance":          "폭이 넓은 어깨와 늘차 맑는 눈을 가진 평범한 테자 마리의 소년.",
-            "personality":         "quiet+caring+stubborn",
-            "speech_style":        "반말, 조용한 어조",
-            "context":             "주인공의 두 살 아래 남동생으로 고등학교 2학년.",
-            "family":              "부모와 함께 사는 정상적인 가정.",
-            "formative_background": "중학교 때 축구부에서 활동해 팀워크를 배웠다.",
-            "initial_mood":        "calm",
-            "relation_type":       "acquaintance",
-            "relation_status":     "younger sibling — close but occasionally bickers",
-            "initial_affinity":    0,
-        },
-    }, ensure_ascii=False)
-
-    try:
-        model = get_model(STUB_MODEL, system_prompt=system_instruction)
-        resp = await model.generate_content_async(
-            prompt,
-            generation_config={"response_mime_type": "application/json"}
-        )
-        return extract_json_from_llm(resp.text)
-    except Exception as e:
-        print(f"[WorldBuilder] stub 생성 실패: {e}")
-        return None
 
 
 async def _increment_appearance(char_id: str) -> None:

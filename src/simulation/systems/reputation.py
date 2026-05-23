@@ -6,7 +6,7 @@
 # 소문을 전달하고, 수신 NPC의 호감도와 기억을 갱신합니다.
 #
 # Functions
-#   - propagate_gossip(event_summary, event_importance, relationship_delta, source_npc_id, pc_id, timestamp_iso) -> None : 이벤트 기반 소문 전파 및 수신 NPC 호감도·기억 갱신
+#   - propagate_gossip(event_summary: str, event_importance: int, relationship_delta: int, source_npc_id: str, pc_id: str, timestamp_iso: str, source_event_id: str | None = None) -> None : 이벤트 기반 소문 전파 및 수신 NPC 호감도·기억 갱신
 # ================================
 
 import json
@@ -31,6 +31,7 @@ async def propagate_gossip(
     source_npc_id:      str,
     pc_id:              str,
     timestamp_iso:      str,
+    source_event_id:    str | None = None,
 ) -> None:
     """
     source_npc와 pc_id 간 중요 이벤트 발생 후 주변 NPC에게 소문을 전파한다.
@@ -71,12 +72,13 @@ async def propagate_gossip(
             pass
 
         await _create_gossip_memory(
-            char_id    = target_id,
-            event_id   = gossip_event_id,
-            summary    = gossip_text,
-            importance = gossip_importance,
-            timestamp  = timestamp_iso,
-            embedding  = embedding,
+            char_id         = target_id,
+            event_id        = gossip_event_id,
+            summary         = gossip_text,
+            importance      = gossip_importance,
+            timestamp       = timestamp_iso,
+            embedding       = embedding,
+            source_event_id = source_event_id,
         )
 
     print(f"[Reputation] 소문 전파: {source_npc_id} → {len(gossip_results)}명")
@@ -172,16 +174,17 @@ Return ONLY JSON array: [{{"target_id":"...","gossip_summary":"...","affinity_de
 
 
 async def _create_gossip_memory(
-    char_id:   str,
-    event_id:  str,
-    summary:   str,
-    importance: int,
-    timestamp: str,
-    embedding: list[float] | None,
+    char_id:         str,
+    event_id:        str,
+    summary:         str,
+    importance:      int,
+    timestamp:       str,
+    embedding:       list[float] | None,
+    source_event_id: str | None,
 ) -> None:
     """
     소문(gossip) Memory 노드를 생성하고 REMEMBERS 관계로 연결한다.
-    전언(傳言)이므로 OF_EVENT 링크 없이 독립 기억으로 저장한다.
+    전언(傳言) 내용은 주관적 Memory로 보존하되, 원 Event가 있으면 OF_EVENT로 연결한다.
     """
     mem_id = f"mem_{char_id}_{event_id}"
 
@@ -219,3 +222,9 @@ async def _create_gossip_memory(
             MATCH (c:Character {id: $cid}), (m:Memory {id: $mid})
             CREATE (c)-[:REMEMBERS]->(m)
         """, cid=char_id, mid=mem_id)
+
+        if source_event_id:
+            await session.run("""
+                MATCH (m:Memory {id: $mid}), (e:Event {id: $eid})
+                CREATE (m)-[:OF_EVENT]->(e)
+            """, mid=mem_id, eid=source_event_id)

@@ -4,10 +4,11 @@
 # Public API for the Social system and character appearance updates.
 #
 # Functions
-#   - build_world_context(npc_id: str, pc_id: str, location_id: str, current_time: datetime) -> dict : Build nearby activity and SNS feed context
+#   - build_world_context(npc_id: str, pc_id: str, location_id: str, current_time: datetime, enable_sns: bool = True) -> dict : Build nearby activity and optional SNS feed context
+#   - fetch_sns_panel_state(npc_id: str, pc_id: str, current_time: datetime, limit: int = 12) -> dict : Build UI-ready SNS feed state
 #   - resolve_and_update(char_names: list[str], main_npc_id: str, pc_id: str, world_config: dict, event_id: str | None = None, event_importance: int = 0) -> list[str] : Resolve characters and update appearance records
 # ================================
-from src.simulation.systems.social.context import build_world_context
+from src.simulation.systems.social.context import build_world_context, fetch_sns_panel_state
 from src.simulation.systems.social.graph import (
     _create_stub,
     ensure_scene_relationships,

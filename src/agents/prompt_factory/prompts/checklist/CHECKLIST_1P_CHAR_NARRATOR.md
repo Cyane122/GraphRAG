@@ -9,7 +9,6 @@ SCENE: [1 sentence]
 CHARACTERS: [physically present or directly active women first, then other present characters; full-name JSON array; include up to 15]
 STATE: {{state_line}}
 CURRENT POV: {current_pov_line}
-POV CANDIDATES: {pov_candidates_line}
 POV: mode=1P | narrator={char} | access={char} perception/body/thought/dialogue/action | blocked={user} inner/action/dialogue + NPC hidden thoughts
 USER CONTROL: forbidden | first beat after user input={char} perception/reaction/action/env consequence? [yes/no]
 CORE: scene-continued=[yes/no] | summary-replaced-action=[yes/no] | continuity-kept=[yes/no] | new-conflict-resolved=[yes/no]

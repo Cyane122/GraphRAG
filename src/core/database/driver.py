@@ -179,6 +179,29 @@ _TABLE_MIGRATIONS: list[str] = [
         PRIMARY KEY(id)
     )""",
     "CREATE REL TABLE IF NOT EXISTS KNOWS_FACT(FROM Character TO PersonalFact)",
+    """CREATE NODE TABLE IF NOT EXISTS KakaoRoom(
+        id STRING,
+        name STRING,
+        topic STRING,
+        status STRING,
+        created_at STRING,
+        last_active_at STRING,
+        PRIMARY KEY(id)
+    )""",
+    """CREATE NODE TABLE IF NOT EXISTS KakaoMessage(
+        id STRING,
+        room_id STRING,
+        sender_id STRING,
+        sender_name STRING,
+        content STRING,
+        timestamp STRING,
+        source STRING,
+        status STRING,
+        PRIMARY KEY(id)
+    )""",
+    "CREATE REL TABLE IF NOT EXISTS MEMBER_OF(FROM Character TO KakaoRoom)",
+    "CREATE REL TABLE IF NOT EXISTS ROOM_HAS_MESSAGE(FROM KakaoRoom TO KakaoMessage)",
+    "CREATE REL TABLE IF NOT EXISTS SENT_KAKAO(FROM Character TO KakaoMessage)",
 ]
 
 _COLUMN_MIGRATIONS: list[str] = [

@@ -4,7 +4,7 @@
 # 임신 확률 계산 및 생리 주기/임신 상태 관리를 담당합니다.
 #
 # Functions
-#   - detect_internal_ejaculation(actor_response: str) -> bool : regex pre-filter 후 Flash로 질내·콘돔 여부 분류
+#   - detect_internal_ejaculation(actor_response: str) -> bool : regex pre-filter 후 Flash/규칙으로 현재 질내·콘돔 여부 분류
 #   - process_ejaculation(npc_id: str, actor_response: str, scene_char_ids: list[str] | None, intimate_char_ids: list[str] | None) -> str | None : 질내사정 감지 시 확률 계산 후 임신 여부 결정
 #   - set_pregnant_manual(char_ref: str) -> str | None : 이름/ID로 캐릭터를 직접 임신 상태로 전환 (수동 보정용)
 #   - tick_pregnancy_day(npc_id: str, days_passed: int) -> None : 게임 내 날짜 경과 시 pregnancy_day 증가
@@ -29,6 +29,8 @@ from src.core.llm.client import (
 BASE_FERTILE    = 0.27   # 가임기 단발 기준 확률
 BASE_INFERTILE  = 0.01   # 비가임기 희박 확률
 PROB_CAP        = 0.45   # 한 주기 최대 임신 확률
+_EJAC_CLASSIFIER_OUTPUT_TOKENS = 128
+_EJAC_CLASSIFIER_RETRY_OUTPUT_TOKENS = 256
 
 DAY_WEIGHT: dict[int, float] = {
     10: 0.30,
@@ -49,6 +51,7 @@ _EJAC_RE = re.compile(
     r"|(?:안|속)에\s*(?:쏟|싸|쌌|뿌렸|채웠|사정)"
     r"|자궁\s*(?:안|속)에\s*(?:쏟|싸|뿌렸|사정)"
     r"|(?:정액|하얀\s*액체|체액)\s*(?:을|를)?\s*(?:쏟|싸|쌌|뿌렸|채웠)"
+    r"|(?:정액|semen|cum)"
     r"|사정\s*(?:했|해버렸|해\s*버렸|하고\s*말았|하며)"
     # 절정·클라이막스 (간접 묘사)
     r"|절정\s*(?:에\s*달했|을\s*맞이|했|에\s*이르|을\s*느)"
@@ -57,36 +60,120 @@ _EJAC_RE = re.compile(
     # 콘돔·고무 파열과 함께하는 삽입 묘사
     r"|(?:찢어진|터진|파열된)\s*(?:라텍스|콘돔|고무)"
     r"|(?:라텍스|콘돔|고무\s*막)\s*(?:찢어지|터지|파열)"
+    # English fallback terms sometimes appear in model/user mixed-language turns.
+    r"|came\s+inside"
+    r"|cum(?:med|s|ming)?\s+inside"
+    r"|ejaculat(?:ed|es|ing|ion).*inside"
+    r"|filled\s+her\s+(?:inside|womb|pussy|vagina)"
+    r"|inside\s+(?:her\s+)?(?:vagina|pussy|womb)"
+    r"|condom\s*(?:broke|split|tore|slipped)"
+    r"|bareback"
+    r"|without\s+(?:a\s+)?condom",
+    re.IGNORECASE,
 )
 
 _EXPLICIT_INTERNAL_EJAC_RE = re.compile(
     r"질내사정"
     r"|(?:질|보지|자궁|몸\s*안|안|속)\s*(?:에|으로|안에|속에)?\s*"
-    r"(?:정액을\s*)?(?:쏟|싸|쌌|뿌렸|채웠|사정)"
-    r"|(?:쏟|싸|쌌|뿌렸|채웠|사정).*?(?:질|보지|자궁|몸\s*안|안|속)"
+    r"(?:정액을\s*)?(?:쏟|쏟아|싸|쌌|싸버렸|뿌렸|채웠|사정)"
+    r"|(?:쏟|쏟아|싸|쌌|싸버렸|뿌렸|채웠|사정).*?(?:질|보지|자궁|몸\s*안|안|속)"
+    r"|(?:정액|체액)\s*(?:이|가)?\s*(?:질|보지|자궁|몸\s*안|안쪽|속)\s*(?:에|으로)?\s*(?:흘러|들어|고였|찼)"
+    r"|사정(?:했|해버렸|하며).*?(?:다\s*담기지\s*못한|넘친|새어\s*나온|흘러나온).*?"
+    r"(?:정액|체액).*?(?:다리\s*사이|허벅지\s*사이|가랑이)"
+    r"|came\s+inside"
+    r"|cum(?:med)?\s+inside"
+    r"|ejaculat(?:ed|ion).*inside"
+    r"|filled\s+her\s+(?:inside|womb|pussy|vagina)"
+    r"|inside\s+(?:her\s+)?(?:vagina|pussy|womb)",
+    re.IGNORECASE,
 )
 
 _PROTECTED_CONDOM_RE = re.compile(
     r"(?:콘돔|라텍스|고무)\s*(?:을|를|이|가)?\s*(?:꼈|끼고|낀|착용|쓴|사용)"
     r"|(?:콘돔|라텍스|고무)\s*(?:안|속)"
+    r"|(?:wearing|wore|used|with)\s+(?:a\s+)?condom"
+    r"|condom\s+(?:on|protected|intact)"
+    r"|inside\s+(?:the\s+)?condom",
+    re.IGNORECASE,
 )
 
 _BROKEN_OR_ABSENT_CONDOM_RE = re.compile(
     r"(?:콘돔|라텍스|고무)\s*(?:없이|안\s*끼|안\s*꼈|찢|터지|파열|벗겨|빠지)"
     r"|(?:생으로|노콘)"
+    r"|(?:without|no)\s+(?:a\s+)?condom"
+    r"|condom\s*(?:broke|split|tore|torn|slipped|off)"
+    r"|bareback",
+    re.IGNORECASE,
 )
+
+_NON_VAGINAL_EJAC_RE = re.compile(
+    r"(?:입\s*안|입속|입에|입으로|목구멍|구강|oral|mouth|throat)"
+    r"|(?:항문|애널|후장|anal|anus|ass)"
+    r"|(?:밖에|밖으로|외부|배\s*위|얼굴|가슴|손에|external|outside|belly|face|chest|hand)",
+    re.IGNORECASE,
+)
+
+_NON_ACTUAL_EJAC_CONTEXT_RE = re.compile(
+    r"(?:싸|쌌|사정|질내사정|정액|ejaculat|cum|came).*?"
+    r"(?:도\s*돼|도\s*되|도\s*괜찮|해도\s*돼|해도\s*되|해도\s*괜찮|할까|할래|하면|한다면|할\s*경우|할\s*수도|"
+    r"할\s*지도|하려고|하려\s*는|하고\s*싶|싶어|말했|물었|생각|상상|걱정|위험|가능성|"
+    r"asked|asks|ask|could|would|whether|if|want(?:ed)?|worr(?:y|ied))"
+    r"|(?:해도\s*돼|해도\s*되|하면|한다면|상상|걱정|물었|말했).*?"
+    r"(?:싸|쌌|사정|질내사정|정액|ejaculat|cum|came)"
+    r"|(?:asked|asks|ask|could|would|whether|if|want(?:ed)?|worr(?:y|ied)).*?"
+    r"(?:ejaculat|cum|came|inside)"
+    r"|(?:아까|방금\s*전|이전|어제|지난|전에|예전에|과거|기억|회상).*?"
+    r"(?:싸|쌌|사정|질내사정|정액|ejaculat|cum|came)"
+    r"|(?:아직|결국|끝내|실제로)?.*?"
+    r"(?:싸지\s*않|싸지\s*못|쏘지\s*않|사정하지\s*않|사정하지\s*못|질내사정하지\s*않|"
+    r"not\s+(?:ejaculat|cum|come|came)|did(?:n't| not)\s+(?:ejaculat|cum|come)|"
+    r"never\s+(?:ejaculat|cum|came|came\s+inside))",
+    re.IGNORECASE,
+)
+
+_COMPLETED_EJAC_RE = re.compile(
+    r"(?:질내사정\s*(?:했|해버렸|하고\s*말았|한다)|"
+    r"쌌|싸버렸|사정했|사정해버렸|사정하며|쏟아냈|쏟았다|뿌렸다|채웠다|찼다|흘러들어갔다|"
+    r"came\s+inside|cummed\s+inside|ejaculated|filled\s+her)",
+    re.IGNORECASE,
+)
+
+_SEGMENT_SPLIT_RE = re.compile(r"[\n\r.!?。？！]+")
 
 _EJAC_CLASSIFY_SYSTEM = """\
 You are a scene classifier for a Korean adult roleplay system.
-Analyze the ejaculation scene and return JSON only — no explanation, no markdown.
+Analyze the text and return JSON only — no explanation, no markdown.
 
-vaginal: true if ejaculation occurred during vaginal penetration.
-         false if during anal penetration (항문 / 애널 / 후장).
+CRITICAL: Only classify ejaculation that ACTUALLY HAPPENED in this scene.
+Return {"current_ejaculation": false, "vaginal": false, "condom_protected": false, "recipient_refs": []} if:
+- Characters are merely TALKING ABOUT, ANTICIPATING, or REFERENCING ejaculation (허락, 해도 돼, 하게?, ~하면 어쩔 수 없지, ~할 수도 있어 등).
+- The ejaculation is described as past/hypothetical, not currently occurring.
+- The text only describes semen/fluid from an earlier ejaculation still leaking or remaining.
+- No penetration or sexual act is actively depicted.
+
+current_ejaculation: true ONLY if ejaculation happens in the current accepted scene text.
+                     false for prior-result descriptions like "아까 싼 정액이 아직 흘러나왔다".
+vaginal: true ONLY if male ejaculation inside the vagina is actively depicted as happening NOW in this scene.
+         false if anal (항문 / 애널 / 후장), oral, external, or no ejaculation occurred.
 condom_protected: true if a condom was worn and there is NO mention of it breaking,
                   slipping off, or being absent (생으로 / 콘돔 없이 / 파열 / 찢어짐 등).
                   false otherwise (no condom, condom broke, bareback).
+recipient_refs: names/ids/pronouns of characters whose vagina/body received the current ejaculation.
+                Do NOT include the ejaculating character. Return [] if unknown or if no current vaginal ejaculation.
 
-Output exactly: {"vaginal": true, "condom_protected": false}"""
+Positive example:
+- "그가 사정했다. 다 담기지 못한 정액이 다리 사이로 흘러나왔다."
+  -> {"current_ejaculation": true, "vaginal": true, "condom_protected": false, "recipient_refs": []}
+
+Negative example:
+- "아까 싼 정액이 아직도 흘러나왔다."
+  -> {"current_ejaculation": false, "vaginal": false, "condom_protected": false, "recipient_refs": []}
+
+Recipient example:
+- "민지가 그의 사정을 받아냈고 소라는 옆에서 지켜봤다."
+  -> {"current_ejaculation": true, "vaginal": true, "condom_protected": false, "recipient_refs": ["민지"]}
+
+Output exactly: {"current_ejaculation": true, "vaginal": true, "condom_protected": false, "recipient_refs": []}"""
 
 
 def _calc_prob(cycle_day: int, count: int) -> float:
@@ -109,7 +196,11 @@ async def _classify_ejaculation(actor_response: str) -> dict:
     """
     model = get_model(model_name=_FLASH_MODEL, system_prompt=_EJAC_CLASSIFY_SYSTEM)
     try:
-        config = {"max_output_tokens": 32, "temperature": 0.0}
+        config = {
+            "max_output_tokens": _EJAC_CLASSIFIER_OUTPUT_TOKENS,
+            "temperature": 0.0,
+            "thinking_config": {"thinking_budget": 0},
+        }
         response = await model.generate_content_async(
             actor_response[:3000],
             generation_config={**config, "response_mime_type": "application/json"},
@@ -117,7 +208,10 @@ async def _classify_ejaculation(actor_response: str) -> dict:
         raw = get_response_text(response)
         if not raw.strip():
             log_empty_response_diagnostics(response, "ejac_classifier:json_mode")
-            response = await model.generate_content_async(actor_response[:3000], generation_config=config)
+            response = await model.generate_content_async(
+                actor_response[:3000],
+                generation_config={**config, "max_output_tokens": _EJAC_CLASSIFIER_RETRY_OUTPUT_TOKENS},
+            )
             raw = get_response_text(response)
         if not raw.strip():
             log_empty_response_diagnostics(response, "ejac_classifier:retry")
@@ -130,13 +224,59 @@ async def _classify_ejaculation(actor_response: str) -> dict:
 
 def _has_explicit_unprotected_internal_ejaculation(actor_response: str) -> bool:
     """LLM 실패 시 사용할 엄격한 질내사정 fallback을 판정합니다."""
-    if not _EXPLICIT_INTERNAL_EJAC_RE.search(actor_response):
-        return False
-    if _BROKEN_OR_ABSENT_CONDOM_RE.search(actor_response):
+    for segment in _iter_ejaculation_segments(actor_response):
+        if not _EXPLICIT_INTERNAL_EJAC_RE.search(segment):
+            continue
+        if _NON_VAGINAL_EJAC_RE.search(segment):
+            continue
+        if not _COMPLETED_EJAC_RE.search(segment):
+            continue
+        if _NON_ACTUAL_EJAC_CONTEXT_RE.search(segment):
+            continue
+        if _BROKEN_OR_ABSENT_CONDOM_RE.search(segment):
+            return True
+        if _PROTECTED_CONDOM_RE.search(segment):
+            continue
         return True
-    if _PROTECTED_CONDOM_RE.search(actor_response):
+    return False
+
+
+def _recipient_refs_from_classifier(result: dict) -> list[str]:
+    """Return recipient refs from classifier output as clean strings."""
+    refs = result.get("recipient_refs")
+    if not isinstance(refs, list):
+        return []
+    return [str(ref).strip() for ref in refs if str(ref or "").strip()]
+
+
+def _is_clearly_non_pregnancy_input(actor_response: str) -> bool:
+    """Return whether a signal-bearing turn is clearly non-pregnancy-relevant."""
+    segments = list(_iter_ejaculation_segments(actor_response))
+    if not segments:
+        return False
+    for segment in segments:
+        if _NON_VAGINAL_EJAC_RE.search(segment):
+            continue
+        if _NON_ACTUAL_EJAC_CONTEXT_RE.search(segment):
+            continue
         return False
     return True
+
+
+def _iter_ejaculation_segments(actor_response: str) -> list[str]:
+    """Return punctuation-delimited segments that contain ejaculation signals."""
+    parts = [p.strip() for p in _SEGMENT_SPLIT_RE.split(actor_response) if p.strip()]
+    if not parts:
+        parts = [actor_response.strip()]
+    signal_parts = [part for part in parts if _EJAC_RE.search(part) or _EXPLICIT_INTERNAL_EJAC_RE.search(part)]
+    if len(signal_parts) > 1 and actor_response.strip():
+        return [actor_response.strip(), *signal_parts]
+    return signal_parts
+
+
+def _text_mentions_ref(actor_response: str, char_id: str, char_name: str) -> bool:
+    """Return whether a character id or name is explicitly mentioned in the response."""
+    return bool((char_id and char_id in actor_response) or (char_name and char_name in actor_response))
 
 
 async def detect_internal_ejaculation(actor_response: str) -> bool:
@@ -146,24 +286,45 @@ async def detect_internal_ejaculation(actor_response: str) -> bool:
     2단계: Flash 분류 — 질내 여부·콘돔 상태 판단
     Flash 실패 시 명시적·무방비 질내사정 표현이 있을 때만 True.
     """
-    if not _EJAC_RE.search(actor_response):
-        return False
+    analysis = await _analyze_internal_ejaculation(actor_response)
+    return bool(analysis.get("detected"))
 
+
+async def _analyze_internal_ejaculation(actor_response: str) -> dict:
+    """Return pregnancy-risk detection details for the accepted response."""
+    if not _EJAC_RE.search(actor_response):
+        return {"detected": False, "recipient_refs": []}
     result = await _classify_ejaculation(actor_response)
+    current_ejaculation = result.get("current_ejaculation")
     vaginal          = result.get("vaginal")
     condom_protected = result.get("condom_protected")
+    recipient_refs   = _recipient_refs_from_classifier(result)
 
-    print(f"[PregnancyMgr] ejac classify → vaginal={vaginal} condom_protected={condom_protected}")
+    print(
+        "[PregnancyMgr] ejac classify → "
+        f"current={current_ejaculation} vaginal={vaginal} "
+        f"condom_protected={condom_protected} recipients={recipient_refs}"
+    )
+
+    if current_ejaculation is False:
+        return {"detected": False, "recipient_refs": recipient_refs}
+
+    explicit_unprotected = _has_explicit_unprotected_internal_ejaculation(actor_response)
+    if explicit_unprotected:
+        print("[PregnancyMgr] ejac classify override → explicit unprotected internal")
+        return {"detected": True, "recipient_refs": recipient_refs}
 
     if vaginal is None:
-        fallback = _has_explicit_unprotected_internal_ejaculation(actor_response)
-        print(f"[PregnancyMgr] ejac classify fallback → explicit_internal={fallback}")
-        return fallback
+        print("[PregnancyMgr] ejac classify fallback → explicit_internal=False")
+        return {"detected": False, "recipient_refs": recipient_refs}
     if not vaginal:
-        return False
+        return {"detected": False, "recipient_refs": recipient_refs}
     if condom_protected:
-        return False
-    return True
+        return {"detected": False, "recipient_refs": recipient_refs}
+    if _NON_ACTUAL_EJAC_CONTEXT_RE.search(actor_response):
+        print("[PregnancyMgr] ejac classify override → non-actual context")
+        return {"detected": False, "recipient_refs": recipient_refs}
+    return {"detected": True, "recipient_refs": recipient_refs}
 
 
 async def _get_char_name(char_id: str) -> str:
@@ -186,6 +347,65 @@ async def _resolve_char_id(name_or_id: str) -> str | None:
         )
         row = await rec.single()
     return row["cid"] if row else None
+
+
+async def _resolve_pregnancy_candidate_ids(
+    npc_id: str,
+    actor_response: str,
+    scene_char_ids: list[str] | None,
+    intimate_char_ids: list[str] | None,
+    classifier_recipient_refs: list[str] | None = None,
+) -> list[str]:
+    """Resolve canonical character ids that should receive pregnancy probability checks."""
+    if intimate_char_ids is not None:
+        raw_refs = intimate_char_ids
+    elif classifier_recipient_refs:
+        raw_refs = classifier_recipient_refs
+    else:
+        raw_refs = [npc_id, *(scene_char_ids or [])]
+
+    seen: set[str] = set()
+    resolved: list[tuple[str, str, str]] = []
+    for ref in raw_refs:
+        canonical = await _resolve_char_id(ref)
+        if not canonical or canonical in seen:
+            continue
+        seen.add(canonical)
+        resolved.append((canonical, ref, await _get_char_name(canonical)))
+
+    if intimate_char_ids is not None:
+        return [char_id for char_id, _, _ in resolved]
+    if classifier_recipient_refs and resolved:
+        return [char_id for char_id, _, _ in resolved]
+
+    if classifier_recipient_refs and not resolved:
+        return await _resolve_pregnancy_candidate_ids(
+            npc_id,
+            actor_response,
+            scene_char_ids,
+            None,
+            None,
+        )
+
+    mentioned = [
+        char_id
+        for char_id, original_ref, char_name in resolved
+        if _text_mentions_ref(actor_response, original_ref, char_name)
+    ]
+    if mentioned:
+        return mentioned
+
+    npc_canonical = await _resolve_char_id(npc_id)
+    scene_refs = set(scene_char_ids or [])
+    scene_only = [
+        char_id
+        for char_id, original_ref, _ in resolved
+        if original_ref in scene_refs and char_id != npc_canonical
+    ]
+    if len(scene_only) == 1:
+        return scene_only
+
+    return [npc_canonical] if npc_canonical else []
 
 
 async def _get_cycle_state(npc_id: str) -> dict:
@@ -218,26 +438,31 @@ async def process_ejaculation(
     actor_response: str,
     scene_char_ids: list[str] | None = None,
     intimate_char_ids: list[str] | None = None,
+    father_id: str | None = None,
 ) -> str | None:
     """
     질내사정 감지 시 실제 성행위에 참여한 NPC만 임신 확률 계산.
 
     intimate_char_ids: 실제 성행위 참여자 명시 목록 (없으면 npc_id만 처리).
     scene_char_ids: 씬 존재 캐릭터 전체 — 임신 계산에는 사용하지 않음.
+    father_id: 사정한 캐릭터 ID (보통 PC). 임신 확정 시 pregnancy_father_id에 저장.
     Returns:
         임신 확정 시 OOC 메시지 문자열, 아니면 None.
     """
-    if not await detect_internal_ejaculation(actor_response):
+    analysis = await _analyze_internal_ejaculation(actor_response)
+    if not analysis.get("detected"):
         return None
 
-    # 명시된 intimate 참여자가 있으면 그것만, 없으면 npc_id 단독
-    # None이 아닌 빈 리스트([])도 "참여자 없음"이 아닌 "조회 실패"이므로 None만 fallback 트리거
-    seen: set[str] = set()
-    candidates: list[str] = []
-    for cid in (intimate_char_ids if intimate_char_ids is not None else [npc_id]):
-        if cid not in seen:
-            seen.add(cid)
-            candidates.append(cid)
+    # scene_chars may contain both a Korean name ("민지") and an ID ("minji") for the same
+    # character. Resolve and deduplicate before DB writes because update_dynamic_state
+    # matches on id, not name.
+    candidates = await _resolve_pregnancy_candidate_ids(
+        npc_id,
+        actor_response,
+        scene_char_ids,
+        intimate_char_ids,
+        analysis.get("recipient_refs") or None,
+    )
 
     for char_id in candidates:
         state = await _get_cycle_state(char_id)
@@ -263,19 +488,26 @@ async def process_ejaculation(
             continue
 
         # ── 임신 확정 ──────────────────────────────────────────
-        await update_dynamic_state(char_id, {
+        pregnancy_updates: dict = {
             "pregnant":             True,
             "pregnancy_day":        1,
             "cum_shots_this_cycle": 0,
-        })
+        }
+        resolved_father = await _resolve_char_id(father_id) if father_id else None
+        if resolved_father:
+            pregnancy_updates["pregnancy_father_id"] = resolved_father
 
-        char_name = await _get_char_name(char_id)
+        await update_dynamic_state(char_id, pregnancy_updates)
+
+        char_name   = await _get_char_name(char_id)
+        father_name = await _get_char_name(resolved_father) if resolved_father else None
+        father_part = f" (아버지: {father_name})" if father_name else ""
         ooc_msg = (
-            f"*[시스템] {char_name}이(가) 임신했습니다. (임신 1일째) "
+            f"*[시스템] {char_name}이(가) 임신했습니다.{father_part} (임신 1일째) "
             f"가임기 {cycle_day}일째, 질내사정 {new_count}회 누적. "
             f"임신 13주(91일) 이후 안정기 진입.*"
         )
-        print(f"[PregnancyMgr] {char_id} 임신 확정 → OOC 주입 예약")
+        print(f"[PregnancyMgr] {char_id} 임신 확정 → OOC 주입 예약 (father={resolved_father})")
         return ooc_msg
 
     return None

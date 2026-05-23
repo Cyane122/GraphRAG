@@ -5,9 +5,9 @@
 # 왜곡과 압축은 배치 처리로 LLM 호출 횟수를 최소화합니다.
 #
 # Functions
-#   - ensure_memories_for_event(event_id, summary, importance, char_ids, timestamp, embedding, memory_type, narrative_summary, state_summary) -> None : Event에 관련된 캐릭터별 Memory 노드 생성
+#   - ensure_memories_for_event(event_id: str, summary: str, importance: int, char_ids: list[str], timestamp: str, embedding: list[float] | None = None, memory_type: str = "episodic", narrative_summary: str = "", state_summary: str = "") -> None : Event에 관련된 캐릭터별 Memory 노드 생성
 #   - run_decay(current_game_time: datetime) -> None : 게임 내 시간 경과에 따라 기억 풍화·왜곡·삭제
-#   - distort_on_affinity_change(char_id, pc_id, affinity_delta, current_game_time) -> None : 호감도 급변 시 관련 기억을 즉시 재해석
+#   - distort_on_affinity_change(char_id: str, pc_id: str, affinity_delta: int, current_game_time: datetime) -> None : 호감도 급변 시 관련 기억을 즉시 재해석
 # ================================
 
 import json
@@ -26,6 +26,7 @@ from src.simulation.systems.memory.distortion import (
 )
 
 _DECAY_TABLE = {
+    (0, 2):  {"distort": 14,  "level1": 30,  "level2": 60,  "delete": 120},
     (3, 5):  {"distort": 30,  "level1": 60,  "level2": 120, "delete": 240},
     (6, 8):  {"distort": 90,  "level1": 180, "level2": None, "delete": None},
     (9, 10): {"distort": None, "level1": None, "level2": None, "delete": None},
@@ -56,13 +57,10 @@ async def ensure_memories_for_event(
 ) -> None:
     """
     Event에 관련된 캐릭터별 Memory 노드를 생성.
-    importance 0~2 이벤트는 Memory 생성 생략 (자율행동 일상 → 프롬프트 노이즈).
+    중요도와 관계없이 Event에 관련된 각 캐릭터의 원본 Memory를 생성한다.
 
     timestamp: 반드시 ISO 8601 형식 ("2024-03-08T08:00:00").
     """
-    if importance <= 1:
-        return
-
     emb = embedding
     if emb is None and summary:
         try:

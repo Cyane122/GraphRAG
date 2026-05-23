@@ -4,7 +4,8 @@
 # Collect dynamic world-context hints for the Manager pipeline.
 #
 # Functions
-#   - fetch_dynamic_world_context(npc_id: str, pc_id: str, location_id: str | None, current_dt: datetime, user_input: str, context_plan: dict, recent_story: str = "", preloaded_schedule_context: dict | None = None) -> dict : Fetch prompt-ready world context
+#   - fetch_dynamic_world_context(npc_id: str, pc_id: str, location_id: str | None, current_dt: datetime, user_input: str, context_plan: dict, recent_story: str = "", preloaded_schedule_context: dict | None = None, social_media_features: dict | None = None) -> dict : Fetch prompt-ready world context
+#   - _wants_kakao_context(user_input: str, required_systems: set[str]) -> bool : Decide whether to fetch KakaoTalk context.
 #   - _prompt_safe_secret_hints(secret_hints: list[dict]) -> list[dict] : Strip Secret hints to prompt-safe public fields.
 #   - _merge_rules(existing_rules: list[dict], extra_rules: list[dict]) -> list[dict] : Merge rule lists by id.
 #   - _context_importance(context_plan: dict) -> int : Safely read context planner importance.
@@ -16,6 +17,7 @@ from src.simulation.events.manager import evaluate_all as evaluate_static_events
 from src.simulation.systems.schedules import SCHEDULE_PROMPT_WINDOW_MIN, fetch_schedule_context
 from src.simulation.systems.time_rules import fetch_time_rule_context
 from src.simulation.systems.social import build_world_context
+from src.simulation.systems.kakao import fetch_kakao_context
 
 async def fetch_dynamic_world_context(
     npc_id: str,
@@ -26,9 +28,13 @@ async def fetch_dynamic_world_context(
     context_plan: dict,
     recent_story: str = "",
     preloaded_schedule_context: dict | None = None,
+    social_media_features: dict | None = None,
 ) -> dict:
     """Collect optional dynamic world hints used by the prompt renderer."""
     required_systems = set(context_plan.get("required_systems", []))
+    features = social_media_features or {}
+    kakao_enabled = bool(features.get("kakao_enabled", True))
+    instagram_enabled = bool(features.get("instagram_enabled", True))
     world_context: dict = {}
     try:
         generic_context = await fetch_generic_prompt_context(
@@ -49,10 +55,19 @@ async def fetch_dynamic_world_context(
                 pc_id        = pc_id,
                 location_id  = location_id or "",
                 current_time = current_dt,
+                enable_sns   = instagram_enabled,
             )
             world_context.update({key: value for key, value in social_context.items() if value})
         except Exception as e:
             print(f"[WorldNarrator] 컨텍스트 수집 실패 (무시): {e}")
+
+    if kakao_enabled and _wants_kakao_context(user_input, required_systems):
+        try:
+            kakao_rooms = await fetch_kakao_context(pc_id=pc_id)
+            if kakao_rooms:
+                world_context["kakao_rooms"] = kakao_rooms
+        except Exception as e:
+            print(f"[Kakao] context fetch failed (ignored): {e}")
 
     if "social" in required_systems or "goals" in required_systems:
         try:
@@ -83,6 +98,14 @@ async def fetch_dynamic_world_context(
         print(f"[NarrativeLog] fetch 실패 (무시): {e}")
 
     return world_context
+
+
+def _wants_kakao_context(user_input: str, required_systems: set[str]) -> bool:
+    """Return True when the turn likely needs KakaoTalk room context."""
+    lowered = user_input.lower()
+    if any(token in lowered for token in ("카톡", "카카오", "톡방", "문자", "메시지", "message", "texting")):
+        return True
+    return "social" in required_systems
 
 
 async def _attach_life_depth_hints(

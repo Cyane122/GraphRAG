@@ -264,6 +264,30 @@ def _render_world_block(world_context: dict, budget: dict[str, int], relationshi
         lines.extend(f"- {post}" for post in world_context["sns_posts"][:2])
         parts.append(_clamp_block("\n".join(lines), budget["recent_summary"]))
 
+    if world_context.get("kakao_turn_context"):
+        block = _render_kakao_turn_context(world_context["kakao_turn_context"])
+        if block:
+            parts.append(_clamp_block(block, budget["recent_summary"]))
+
+    if world_context.get("kakao_rooms") and not world_context.get("kakao_turn_context"):
+        lines = ["[KakaoTalk Rooms]"]
+        for room in world_context["kakao_rooms"][:3]:
+            room_name = room.get("room") or "톡방"
+            members = ", ".join(room.get("members") or [])
+            topic = room.get("topic") or ""
+            header = f"- {room_name}"
+            if members:
+                header += f" ({members})"
+            if topic:
+                header += f": {topic}"
+            lines.append(header)
+            lines.extend(
+                f"  - {message}"
+                for message in (room.get("recent_messages") or [])[-4:]
+                if message
+            )
+        parts.append(_clamp_block("\n".join(lines), budget["recent_summary"]))
+
     if world_context.get("static_events"):
         lines = ["[Upcoming Events]"]
         for event in world_context["static_events"][:3]:
@@ -325,6 +349,27 @@ def _render_world_block(world_context: dict, budget: dict[str, int], relationshi
         parts.append(_clamp_block("\n".join(lines), budget["subtext"]))
 
     return "\n\n".join(part for part in parts if part)
+
+
+def _render_kakao_turn_context(kakao_turn_context: dict) -> str:
+    """Render this-turn KakaoTalk messages as context, not an Actor output format."""
+    messages = kakao_turn_context.get("messages") if isinstance(kakao_turn_context, dict) else []
+    if not messages:
+        return ""
+    lines = [
+        "[KakaoTalk Before Current Input]",
+        "- These KakaoTalk messages are situation context only.",
+        "- Actor must not output KakaoTalk chat UI, chat logs, timestamps, or message bubbles.",
+    ]
+    for message in messages:
+        room = message.get("room") or "톡방"
+        sender = message.get("sender_name") or message.get("sender_id") or "unknown"
+        content = message.get("content") or ""
+        timestamp = message.get("timestamp") or ""
+        time_label = timestamp[11:16] if len(timestamp) >= 16 else timestamp
+        prefix = f"- {time_label} " if time_label else "- "
+        lines.append(f"{prefix}{room} / {sender}: {content}")
+    return "\n".join(lines)
 
 
 def _first_present(data: dict, keys: tuple[str, ...]) -> object:

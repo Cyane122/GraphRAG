@@ -46,9 +46,7 @@ def build_prompt_parts(
     recall_events = _format_recall_events_for_prompt(context)
     current_pov = build_current_pov_context(
         context,
-        scene_plan.scene_types,
-        user_input,
-        recent_story,
+        world_config,
     )
     builder = PromptBuilder(
         world_config,

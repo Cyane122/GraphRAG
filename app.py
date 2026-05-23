@@ -14,12 +14,22 @@
 #   - _resolve_thread_world(thread: ThreadDict) -> tuple[str, str | None] : 스레드의 world/scenario 선택값 복구
 #   - _is_closed_connection_error(exc: BaseException) -> bool : 종료 중 닫힌 연결 예외 판별
 #   - _close_session_driver() -> None : 현재 세션의 Kuzu 드라이버 정리
+#   - _current_game_datetime() -> datetime : 현재 인게임 시간을 datetime으로 반환
+#   - _social_media_features() -> dict : 현재 월드/세션 기준 카카오톡·인스타그램 활성 상태 반환
+#   - _queue_kakao_message(pc_id: str, room_id: str, content: str) -> None : 이번 턴 카카오톡 전송 버퍼에 메시지 추가
+#   - _handle_kakao_panel_event(raw_payload: str) -> None : 카카오톡 패널 이벤트 처리
+#   - _handle_social_panel_event(raw_payload: str) -> None : SNS 패널 설정 이벤트 처리
 #   - on_chat_start() -> None : 신규 세션 초기화 및 오프닝 씬 출력
 #   - on_chat_resume(thread: ThreadDict) -> None : 기존 채팅방 재개 시 세션 복원
 #   - _remove_legacy_graph_steps(steps: list[dict]) -> None : 이전 그래프 메시지 제거
 #   - on_chat_end() -> None : 미확정 pending 강제 처리
 #   - on_message(message: cl.Message) -> None : 메시지 루프 메인 핸들러
 #   - _handle_system_command(user_input: str) -> None : help/debug graph 명령 처리
+#   - _find_user_history_index(history: list[dict], msg_id: str | None) -> int | None : 사용자 메시지 history 위치 검색
+#   - _chat_context_message_ids() -> set[str] : Chainlit 현재 chat context의 메시지 ID 집합 반환
+#   - _first_removed_assistant_index(history: list[dict], active_ids: set[str]) -> int | None : UI에서 제거된 assistant 위치 검색
+#   - _recent_responses_from_history(history: list[dict]) -> list[str] : history에서 최근 응답 스냅샷 재구성
+#   - _handle_user_message_edit(message: cl.Message, user_input: str) -> bool : Chainlit 기본 사용자 메시지 수정 처리
 #   - on_reroll(action: cl.Action) -> None : 리롤 버튼 콜백
 #   - on_edit_response(action: cl.Action) -> None : 수정 버튼 콜백
 #   - on_delete_message(action: cl.Action) -> None : 삭제 버튼 콜백
@@ -40,6 +50,7 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
 
 import chainlit as cl
+from chainlit.chat_context import chat_context
 from chainlit.types import ThreadDict
 
 from src.config import PERSPECTIVE, WORLD_ID, MODEL_ACTOR, MAX_TOKEN
@@ -48,6 +59,11 @@ from src.agents.prompt_factory.ooc_handler import is_ooc, parse_ooc
 from src.agents.prompt_factory.usernote import build_usernote_block, load_usernote
 from src.ui.history import build_history_from_steps
 from src.ui.input_routing import TurnInputType, route_user_input
+from src.ui.kakao_panel import send_kakao_panel
+from src.ui.social_media_settings import (
+    resolve_social_media_features,
+    set_social_media_override,
+)
 from src.ui.session_models import PendingCommit
 from src.ui.turn_debug import write_turn_debug_snapshot
 from src.ui.actor_stream import stream_actor
@@ -69,6 +85,9 @@ from src.simulation.state.multi_character import apply_multi_character_state_upd
 from src.simulation.state.updater import delegate_complex_update
 from src.simulation.systems.needs import ensure_traits_for_characters
 from src.simulation.systems.organic import set_pregnant_manual
+from src.simulation.systems.kakao import (
+    invite_character,
+)
 from src.core.database import KuzuAsyncDriver
 from src.core.database.helpers import load_graph_info
 from src.core.llm.client import get_client
@@ -363,6 +382,124 @@ def _wv() -> tuple[str, str, str, str, dict]:
     )
 
 
+async def _current_game_datetime() -> datetime:
+    """현재 인게임 시간을 datetime으로 반환하고 실패 시 실제 현재 시각을 반환합니다."""
+    raw_time = await snapshot_game_time()
+    if raw_time:
+        try:
+            return datetime.fromisoformat(raw_time)
+        except ValueError:
+            pass
+    return datetime.now()
+
+
+def _social_media_features() -> dict:
+    """현재 월드 강제 설정과 세션 override를 합쳐 SNS 기능 상태를 반환합니다."""
+    return resolve_social_media_features(
+        cl.user_session.get("world_config") or {},
+        cl.user_session.get("social_media_overrides") or {},
+    )
+
+
+async def _queue_kakao_message(pc_id: str, room_id: str, content: str) -> None:
+    """이번 Actor 턴 전에 확정할 플레이어 카카오톡 메시지를 세션 버퍼에 추가합니다."""
+    if not pc_id or not room_id or not content.strip():
+        return
+    pending = cl.user_session.get("pending_kakao_messages") or []
+    pending.append({
+        "room_id": room_id,
+        "sender_id": pc_id,
+        "content": content.strip(),
+        "created_at": (await _current_game_datetime()).isoformat(),
+    })
+    cl.user_session.set("pending_kakao_messages", pending)
+
+
+async def _handle_kakao_panel_event(raw_payload: str) -> None:
+    """카카오톡 패널에서 보낸 큐잉/초대/선택 이벤트를 처리합니다."""
+    _, pc_id, npc_id, _, _ = _wv()
+    features = _social_media_features()
+    try:
+        payload = json.loads(raw_payload)
+    except json.JSONDecodeError:
+        return
+
+    action = payload.get("action")
+    room_id = str(payload.get("roomId") or "")
+    if not features["kakao_enabled"]:
+        await send_kakao_panel(
+            pc_id,
+            npc_id,
+            active_room_id=room_id,
+            current_time=await _current_game_datetime(),
+            features=features,
+        )
+        return
+    if action == "select_room":
+        await send_kakao_panel(
+            pc_id,
+            npc_id,
+            active_room_id=room_id,
+            current_time=await _current_game_datetime(),
+            features=features,
+        )
+        return
+    if action == "queue_message":
+        content = str(payload.get("content") or "").strip()
+        if content:
+            await _queue_kakao_message(pc_id, room_id, content)
+        await send_kakao_panel(
+            pc_id,
+            npc_id,
+            active_room_id=room_id,
+            current_time=await _current_game_datetime(),
+            features=features,
+        )
+        return
+    if action == "invite":
+        char_id = str(payload.get("charId") or "").strip()
+        if char_id:
+            await invite_character(
+                pc_id=pc_id,
+                room_ref=room_id,
+                char_ref=char_id,
+                current_time=await _current_game_datetime(),
+            )
+        await send_kakao_panel(
+            pc_id,
+            npc_id,
+            active_room_id=room_id,
+            current_time=await _current_game_datetime(),
+            features=features,
+        )
+
+
+async def _handle_social_panel_event(raw_payload: str) -> None:
+    """SNS 패널에서 보낸 활성화/비활성화 설정 이벤트를 처리합니다."""
+    _, pc_id, npc_id, _, world_config = _wv()
+    try:
+        payload = json.loads(raw_payload)
+    except json.JSONDecodeError:
+        return
+
+    if payload.get("action") == "set_feature":
+        overrides = set_social_media_override(
+            feature=str(payload.get("feature") or ""),
+            enabled=bool(payload.get("enabled")),
+            world_config=world_config,
+            overrides=cl.user_session.get("social_media_overrides") or {},
+        )
+        cl.user_session.set("social_media_overrides", overrides)
+        if not _social_media_features()["kakao_enabled"]:
+            cl.user_session.set("pending_kakao_messages", [])
+    await send_kakao_panel(
+        pc_id,
+        npc_id,
+        current_time=await _current_game_datetime(),
+        features=_social_media_features(),
+    )
+
+
 # ── SSES 헬퍼 ────────────────────────────────────────────────────
 
 def _get_scheduler(world_id: str):
@@ -426,18 +563,6 @@ async def _handle_system_command(user_input: str) -> None:
 # 생성 파이프라인 (on_message / on_reroll 공용)
 # ════════════════════════════════════════════════════════════
 
-async def _compress_narrative(recent_turns: list[dict], npc_id: str, pc_id: str) -> None:
-    """Background task: 10턴마다 타임라인 로그 압축."""
-    from src.simulation.systems.memory.narrative import compress_to_narrative_log
-    current_time_str = await snapshot_game_time()
-    current_dt = None
-    if current_time_str:
-        try:
-            current_dt = datetime.fromisoformat(current_time_str)
-        except Exception:
-            pass
-    await compress_to_narrative_log(recent_turns, current_dt, npc_id, pc_id)
-
 
 async def _run_generation(
     user_input:       str,
@@ -473,7 +598,19 @@ async def _run_generation(
             return_meta  = True,
             suppress_time_plan=bool(ooc_result and ooc_result.get("time_changed")),
             scene_need_hints=cl.user_session.get("scene_need_hints") or {},
+            pending_kakao_messages=cl.user_session.get("pending_kakao_messages") or [],
+            enable_kakao_preprocessing=not bool(step_suffix) and _social_media_features()["kakao_enabled"],
+            social_media_features=_social_media_features(),
         )
+        if manager_effects.get("kakao_processed"):
+            cl.user_session.set("pending_kakao_messages", [])
+        if manager_effects.get("kakao_panel_refresh"):
+            await send_kakao_panel(
+                pc_id,
+                npc_id,
+                current_time=await _current_game_datetime(),
+                features=_social_media_features(),
+            )
         suffix      = f" {step_suffix}" if step_suffix else ""
         step.output = f"씬 타입: `{scene_types}`{suffix}"
 
@@ -522,6 +659,10 @@ async def _run_generation(
         turn_debug_dir  = _TURN_DEBUG_DIR,
     )
 
+    # 5a. 스트리밍 전에 스냅샷 보존 — await 중 다른 코루틴이 같은 list를 mutate할 수 있다
+    history_snapshot = list(history)
+    recent_snapshot  = list(recent_responses)
+
     # 3. Actor 스트리밍
     full_response, scene_chars, response_msg, hour, raw_thinking = await stream_actor(
         fixed_prompt   = fixed,
@@ -547,10 +688,7 @@ async def _run_generation(
         except Exception:
             pass
 
-    # 5. 히스토리 갱신 — 리롤을 위한 스냅샷을 먼저 보존
-    history_snapshot = list(history)
-    recent_snapshot  = list(recent_responses)
-
+    # 5. 히스토리 갱신
     # msg_id를 함께 저장해 삭제 액션이 history 항목을 찾을 수 있게 한다
     history += [
         {"role": "user",      "content": user_input,    "msg_id": user_msg_id},
@@ -561,13 +699,6 @@ async def _run_generation(
 
     recent_responses.append(full_response[:1500])
     cl.user_session.set("recent_responses", recent_responses[-RECENT_STORY_TURNS:])
-
-    narrative_turns: list[dict] = cl.user_session.get("narrative_turns") or []
-    narrative_turns.append({"user": user_input, "actor": full_response})
-    if len(narrative_turns) >= 10:
-        asyncio.create_task(_compress_narrative(list(narrative_turns), npc_id, pc_id))
-        narrative_turns = []
-    cl.user_session.set("narrative_turns", narrative_turns)
 
     # 6. 다음 턴에서 확정될 pending 등록
     # scene_chars에는 Actor 사고에서 추출한 한국어 이름과 manager가 감지한 NPC ID를 함께 넣는다.
@@ -653,6 +784,112 @@ async def _reroll_pending_response(
     await _run_generation(pending["user_input"], history, recent_responses, step_suffix="(리롤)")
 
 
+def _find_user_history_index(history: list[dict], msg_id: str | None) -> int | None:
+    """history에서 msg_id가 일치하는 사용자 메시지 위치를 반환합니다."""
+    if not msg_id:
+        return None
+    for idx, item in enumerate(history):
+        if item.get("role") == "user" and item.get("msg_id") == msg_id:
+            return idx
+    return None
+
+
+def _chat_context_message_ids() -> set[str]:
+    """현재 Chainlit chat context에 남아 있는 메시지 ID 집합을 반환합니다."""
+    try:
+        return {
+            msg_id
+            for msg_id in (getattr(item, "id", None) for item in chat_context.get())
+            if msg_id
+        }
+    except Exception:
+        return set()
+
+
+def _first_removed_assistant_index(history: list[dict], active_ids: set[str]) -> int | None:
+    """history에는 있으나 현재 UI context에서 제거된 첫 assistant 위치를 반환합니다."""
+    if not active_ids:
+        return None
+    for idx, item in enumerate(history):
+        if (
+            item.get("role") == "assistant"
+            and item.get("msg_id")
+            and item.get("msg_id") not in active_ids
+        ):
+            return idx
+    return None
+
+
+def _recent_responses_from_history(history: list[dict]) -> list[str]:
+    """history의 assistant 항목으로 recent_responses 값을 재구성합니다."""
+    return [
+        item.get("content", "")[:1500]
+        for item in history
+        if item.get("role") == "assistant" and item.get("content")
+    ][-RECENT_STORY_TURNS:]
+
+
+async def _handle_user_message_edit(message: cl.Message, user_input: str) -> bool:
+    """Chainlit 기본 사용자 메시지 편집 Confirm을 처리했으면 True를 반환합니다."""
+    msg_id = getattr(message, "id", None)
+    history: list[dict] = cl.user_session.get("conversation_history") or []
+    active_ids = _chat_context_message_ids()
+    pending = cl.user_session.get("pending_commit")
+
+    if (
+        pending
+        and active_ids
+        and pending.get("response_msg_id")
+        and pending.get("response_msg_id") not in active_ids
+        and user_input != pending.get("user_input")
+    ):
+        await _reroll_pending_response(replacement_user_input=user_input)
+        return True
+
+    edit_idx = _find_user_history_index(history, msg_id)
+    if edit_idx is None:
+        removed_idx = _first_removed_assistant_index(history, active_ids)
+        if removed_idx is None:
+            return False
+        edit_idx = removed_idx - 1
+
+    if edit_idx < 0 or history[edit_idx].get("role") != "user":
+        return False
+
+    edited_existing_turn = (
+        user_input != history[edit_idx].get("content")
+        or edit_idx < len(history) - 1
+    )
+    if not edited_existing_turn:
+        return False
+
+    if pending and pending.get("user_msg_id") == msg_id:
+        await _reroll_pending_response(replacement_user_input=user_input)
+        return True
+
+    # Chainlit 기본 편집은 UI에서 수정 메시지 이후를 제거한다.
+    # 앱 내부 prompt history도 같은 지점으로 되감아 수정본만 새 턴으로 생성한다.
+    pruned_history = history[:edit_idx]
+    recent_responses = _recent_responses_from_history(pruned_history)
+    cl.user_session.set("conversation_history", pruned_history)
+    cl.user_session.set("recent_responses", recent_responses)
+    cl.user_session.set("pending_commit", None)
+
+    if pending and pending.get("response_msg_id"):
+        await _remove_message_if_present(pending.get("response_msg_id"))
+    if pending and pending.get("prev_game_time"):
+        await restore_game_time(pending["prev_game_time"])
+
+    await _run_generation(
+        user_input,
+        pruned_history,
+        recent_responses,
+        step_suffix="(수정)",
+        user_msg_id=msg_id,
+    )
+    return True
+
+
 # ════════════════════════════════════════════════════════════
 # 수정 버튼
 # ════════════════════════════════════════════════════════════
@@ -697,13 +934,19 @@ async def on_delete_message(action: cl.Action) -> None:
     history = [h for h in history if h.get("msg_id") != msg_id]
     cl.user_session.set("conversation_history", history)
 
-    # 삭제된 메시지가 pending_commit과 연관되면 pending을 취소
+    # 삭제된 메시지가 pending_commit과 연관되면 pending을 취소;
+    # 그렇지 않으면 history_snapshot에서도 해당 항목 제거 (reroll 시 삭제 메시지 재진입 방지)
     pending = cl.user_session.get("pending_commit")
-    if pending and (
-        pending.get("response_msg_id") == msg_id
-        or pending.get("user_msg_id") == msg_id
-    ):
-        cl.user_session.set("pending_commit", None)
+    if pending:
+        if (
+            pending.get("response_msg_id") == msg_id
+            or pending.get("user_msg_id") == msg_id
+        ):
+            cl.user_session.set("pending_commit", None)
+        elif pending.get("history_snapshot"):
+            snapshot = [h for h in pending["history_snapshot"] if h.get("msg_id") != msg_id]
+            pending["history_snapshot"] = snapshot
+            cl.user_session.set("pending_commit", pending)
 
 
 # ════════════════════════════════════════════════════════════
@@ -752,6 +995,8 @@ async def on_chat_start() -> None:
     cl.user_session.set("pending_commit",        None)
     cl.user_session.set("last_theme_hour",       -1)
     cl.user_session.set("pending_ooc",            None)
+    cl.user_session.set("pending_kakao_messages", [])
+    cl.user_session.set("social_media_overrides", {})
     cl.user_session.set("debug_graph_msg_id",     None)
     cl.user_session.set("traits_initialized",     False)
 
@@ -766,6 +1011,12 @@ async def on_chat_start() -> None:
     if opening_scene:
         await cl.Message(content=opening_scene, author="세계").send()
     await inject_time_theme(hour_from_time_string(await snapshot_game_time()))
+    await send_kakao_panel(
+        cl.user_session.get("pc_id"),
+        cl.user_session.get("npc_id"),
+        current_time=await _current_game_datetime(),
+        features=_social_media_features(),
+    )
 
 
 @cl.on_chat_resume
@@ -805,11 +1056,19 @@ async def on_chat_resume(thread: ThreadDict) -> None:
     cl.user_session.set("pending_commit",        None)
     cl.user_session.set("last_theme_hour",       -1)
     cl.user_session.set("pending_ooc",            None)
+    cl.user_session.set("pending_kakao_messages", [])
+    cl.user_session.set("social_media_overrides", {})
     cl.user_session.set("debug_graph_msg_id",     None)
     cl.user_session.set("traits_initialized",     False)
 
     await _ensure_session_traits_initialized()
     await inject_time_theme(hour_from_time_string(await snapshot_game_time()))
+    await send_kakao_panel(
+        cl.user_session.get("pc_id"),
+        cl.user_session.get("npc_id"),
+        current_time=await _current_game_datetime(),
+        features=_social_media_features(),
+    )
     await upsert_debug_graph(pc_id=cl.user_session.get("pc_id"), npc_id=cl.user_session.get("npc_id"), world_id=world_id)
 
 
@@ -861,6 +1120,25 @@ async def on_message(message: cl.Message) -> None:
     world_id, pc_id, npc_id, npc_name_kor, world_config = _wv()
 
     user_input = message.content.strip()
+    if user_input.startswith("__SOCIAL_PANEL__:"):
+        await message.remove()
+        await _handle_social_panel_event(user_input.removeprefix("__SOCIAL_PANEL__:"))
+        return
+
+    if user_input.startswith("__KAKAO_PANEL__:"):
+        await message.remove()
+        await commit_pending_if_any(
+            world_id=world_id,
+            pc_id=pc_id,
+            npc_id=npc_id,
+            world_config=world_config,
+            updating_msgs=UPDATING_MSGS,
+            updated_msgs=UPDATED_MSGS,
+            scheduler=_get_scheduler(world_id),
+        )
+        await _handle_kakao_panel_event(user_input.removeprefix("__KAKAO_PANEL__:"))
+        return
+
     route = route_user_input(user_input, message)
 
     # ── 수정 완료·취소 감지 — CustomElement에서 보내는 특수 접두사 ──
@@ -879,14 +1157,7 @@ async def on_message(message: cl.Message) -> None:
         await _reroll_pending_response()
         return
 
-    pending = cl.user_session.get("pending_commit")
-    if (
-        pending
-        and pending.get("user_msg_id")
-        and pending.get("user_msg_id") == getattr(message, "id", None)
-        and user_input != pending.get("user_input")
-    ):
-        await _reroll_pending_response(replacement_user_input=user_input)
+    if await _handle_user_message_edit(message, user_input):
         return
 
     await commit_pending_if_any(
@@ -899,6 +1170,12 @@ async def on_message(message: cl.Message) -> None:
         scheduler=_get_scheduler(world_id),
     )
     await upsert_debug_graph(pc_id=pc_id, npc_id=npc_id, world_id=world_id)
+    await send_kakao_panel(
+        pc_id,
+        npc_id,
+        current_time=await _current_game_datetime(),
+        features=_social_media_features(),
+    )
 
     if route == TurnInputType.EMPTY or not user_input:
         return
@@ -909,7 +1186,6 @@ async def on_message(message: cl.Message) -> None:
 
     history          = cl.user_session.get("conversation_history")
     recent_responses = cl.user_session.get("recent_responses")
-
     # ── 임신 OOC 자동 주입 ───────────────────────────────────
     pending_ooc = cl.user_session.get("pending_ooc")
     if pending_ooc:

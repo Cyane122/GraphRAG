@@ -5,7 +5,7 @@
 #
 # Functions
 #   - load_world_instance(world_id: str) -> World : Load the World instance for a world id
-#   - run_manager(user_input: str, pc_id: str, npc_id: str, recent_story: str, world_id: str | None, scenario_id: str | None, perspective: int, return_meta: bool = False, suppress_time_plan: bool = False, scene_need_hints: dict[str, str] | None = None) -> tuple : Run one manager turn pipeline
+#   - run_manager(user_input: str, pc_id: str, npc_id: str, recent_story: str, world_id: str | None, scenario_id: str | None, perspective: int, return_meta: bool = False, suppress_time_plan: bool = False, scene_need_hints: dict[str, str] | None = None, pending_kakao_messages: list[dict] | None = None, enable_kakao_preprocessing: bool = True, social_media_features: dict | None = None) -> tuple : Run one manager turn pipeline
 #   - commit_manager_effects(effects: dict | None, pc_id: str, npc_id: str) -> None : Commit pending manager side effects
 # ================================
 import asyncio
@@ -40,6 +40,9 @@ async def run_manager(
     return_meta:   bool = False,
     suppress_time_plan: bool = False,
     scene_need_hints: dict[str, str] | None = None,
+    pending_kakao_messages: list[dict] | None = None,
+    enable_kakao_preprocessing: bool = True,
+    social_media_features: dict | None = None,
 ) -> tuple[str, str, str, list[str]] | tuple[str, str, str, list[str], dict]:
     """Orchestrate turn preparation while leaving each stage testable in isolation."""
     prompts, scene_types, manager_effects = await run_manager_pipeline(
@@ -67,6 +70,9 @@ async def run_manager(
             fetch_npc_profiles=fetch_npc_profiles,
         ),
         scene_need_hints=scene_need_hints,
+        pending_kakao_messages=pending_kakao_messages,
+        enable_kakao_preprocessing=enable_kakao_preprocessing,
+        social_media_features=social_media_features,
     )
 
     if return_meta:

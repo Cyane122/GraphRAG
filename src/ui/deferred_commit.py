@@ -11,6 +11,7 @@
 import asyncio
 import random
 from collections.abc import Awaitable, Callable
+from datetime import datetime
 
 import chainlit as cl
 
@@ -19,6 +20,20 @@ from src.agents.manager.effects import commit_manager_auxiliary_effects, commit_
 from src.core.logging.conversation_logger import append_turn
 from src.simulation.state.updater import process_actor_response
 from src.ui.status import send_status_toast
+
+
+async def _do_compress_narrative(recent_turns: list[dict], npc_id: str, pc_id: str) -> None:
+    """커밋 확정 후 타임라인 로그를 백그라운드 압축합니다."""
+    from src.simulation.systems.memory.narrative import compress_to_narrative_log
+    from src.ui.time_state import snapshot_game_time
+    current_time_str = await snapshot_game_time()
+    current_dt = None
+    if current_time_str:
+        try:
+            current_dt = datetime.fromisoformat(current_time_str)
+        except Exception:
+            pass
+    await compress_to_narrative_log(recent_turns, current_dt, npc_id, pc_id)
 
 
 def _commit_scene_state(pending: dict, world_id: str, pc_id: str, npc_id: str) -> None:
@@ -155,3 +170,9 @@ async def commit_pending_if_any(
     finally:
         if committed:
             cl.user_session.set("pending_commit", None)
+            narrative_turns: list[dict] = cl.user_session.get("narrative_turns") or []
+            narrative_turns.append({"user": pending["user_input"], "actor": pending["ai_response"]})
+            if len(narrative_turns) >= 10:
+                asyncio.create_task(_do_compress_narrative(list(narrative_turns), npc_id, pc_id))
+                narrative_turns = []
+            cl.user_session.set("narrative_turns", narrative_turns)
