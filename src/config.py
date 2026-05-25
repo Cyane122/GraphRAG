@@ -26,6 +26,9 @@ MODEL_COMPLEX_UPDATER = os.getenv("MODEL_COMPLEX_UPDATER", "gemini-3-flash-previ
 # 이벤트 생성, 보조 관계 업데이트 등 판단·서술이 필요한 Pro 전용 작업
 MODEL_EVENT_CREATOR   = os.getenv("MODEL_EVENT_CREATOR",   "gemini-3.1-pro-preview")
 MODEL_PRO_UPDATER     = os.getenv("MODEL_PRO_UPDATER",     "gemini-3.1-pro-preview")
+MODEL_MANAGER_PLANNER = os.getenv("MODEL_MANAGER_PLANNER", MODEL_PRO_UPDATER)
+MODEL_TURN_EXTRACTOR  = os.getenv("MODEL_TURN_EXTRACTOR",  MODEL_PRO_UPDATER)
+MODEL_OUTPUT_REPAIR   = os.getenv("MODEL_OUTPUT_REPAIR",   "gemini-3-flash-preview")
 
 # ── Google Cloud ────────────────────────────────────────────
 GOOGLE_PROJECT_ID = os.getenv("GOOGLE_PROJECT_ID")
@@ -37,3 +40,5 @@ HF_TOKEN       = os.getenv("HF_TOKEN")
 
 # ── 기능 플래그 ─────────────────────────────────────────────
 IMPERSONATION = os.getenv("IMPERSONATION", "true").lower() == "true"
+MANAGER_PLANNER_MODE = os.getenv("MANAGER_PLANNER_MODE", "legacy").strip().lower()
+TURN_EXTRACTOR_MODE  = os.getenv("TURN_EXTRACTOR_MODE",  "legacy").strip().lower()

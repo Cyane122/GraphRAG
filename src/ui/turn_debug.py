@@ -67,7 +67,7 @@ def write_turn_debug_snapshot(
             "fixed_prompt.txt": fixed_prompt,
             "genre_prompt.txt": genre_prompt or "",
             "dynamic_prompt.txt": dynamic_prompt,
-            "final_prompt.txt": final_prompt,
+            "final_prompt-2.txt": final_prompt,
             "history.json": json.dumps(history, ensure_ascii=False, indent=2),
             "metadata.json": json.dumps({
                 "timestamp": stamp,

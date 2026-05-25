@@ -146,6 +146,7 @@ Scene:
         "temperature": 0.0,
         "max_output_tokens": 4096,
         "response_mime_type": "application/json",
+        "log_source": "dynamic_information_updater",
     }
 
     raw_text = ""
@@ -256,6 +257,7 @@ Scene:
         "temperature": 0.0,
         "max_output_tokens": 4096,
         "response_mime_type": "application/json",
+        "log_source": "dynamic_information_updater_multi",
     }
 
     raw_text = ""

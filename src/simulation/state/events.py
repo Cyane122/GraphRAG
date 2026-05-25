@@ -183,19 +183,30 @@ async def _generate_event_plan(
 
     system_instruction = f"Precise event recorder for a roleplay system. Focus on {npc_id}/{pc_id}."
 
-    prompt = f"""Changes: {json.dumps(initial_changes, ensure_ascii=False)}
+    prompt = f"""## Initial Changes
+{json.dumps(initial_changes, ensure_ascii=False)}
 
-Importance:
-8-10: Major (hospitalization/surgery/accident/confession)
-5-7: Significant (major injury/near-breakup/VERY FIRST emotional intimacy/public humiliation)
-2-4: Minor durable (new injury/new named char/promise/secret/gift/location transition/small durable conflict/repeated sex incl. arrangement)
-0-1: Routine or atmospheric. Do NOT create unless it creates a durable record worth remembering later.
+## Event Gate
 
-Create only for events that change durable story state, relationship context, location, commitments, injuries, secrets, gifts, named encounters, or a multi-turn scene anchor. Routine meals, sitting, waiting, casual small talk, and atmosphere should usually return null.
-id: {{location}}_{{description}}_{{YYYYMMDD_HHMM}}
-importance >= 7 → new_relationship_status: 1-3 English sentences about how they regard each other after the event. This is not their current physical activity; exclude current actions, positions, scene activity, and "currently/now" details.
-summary: 1-2 sentence Korean factual record; only observed facts, no subjective distortion or speculation.
-Include: importance 0-10 and memory_type (episodic/emotional/relational).
+Create event iff durable story state changes.
+Durable = relationship context / location / commitment / injury / secret / gift / named encounter / multi-turn scene anchor.
+Routine meal / sitting / waiting / casual talk / atmosphere -> null unless durable.
+
+## Importance
+
+8-10 = major: hospitalization / surgery / accident / confession.
+5-7 = significant: major injury / near-breakup / very first emotional intimacy / public humiliation.
+2-4 = minor durable: new injury / named character / promise / secret / gift / location transition / small durable conflict / repeated sex arrangement.
+0-1 = routine / atmospheric.
+
+## Fields
+
+id = {{location}}_{{description}}_{{YYYYMMDD_HHMM}}.
+summary = 1-2 sentence Korean factual record; observed facts only.
+importance = 0..10.
+memory_type = episodic | emotional | relational.
+importance >= 7 -> new_relationship_status = 1-3 English sentences about post-event relationship attitude.
+new_relationship_status != current action / position / scene activity / currently-now detail.
 
 Return ONLY valid JSON:
 {{

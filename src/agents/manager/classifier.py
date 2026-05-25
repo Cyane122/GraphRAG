@@ -191,8 +191,9 @@ elapsed_minutes: whole-scene clock time (not sum of parts)
   action: 1-3min single | 5-15min sustained
   movement: 3-8min same-floor | 15-30min cross-area
   ≤2-sentence input → 1-3min
+movement sensitivity: treat follow/lead/accompany/enter/leave/arrive/go-to as movement when a destination is present. Korean examples: "A를 따라 복도로 이동", "A가 B를 데리고 방으로 감", "A와 B가 교실에 들어감" => movement + destination location.
 schedule: active/upcoming=pressure on elapsed & movement. time_rules=stable constraints (school hrs/curfew/meals). No auto-teleport to schedule loc. Add prep/travel_time when collision. Routines=ref only; same-day active/upcoming=binding.
-new_location_id: existing→exact ID / new concrete→snake_case / no change→null
+new_location_id: existing→exact ID / new concrete→snake_case / no destination or only within-same-spot motion→null. For follow/lead/accompany movement, use the destination for the whole scene.
 new_location: null(existing/no change) | object(new ID only): {{"name","description","prompt_hint","parent_location_id","tags":["dynamic"],"prompt_priority":8}}. parent=nearest existing broader loc. Concise only.
 new_weather: Clear/Cloudy/Foggy/Drizzle/Rain/Heavy Rain/Thunderstorm/Snow/Heavy Snow/Windy / null
 
@@ -236,6 +237,7 @@ async def _generate_classifier_text(model: Any, prompt: str) -> str:
         "max_output_tokens": _CLASSIFIER_OUTPUT_TOKENS,
         "temperature": 0.0,
         "thinking_config": {"thinking_budget": 0},
+        "log_source": "manager_classifier",
     }
     resp = await asyncio.wait_for(
         model.generate_content_async(

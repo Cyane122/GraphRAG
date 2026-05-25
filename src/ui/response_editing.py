@@ -13,6 +13,8 @@
 
 import chainlit as cl
 
+from src.ui.pending_store import save_pending_commit
+
 
 def make_actions() -> list[cl.Action]:
     """리롤·수정·삭제 버튼 목록을 생성합니다."""
@@ -41,7 +43,7 @@ async def apply_edit(edited: str, npc_name: str) -> None:
     if msg_id:
         await restore_response_msg(msg_id, edited, npc_name)
 
-    history: list[dict] = cl.user_session.get("conversation_history")
+    history: list[dict] = cl.user_session.get("conversation_history") or []
     for idx in range(len(history) - 1, -1, -1):
         if history[idx]["role"] == "assistant":
             # msg_id 보존 — 삭제 액션이 history 항목을 찾을 수 있어야 한다
@@ -49,13 +51,19 @@ async def apply_edit(edited: str, npc_name: str) -> None:
             break
     cl.user_session.set("conversation_history", history)
 
-    recent: list[str] = cl.user_session.get("recent_responses")
+    recent: list[str] = cl.user_session.get("recent_responses") or []
     if recent:
         recent[-1] = edited[:1500]
         cl.user_session.set("recent_responses", recent)
 
     pending["ai_response"] = edited
     cl.user_session.set("pending_commit", pending)
+    save_pending_commit(
+        pending,
+        cl.user_session.get("world_id") or "",
+        cl.user_session.get("pc_id") or "",
+        cl.user_session.get("npc_id") or "",
+    )
 
 
 async def cancel_edit(npc_name: str) -> None:

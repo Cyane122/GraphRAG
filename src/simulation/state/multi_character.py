@@ -9,13 +9,12 @@
 #   - MultiCharacterStatePlan : 다중 캐릭터 DynamicState 변경 계획
 #
 # Functions
-#   - apply_multi_character_state_updates(actor_response: str, pc_id: str) -> list[dict[str, Any]] : 변경된 NPC 상태를 DB에 반영합니다.
+#   - apply_multi_character_state_updates(actor_response: str, pc_id: str, participant_ids: list[str] | None = None, world_config: dict | None = None) -> list[dict[str, Any]] : 변경된 NPC 상태를 DB에 반영합니다.
 # ================================
 
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 from typing import Any
 
@@ -136,6 +135,27 @@ def _state_field_lines(field_types: dict[str, str]) -> str:
     )
 
 
+def _compact_world_context_text(text: object, limit: int) -> str:
+    """World prompt text를 다중 상태 추출 프롬프트에 맞게 길이 제한합니다."""
+    value = str(text or "").strip()
+    if len(value) <= limit:
+        return value
+    return value[:limit].rstrip() + "\n...[truncated]"
+
+
+def _render_state_world_context(world_config: dict | None) -> str:
+    """월드/시나리오 규범을 다중 캐릭터 상태 추출용 컨텍스트로 렌더링합니다."""
+    sections = (world_config or {}).get("prompt", {}).get("sections", {})
+    parts: list[str] = []
+    world_lore = _compact_world_context_text(sections.get("world"), 1200)
+    if world_lore:
+        parts.append("### World Lore\n" + world_lore)
+    scenario_lore = _compact_world_context_text(sections.get("scenario"), 4200)
+    if scenario_lore:
+        parts.append("### Scenario Lore\n" + scenario_lore)
+    return "\n\n".join(parts) if parts else "(none)"
+
+
 def _target_aliases(target: StateUpdateTarget) -> list[str]:
     """Return unique non-empty aliases that can appear in Korean prose."""
     aliases = [target.name or "", target.id, *target.aliases]
@@ -217,9 +237,82 @@ def _parse_state_plan(plan: object) -> MultiCharacterStatePlan:
         return MultiCharacterStatePlan()
 
 
+async def _fetch_dynamic_state_values(
+    char_id: str,
+    fields: list[str],
+) -> dict[str, Any]:
+    """현재 DynamicState 값을 로그용으로 조회합니다."""
+    safe_fields = [
+        field
+        for field in fields
+        if field and (field[0].isalpha() or field[0] == "_") and field.replace("_", "").isalnum()
+    ]
+    if not safe_fields:
+        return {}
+    return_clause = ", ".join(f"d.{field} AS {field}" for field in safe_fields)
+    async with async_driver.session() as session:
+        rec = await session.run(
+            f"""
+            MATCH (c:Character {{id: $char_id}})-[:HAS_STATE]->(d:DynamicState)
+            RETURN {return_clause}
+            """,
+            char_id=char_id,
+        )
+        row = await rec.single()
+    return dict(row) if row else {}
+
+
+def _display_character_name(char_id: str, targets: list[StateUpdateTarget]) -> str:
+    """로그에 표시할 캐릭터 이름을 반환합니다."""
+    for target in targets:
+        if target.id == char_id:
+            return str(target.name or target.id)
+    return char_id
+
+
+def _display_value(value: object) -> str:
+    """로그용 값 문자열을 만듭니다."""
+    if value in (None, ""):
+        return "(기존)"
+    return str(value)
+
+
+def _candidate_evidence_by_field(candidates: list[dict]) -> dict[str, str]:
+    """커밋된 후보의 evidence를 field별로 찾기 쉽게 변환합니다."""
+    result: dict[str, str] = {}
+    for candidate in candidates:
+        if candidate.get("commit_policy") != "commit":
+            continue
+        field = str(candidate.get("field") or "")
+        evidence = str(candidate.get("evidence") or "").strip()
+        if field and evidence:
+            result[field] = evidence
+    return result
+
+
+def _format_state_change_lines(
+    char_name: str,
+    before: dict[str, Any],
+    after: dict[str, Any],
+    evidence_by_field: dict[str, str],
+) -> list[str]:
+    """커밋된 DynamicState 변경을 채팅형 한 줄 로그로 변환합니다."""
+    lines: list[str] = []
+    for field, new_value in after.items():
+        old_value = before.get(field)
+        if old_value == new_value:
+            continue
+        evidence = evidence_by_field.get(field) or "evidence unavailable"
+        lines.append(
+            f"{char_name} {field}: {_display_value(old_value)} -> {_display_value(new_value)} / {evidence}"
+        )
+    return lines
+
+
 async def _run_multi_character_state_update(
     actor_response: str,
     targets: list[StateUpdateTarget],
+    world_config: dict | None = None,
 ) -> MultiCharacterStatePlan:
     """Actor 응답에서 명시적으로 변한 NPC별 DynamicState 업데이트를 추출합니다."""
     from src.core.llm.client import extract_json_from_llm, get_model
@@ -236,15 +329,30 @@ async def _run_multi_character_state_update(
         "Precise multi-character state manager for Korean roleplay. "
         "Update only explicitly changed characters. Never copy one character's state to another."
     )
+    world_context_block = _render_state_world_context(world_config)
     prompt = f"""## Characters
 {_target_lines(targets)}
 
 ## Locations
 {_location_lines(known_locations)}
 
+## World/Scenario Context
+{world_context_block}
+
 Extract DynamicState updates for explicitly changed characters. PC is an in-world character — update when explicitly changed. Omit unchanged. Korean particles still refer to same target; match aliases w/ particles.
+Use World/Scenario Context when interpreting whether an action implies negative emotion, stress, injury, resistance, or social consequence. If the scenario says an action is ordinary, expected, remapped, or non-alarming, do NOT infer moral shock, fear, anger, stress, injury, or negative thoughts from that action unless the scene explicitly states a lasting state change.
 For outfit/clothing, update the character who owns or wears the clothing, not the helper/actor. If "A가 B의 잠옷을 벗긴다", update B.outfit, never A.outfit.
-location_id: only when character EXPLICITLY DEPARTS to a clearly different location. Do NOT update if still at / walking around current location.
+
+Hard field rule:
+- Use only DynamicState fields listed below. Never invent new keys, traits, axes, counters, tags, or attributes.
+- If a changed trait has no exact field below, omit it entirely.
+- Do not use synonyms or new schema names; return only listed field names.
+
+location_id: update when a character explicitly moves, leaves, arrives, follows someone to another place, leads someone to another place, or accompanies a group to another place.
+- If "A follows B to LOCATION" / "A가 B를 따라 LOCATION으로 이동" / "B가 A를 데리고 LOCATION으로 이동", update BOTH A.location_id and B.location_id when both are known characters.
+- If "A and B go/leave/enter/arrive at LOCATION", update every named moving character.
+- Treat hallway/room/doorway/classroom/bathroom/etc. as a different location if it appears in Locations or can be represented by a concrete id.
+- Do NOT update location for pacing, turning, approaching, or walking around inside the same current spot without a destination.
 - Known location → exact id from list.
 - Character's OWN personal space (own home / room / apt) → generate "{{char_id}}_house" (e.g. if char_id is "ko_haram" → "ko_haram_house"). These are auto-created.
 - Unknown public/third-party location → omit.
@@ -272,6 +380,7 @@ Scene:
                 "temperature": 0.0,
                 "max_output_tokens": 2048,
                 "response_mime_type": "application/json",
+                "log_source": "multi_state_updater",
             },
         )
     except TimeoutError:
@@ -300,6 +409,7 @@ async def apply_multi_character_state_updates(
     actor_response: str,
     pc_id: str,
     participant_ids: list[str] | None = None,
+    world_config: dict | None = None,
 ) -> list[dict[str, Any]]:
     """NPC별 DynamicState 업데이트를 감지하고 감사한 뒤 DB에 반영합니다."""
     targets = await _fetch_state_update_targets(pc_id, participant_ids=participant_ids)
@@ -308,12 +418,13 @@ async def apply_multi_character_state_updates(
         return []
 
     try:
-        plan = await _run_multi_character_state_update(actor_response, targets)
+        plan = await _run_multi_character_state_update(actor_response, targets, world_config)
     except Exception as exc:
         print(f"[MultiStateUpdater] failed and ignored: {exc}")
         return []
 
     applied: list[dict[str, Any]] = []
+    change_lines: list[str] = []
     updates = _redistribute_possessive_outfit_updates(
         plan.character_updates,
         actor_response,
@@ -324,20 +435,26 @@ async def apply_multi_character_state_updates(
             continue
         state = _sanitize_state_update(item.dynamic_state)
         state, candidates = _audit_state_updates(state, actor_response, item.char_id)
-        if candidates:
-            print(f"[MultiStateDiff] {json.dumps(candidates, ensure_ascii=False)}")
         if not state:
             continue
         location_id = state.pop("location_id", None)
+        applied_state = dict(state)
+        if location_id:
+            applied_state["location_id"] = location_id
+        before = await _fetch_dynamic_state_values(item.char_id, list(applied_state))
         if location_id:
             await _ensure_location_if_missing(str(location_id))
             await move_location(item.char_id, str(location_id))
         await update_dynamic_state(item.char_id, state)
-        applied_state = dict(state)
-        if location_id:
-            applied_state["location_id"] = location_id
+        evidence_by_field = _candidate_evidence_by_field(candidates)
+        change_lines.extend(_format_state_change_lines(
+            _display_character_name(item.char_id, targets),
+            before,
+            applied_state,
+            evidence_by_field,
+        ))
         applied.append({"char_id": item.char_id, "dynamic_state": applied_state})
 
-    if applied:
-        print(f"[MultiStateUpdater] applied: {json.dumps(applied, ensure_ascii=False)}")
+    if change_lines:
+        print("[MultiStateDiff]\n" + "\n".join(change_lines))
     return applied

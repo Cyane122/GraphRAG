@@ -19,6 +19,12 @@ from src.agents.context.scene_state import update_scene_state_after_response
 from src.agents.manager.effects import commit_manager_auxiliary_effects, commit_manager_core_effects
 from src.core.logging.conversation_logger import append_turn
 from src.simulation.state.updater import process_actor_response
+from src.simulation.systems.kakao import commit_kakao_effects
+from src.ui.pending_store import (
+    discard_pending_commit,
+    load_pending_commit,
+    update_pending_status,
+)
 from src.ui.status import send_status_toast
 
 
@@ -61,6 +67,49 @@ def _should_run_scheduler(pending: dict) -> bool:
     return bool({"goals", "social"} & required_systems or {"long_term_pressure", "nearby_activity"} & query_focus)
 
 
+def _completed_stages(pending: dict) -> set[str]:
+    """Return the set of durable commit stages already completed."""
+    return set(pending.get("completed_stages") or [])
+
+
+def _timestamp_from_pending(pending: dict) -> datetime | None:
+    """Parse a pending timestamp value for log routing."""
+    timestamp = pending.get("timestamp")
+    if isinstance(timestamp, datetime):
+        return timestamp
+    if isinstance(timestamp, str):
+        try:
+            return datetime.fromisoformat(timestamp)
+        except ValueError:
+            return None
+    return None
+
+
+def _coerce_datetime(value: object) -> datetime | None:
+    """Return a datetime from an in-memory or durable pending value."""
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _mark_stage_done(pending: dict, world_id: str, pc_id: str, npc_id: str, stage: str) -> None:
+    """Record one completed stage in session and durable storage."""
+    update_pending_status(
+        pending,
+        world_id,
+        pc_id,
+        npc_id,
+        status="committing",
+        completed_stage=stage,
+    )
+    cl.user_session.set("pending_commit", pending)
+
+
 async def commit_pending(
     pending: dict,
     world_id: str,
@@ -78,44 +127,98 @@ async def commit_pending(
         toast = await send_status_toast(random.choice(updating_msgs))
 
     try:
+        pending = update_pending_status(pending, world_id, pc_id, npc_id, status="committing")
+        cl.user_session.set("pending_commit", pending)
         manager_effects = pending.get("manager_effects")
-        core_result = await commit_manager_core_effects(
-            manager_effects,
-            pc_id=pc_id,
-            npc_id=npc_id,
-        )
+        completed = _completed_stages(pending)
+        core_result = pending.get("core_result") or {}
+        if core_result.get("current_dt"):
+            core_result["current_dt"] = _coerce_datetime(core_result.get("current_dt"))
 
-        ooc_from_pregnancy = await process_actor_response(
-            pending["ai_response"],
-            npc_id,
-            pc_id,
-            scene_types=pending.get("scene_types"),
-            scene_chars=pending.get("scene_chars", []),
-            world_config=world_config,
-            manager_effects=manager_effects,
-            history_snapshot=pending.get("history_snapshot", []),
-            recent_snapshot=pending.get("recent_snapshot", []),
-        )
-        if ooc_from_pregnancy:
-            cl.user_session.set("pending_ooc", ooc_from_pregnancy)
+        if "manager_core" not in completed:
+            try:
+                core_result = await commit_manager_core_effects(
+                    manager_effects,
+                    pc_id=pc_id,
+                    npc_id=npc_id,
+                )
+            except Exception as exc:
+                update_pending_status(pending, world_id, pc_id, npc_id, "failed", "manager_core", str(exc))
+                raise
+            pending["core_result"] = core_result
+            _mark_stage_done(pending, world_id, pc_id, npc_id, "manager_core")
+            completed = _completed_stages(pending)
 
-        _commit_scene_state(pending, world_id, pc_id, npc_id)
+        if "kakao_effects" not in completed:
+            try:
+                await commit_kakao_effects((manager_effects or {}).get("kakao_effects") or [])
+            except Exception as exc:
+                update_pending_status(pending, world_id, pc_id, npc_id, "failed", "kakao_effects", str(exc))
+                raise
+            _mark_stage_done(pending, world_id, pc_id, npc_id, "kakao_effects")
+            completed = _completed_stages(pending)
 
-        append_turn(
-            user_input=pending["user_input"],
-            ai_response=pending["ai_response"],
-            timestamp=pending.get("timestamp"),
-        )
+        if "actor_response" not in completed:
+            try:
+                ooc_from_pregnancy = await process_actor_response(
+                    pending["ai_response"],
+                    npc_id,
+                    pc_id,
+                    scene_types=pending.get("scene_types"),
+                    scene_chars=pending.get("scene_chars", []),
+                    world_config=world_config,
+                    manager_effects=manager_effects,
+                    history_snapshot=pending.get("history_snapshot", []),
+                    recent_snapshot=pending.get("recent_snapshot", []),
+                    thread_id=pending.get("thread_id"),
+                    commit_id=pending.get("commit_id"),
+                    user_input=pending.get("user_input", ""),
+                )
+            except Exception as exc:
+                update_pending_status(pending, world_id, pc_id, npc_id, "failed", "actor_response", str(exc))
+                raise
+            if ooc_from_pregnancy:
+                cl.user_session.set("pending_ooc", ooc_from_pregnancy)
+            _mark_stage_done(pending, world_id, pc_id, npc_id, "actor_response")
+            completed = _completed_stages(pending)
 
-        needs_result = await commit_manager_auxiliary_effects(
-            manager_effects,
-            pc_id=pc_id,
-            npc_id=npc_id,
-            current_dt=core_result.get("current_dt"),
-            scene_chars=pending.get("scene_chars", []),
-        )
-        scene_need_hints = needs_result.get("scene_need_hints") or {}
-        cl.user_session.set("scene_need_hints", scene_need_hints)
+        if "scene_state" not in completed:
+            try:
+                _commit_scene_state(pending, world_id, pc_id, npc_id)
+            except Exception as exc:
+                update_pending_status(pending, world_id, pc_id, npc_id, "failed", "scene_state", str(exc))
+                raise
+            _mark_stage_done(pending, world_id, pc_id, npc_id, "scene_state")
+            completed = _completed_stages(pending)
+
+        if "conversation_log" not in completed:
+            try:
+                append_turn(
+                    user_input=pending["user_input"],
+                    ai_response=pending["ai_response"],
+                    timestamp=_timestamp_from_pending(pending),
+                )
+            except Exception as exc:
+                update_pending_status(pending, world_id, pc_id, npc_id, "failed", "conversation_log", str(exc))
+                raise
+            _mark_stage_done(pending, world_id, pc_id, npc_id, "conversation_log")
+            completed = _completed_stages(pending)
+
+        if "manager_auxiliary" not in completed:
+            try:
+                needs_result = await commit_manager_auxiliary_effects(
+                    manager_effects,
+                    pc_id=pc_id,
+                    npc_id=npc_id,
+                    current_dt=core_result.get("current_dt"),
+                    scene_chars=pending.get("scene_chars", []),
+                )
+            except Exception as exc:
+                update_pending_status(pending, world_id, pc_id, npc_id, "failed", "manager_auxiliary", str(exc))
+                raise
+            scene_need_hints = needs_result.get("scene_need_hints") or {}
+            cl.user_session.set("scene_need_hints", scene_need_hints)
+            _mark_stage_done(pending, world_id, pc_id, npc_id, "manager_auxiliary")
 
         if world_id == "sses" and scheduler and _should_run_scheduler(pending):
             try:
@@ -132,6 +235,7 @@ async def commit_pending(
             except Exception:
                 pass
 
+    update_pending_status(pending, world_id, pc_id, npc_id, status="committed")
     if show_toast and updated_msgs:
         toast = await send_status_toast(random.choice(updated_msgs))
         await asyncio.sleep(1.5)
@@ -148,9 +252,10 @@ async def commit_pending_if_any(
     scheduler: Callable[[], Awaitable[str | None]] | None = None,
 ) -> None:
     """세션에 pending 응답이 있으면 확정 처리하고 pending을 제거합니다."""
-    pending = cl.user_session.get("pending_commit")
+    pending = cl.user_session.get("pending_commit") or load_pending_commit(world_id, pc_id, npc_id)
     if not pending:
         return
+    cl.user_session.set("pending_commit", pending)
     committed = False
     try:
         await commit_pending(
@@ -170,6 +275,7 @@ async def commit_pending_if_any(
     finally:
         if committed:
             cl.user_session.set("pending_commit", None)
+            discard_pending_commit(pending, world_id, pc_id, npc_id)
             narrative_turns: list[dict] = cl.user_session.get("narrative_turns") or []
             narrative_turns.append({"user": pending["user_input"], "actor": pending["ai_response"]})
             if len(narrative_turns) >= 10:

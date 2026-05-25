@@ -4,13 +4,18 @@
 # Manager turn-preparation pipeline orchestration.
 #
 # Functions
-#   - run_manager_pipeline(user_input: str, pc_id: str, npc_id: str, recent_story: str, world_id: str | None, perspective: int, suppress_time_plan: bool, deps: ManagerDependencies, scene_need_hints: dict[str, str] | None = None, pending_kakao_messages: list[dict] | None = None, enable_kakao_preprocessing: bool = True, social_media_features: dict | None = None) -> tuple[PromptParts, list[str], dict] : Run turn-preparation pipeline
+#   - run_manager_pipeline(user_input: str, pc_id: str, npc_id: str, recent_story: str, world_id: str | None, perspective: int, suppress_time_plan: bool, deps: ManagerDependencies, scene_need_hints: dict[str, str] | None = None, pending_kakao_messages: list[dict] | None = None, enable_kakao_preprocessing: bool = True, social_media_features: dict | None = None, thread_id: str | None = None, commit_id: str | None = None) -> tuple[PromptParts, list[str], dict] : Run turn-preparation pipeline
 # ================================
 
+from dataclasses import replace
+
+from src.agents.context.scene_keys import normalize_scene_types
+from src.agents.manager.integrated_planner import maybe_run_integrated_planner, validated_context_plan
 from src.agents.manager.core_context import assemble_core_context
 from src.agents.manager.models import ManagerDependencies, PromptParts
 from src.agents.manager.planning import bootstrap_manager, classify_scene_and_time
 from src.agents.manager.prompting import build_prompt_parts, resolve_prompt_world_config
+from src.config import MANAGER_PLANNER_MODE
 from src.agents.manager.world_context import fetch_dynamic_world_context
 from src.simulation.systems.kakao import process_kakao_before_actor
 from src.simulation.systems.personal_facts import extract_personal_facts
@@ -29,6 +34,8 @@ async def run_manager_pipeline(
     pending_kakao_messages: list[dict] | None = None,
     enable_kakao_preprocessing: bool = True,
     social_media_features: dict | None = None,
+    thread_id: str | None = None,
+    commit_id: str | None = None,
 ) -> tuple[PromptParts, list[str], dict]:
     """Run turn preparation and optional pre-Actor KakaoTalk preprocessing."""
     bootstrap = await bootstrap_manager(world_id, perspective, deps)
@@ -71,6 +78,29 @@ async def run_manager_pipeline(
         deps,
         current_turn_personal_facts=personal_facts,
     )
+    legacy_plan = {
+        "scene_types": scene_plan.scene_types,
+        "time_parse": scene_plan.time_plan,
+        "context_plan": core_context.context_plan,
+        "present_character_hints": scene_plan.manager_effects.get("scene_npc_ids") or [],
+        "personal_fact_candidates": personal_facts,
+        "kakao_reply_intent": {},
+    }
+    integrated_plan = await maybe_run_integrated_planner(
+        user_input=user_input,
+        recent_story=recent_story,
+        thread_id=thread_id,
+        commit_id=commit_id,
+        legacy_plan=legacy_plan,
+        mode=MANAGER_PLANNER_MODE,
+    )
+    if MANAGER_PLANNER_MODE == "integrated" and integrated_plan:
+        if integrated_plan.scene_types:
+            scene_plan.scene_types = normalize_scene_types(integrated_plan.scene_types)
+        integrated_context_plan = validated_context_plan(integrated_plan)
+        if integrated_context_plan:
+            core_context = replace(core_context, context_plan=integrated_context_plan)
+            scene_plan.manager_effects["integrated_context_plan_applied"] = True
     scene_plan.manager_effects["scene_state"] = core_context.scene_state
     scene_plan.manager_effects["context_plan"] = core_context.context_plan
     world_context = await fetch_dynamic_world_context(
@@ -100,7 +130,8 @@ async def run_manager_pipeline(
                 world_hints=world_context,
             )
             if kakao_turn_context:
-                world_context["kakao_turn_context"] = kakao_turn_context
+                world_context["kakao_turn_context"] = {"messages": kakao_turn_context.get("messages") or []}
+                scene_plan.manager_effects["kakao_effects"] = kakao_turn_context.get("effects") or []
                 scene_plan.manager_effects["kakao_panel_refresh"] = True
             if pending_kakao_messages:
                 scene_plan.manager_effects["kakao_processed"] = True

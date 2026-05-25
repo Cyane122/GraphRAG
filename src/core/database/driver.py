@@ -262,8 +262,6 @@ _COLUMN_MIGRATIONS: list[str] = [
 # 특정 노드의 속성값을 보정하는 일회성 데이터 패치.
 # WHERE 조건으로 이미 값이 있으면 스킵하므로 재실행 안전.
 _DATA_PATCHES: list[str] = [
-    # eun_seo — 양측 난소 제거로 생리 주기 없음
-    "MATCH (d:DynamicState {id: 'eun_seo_state'}) WHERE d.has_menstrual_cycle = true SET d.has_menstrual_cycle = false",
     "MATCH (c:Character), (s:Secret) WHERE c.id = s.owner_id MERGE (c)-[:HAS_SECRET]->(s)",
 ]
 

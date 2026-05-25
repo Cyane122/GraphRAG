@@ -25,7 +25,8 @@
 #   - apply_item_updates(actor_response: str, owner_id: str, pc_id: str, current_time: datetime, event_id: str | None = None) -> None : Apply practical item updates.
 #   - ensure_default_rooms(pc_id: str, npc_id: str, current_time: datetime) -> None : Ensure baseline KakaoTalk rooms exist.
 #   - generate_turn_messages(pc_id: str, npc_id: str, current_time: datetime, recent_story: str = "") -> list[str] : Generate autonomous KakaoTalk messages.
-#   - process_kakao_before_actor(pc_id: str, npc_id: str, current_time: datetime, pending_player_messages: list[dict], recent_story: str = "", world_hints: dict | None = None) -> dict : Persist queued KakaoTalk messages and return this-turn prompt context.
+#   - process_kakao_before_actor(pc_id: str, npc_id: str, current_time: datetime, pending_player_messages: list[dict], recent_story: str = "", world_hints: dict | None = None) -> dict : Build deferred KakaoTalk turn context and effects.
+#   - commit_kakao_effects(effects: list[dict]) -> None : Persist accepted deferred KakaoTalk message effects.
 #   - fetch_kakao_panel_state(pc_id: str, active_room_id: str | None = None) -> dict : Fetch UI-ready KakaoTalk panel state.
 #   - fetch_kakao_context(pc_id: str, limit_rooms: int = 3, limit_messages: int = 5) -> list[dict] : Fetch prompt-ready KakaoTalk room context.
 # ================================
@@ -45,6 +46,7 @@ from src.simulation.systems.kakao import (
     fetch_kakao_panel_state,
     generate_turn_messages,
     process_kakao_before_actor,
+    commit_kakao_effects,
 )
 
 __all__ = [
@@ -58,5 +60,5 @@ __all__ = [
     "fetch_secret_hints", "apply_secret_updates",
     "fetch_object_memory_hints", "apply_item_updates",
     "ensure_default_rooms", "fetch_kakao_context", "fetch_kakao_panel_state", "generate_turn_messages",
-    "process_kakao_before_actor",
+    "process_kakao_before_actor", "commit_kakao_effects",
 ]

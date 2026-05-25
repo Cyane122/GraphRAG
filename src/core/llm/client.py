@@ -150,11 +150,51 @@ def _response_diagnostics(response: object) -> dict:
     return info
 
 
+def _usage_value(usage: object, attr: str) -> object:
+    """Return one usage metadata value without exposing verbose SDK objects."""
+    try:
+        return getattr(usage, attr, None)
+    except Exception:
+        return None
+
+
+def _compact_empty_response_diagnostics(response: object) -> dict:
+    """Return a short empty-response diagnostic suitable for normal logs."""
+    candidates = []
+    try:
+        raw_candidates = getattr(response, "candidates", None) or []
+    except Exception:
+        raw_candidates = []
+    for candidate in raw_candidates[:2]:
+        try:
+            parts = getattr(getattr(candidate, "content", None), "parts", None) or []
+        except Exception:
+            parts = []
+        candidates.append({
+            "finish_reason": str(getattr(candidate, "finish_reason", None)),
+            "finish_message": getattr(candidate, "finish_message", None),
+            "parts": len(parts),
+        })
+
+    try:
+        usage = getattr(response, "usage_metadata", None)
+    except Exception:
+        usage = None
+
+    return {
+        "candidates": candidates,
+        "prompt_tokens": _usage_value(usage, "prompt_token_count"),
+        "output_tokens": _usage_value(usage, "candidates_token_count"),
+        "thought_tokens": _usage_value(usage, "thoughts_token_count"),
+        "total_tokens": _usage_value(usage, "total_token_count"),
+    }
+
+
 def log_empty_response_diagnostics(response: object, source: str) -> None:
     """빈 LLM 응답의 finish_reason/safety/parts 메타데이터를 로그로 남깁니다."""
     print(
         f"[LLM Empty Response:{source}] "
-        f"{json.dumps(_response_diagnostics(response), ensure_ascii=False, default=str)}"
+        f"{json.dumps(_compact_empty_response_diagnostics(response), ensure_ascii=False, default=str)}"
     )
 
 
@@ -181,6 +221,7 @@ class _GeminiModel:
     def _build_config(self, generation_config: dict | None) -> types.GenerateContentConfig:
         """generation_config dict를 Gemini GenerateContentConfig로 변환한다."""
         cfg = dict(generation_config or {})
+        cfg.pop("log_source", None)
         thinking_raw = cfg.pop("thinking_config", None)
         is_json_response = cfg.get("response_mime_type") == "application/json"
 
@@ -257,6 +298,7 @@ class _GeminiModel:
         JSON mime 호출이 빈 텍스트를 반환하면 diagnostics를 남기고 streaming으로 재시도한다.
         """
         config_dict = generation_config or {}
+        log_source = str(config_dict.get("log_source") or "json_async")
         config = self._build_config(generation_config)
 
         if config_dict.get("response_mime_type") == "application/json":
@@ -272,10 +314,13 @@ class _GeminiModel:
             if safe.text.strip():
                 return safe
 
-            log_empty_response_diagnostics(resp, "json_async")
+            log_empty_response_diagnostics(resp, log_source)
             fallback_config = dict(config_dict)
+            fallback_config.pop("log_source", None)
             fallback_config.pop("response_mime_type", None)
             fallback_config["thinking_config"] = {"thinking_budget": 0}
+            current_budget = int(fallback_config.get("max_output_tokens") or 1024)
+            fallback_config["max_output_tokens"] = max(2048, min(current_budget * 2, 8192))
             return await self._generate_content_stream_text(contents, fallback_config)
 
         return await self._generate_content_stream_text(contents, generation_config)

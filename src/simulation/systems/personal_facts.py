@@ -52,6 +52,8 @@ KR_TERMS = {
 }
 
 _FACT_EXTRACT_TIMEOUT_SECONDS = 12
+_MAX_FACT_INPUT_LEN = 700
+_FACT_INPUT_CONTEXT_CHARS = 180
 _MAX_FACT_TEXT_LEN = 180
 _FACT_SIGNAL_RE = re.compile(
     "|".join(re.escape(term) for term in KR_TERMS.values())
@@ -204,6 +206,7 @@ async def _extract_facts_with_llm(
     """Use the lightweight model to extract explicit facts as JSON."""
     system_prompt = "Extract explicit personal daily-life facts from Korean roleplay input. No inference."
     subjects = _render_subject_options(subject_aliases, subject_id)
+    fact_input = _compact_fact_input(user_input)
     prompt = f"""Return ONLY valid JSON.
 Explicit facts only. Skip emotions/metaphors/flirting/scene actions unless durable & practical.
 
@@ -220,7 +223,7 @@ Explicit facts only. Skip emotions/metaphors/flirting/scene actions unless durab
 - "today/tonight" absence/schedule → valid_until=tomorrow 12:00 unless stated otherwise.
 - confidence: 0.0-1.0
 
-[Input] {user_input}
+[Input] {fact_input}
 
 [Output] {{"facts":[{{"category":"household","fact_text":"...","normalized_key":"household.x","subject_id":"{subject_id}","audience_id":"{audience_id}","valid_until":null,"confidence":0.9}}]}}
 """
@@ -231,7 +234,7 @@ Explicit facts only. Skip emotions/metaphors/flirting/scene actions unless durab
             generation_config={
                 "temperature": 0.0,
                 "max_output_tokens": 1024,
-                "thinking_config": {"thinking_level": "LOW"},
+                "thinking_config": {"thinking_budget": 0},
                 "response_mime_type": "application/json",
             },
         ),
@@ -245,6 +248,22 @@ Explicit facts only. Skip emotions/metaphors/flirting/scene actions unless durab
         return []
     facts = parsed.get("facts")
     return facts if isinstance(facts, list) else []
+
+
+def _compact_fact_input(user_input: str) -> str:
+    """Return a compact excerpt around fact signals for the extractor prompt."""
+    text = (user_input or "").strip()
+    if len(text) <= _MAX_FACT_INPUT_LEN:
+        return text
+
+    match = _FACT_SIGNAL_RE.search(text)
+    if not match:
+        return text[:_MAX_FACT_INPUT_LEN]
+
+    start = max(0, match.start() - _FACT_INPUT_CONTEXT_CHARS)
+    end = min(len(text), match.end() + _FACT_INPUT_CONTEXT_CHARS)
+    excerpt = text[start:end].strip()
+    return excerpt[:_MAX_FACT_INPUT_LEN]
 
 
 def _rule_based_household_facts(

@@ -14,10 +14,11 @@
 #   - _resolve_thread_world(thread: ThreadDict) -> tuple[str, str | None] : 스레드의 world/scenario 선택값 복구
 #   - _is_closed_connection_error(exc: BaseException) -> bool : 종료 중 닫힌 연결 예외 판별
 #   - _close_session_driver() -> None : 현재 세션의 Kuzu 드라이버 정리
+#   - _upsert_debug_graph_best_effort(pc_id: str | None, npc_id: str | None, world_id: str) -> bool : 디버그 그래프 갱신
 #   - _current_game_datetime() -> datetime : 현재 인게임 시간을 datetime으로 반환
 #   - _social_media_features() -> dict : 현재 월드/세션 기준 카카오톡·인스타그램 활성 상태 반환
 #   - _queue_kakao_message(pc_id: str, room_id: str, content: str) -> None : 이번 턴 카카오톡 전송 버퍼에 메시지 추가
-#   - _blacklist_retry_instruction(blocked_terms: list[str]) -> str : 출력 금지어 재생성 지시 생성
+#   - _repair_guarded_actor_output(full_response: str, blocked_terms: list[str]) -> str | None : 출력 금지어 위반 응답 수정
 #   - _handle_kakao_panel_event(raw_payload: str) -> None : 카카오톡 패널 이벤트 처리
 #   - _handle_social_panel_event(raw_payload: str) -> None : SNS 패널 설정 이벤트 처리
 #   - on_chat_start() -> None : 신규 세션 초기화 및 오프닝 씬 출력
@@ -45,6 +46,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from uuid import uuid4
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
@@ -54,7 +56,7 @@ import chainlit as cl
 from chainlit.chat_context import chat_context
 from chainlit.types import ThreadDict
 
-from src.config import PERSPECTIVE, WORLD_ID, MODEL_ACTOR, MAX_TOKEN
+from src.config import PERSPECTIVE, WORLD_ID, MODEL_ACTOR, MODEL_OUTPUT_REPAIR, MAX_TOKEN
 from src.agents.manager import run_manager, load_world_instance
 from src.agents.prompt_factory.ooc_handler import is_ooc, parse_ooc
 from src.agents.prompt_factory.usernote import build_usernote_block, load_usernote
@@ -62,6 +64,8 @@ from src.ui.history import build_history_from_steps
 from src.ui.input_routing import TurnInputType, route_user_input
 from src.ui.kakao_panel import send_kakao_panel
 from src.ui.output_guard import find_forbidden_terms
+from src.ui.output_repair import repair_actor_output
+from src.ui.pending_store import discard_pending_commit, save_pending_commit
 from src.ui.social_media_settings import (
     resolve_social_media_features,
     set_social_media_override,
@@ -200,6 +204,20 @@ def _close_session_driver() -> None:
     cl.user_session.set("db_driver", None)
 
 
+async def _upsert_debug_graph_best_effort(pc_id: str | None, npc_id: str | None, world_id: str) -> bool:
+    """디버그 그래프를 갱신하고, 종료 중 닫힌 연결이면 실패를 흡수합니다."""
+    if not pc_id or not npc_id:
+        return False
+    try:
+        await upsert_debug_graph(pc_id=pc_id, npc_id=npc_id, world_id=world_id)
+        return True
+    except Exception as exc:
+        if _is_closed_connection_error(exc):
+            logging.getLogger(__name__).debug("Skipped debug graph update after connection close: %s", exc)
+            return False
+        raise
+
+
 @cl.set_chat_profiles
 async def set_chat_profiles(current_user: cl.User | None) -> list[cl.ChatProfile]:
     """신규 채팅 시작 시 세계관/시나리오를 선택하는 드롭다운을 생성합니다."""
@@ -235,7 +253,6 @@ MAX_HISTORY_TURNS  = 10
 RECENT_STORY_TURNS = 3
 _LOGS_DIR          = Path("logs")
 _TURN_DEBUG_DIR    = _LOGS_DIR / "turn_debug"
-_MAX_BLACKLIST_RETRIES = 2
 
 _genai_client = get_client()
 
@@ -418,15 +435,27 @@ async def _queue_kakao_message(pc_id: str, room_id: str, content: str) -> None:
     cl.user_session.set("pending_kakao_messages", pending)
 
 
-def _blacklist_retry_instruction(blocked_terms: list[str]) -> str:
-    """금지어가 포함된 Actor 응답을 재생성하도록 dynamic prompt 지시를 생성합니다."""
-    return (
-        "\n\n<output_rejection>\n"
-        "The previous draft was rejected before commit by the prose guard.\n"
-        "Regenerate from the same situation without echoing the rejected wording. "
-        "Use concrete action, object, body, dialogue, or environment details.\n"
-        "</output_rejection>"
+async def _repair_guarded_actor_output(full_response: str, blocked_terms: list[str]) -> str | None:
+    """Guard 위반 Actor 응답을 Pro repair로 수정하고 통과한 본문만 반환합니다."""
+    print(f"[OutputGuard] repairing Actor output with {MODEL_OUTPUT_REPAIR}: {blocked_terms}")
+    repaired = await repair_actor_output(
+        actor_output=full_response,
+        blocked_terms=blocked_terms,
+        model_name=MODEL_OUTPUT_REPAIR,
     )
+    repaired_terms = find_forbidden_terms(repaired)
+    if repaired_terms:
+        print(f"[OutputGuard] repair rejected for forbidden terms: {repaired_terms}")
+        await cl.Message(
+            content=(
+                "Actor 출력 수정본도 blacklist를 위반해서 이번 응답을 커밋하지 않았습니다.\n"
+                f"감지된 표현: `{', '.join(repaired_terms[:12])}`"
+            ),
+            author="시스템",
+        ).send()
+        return None
+    print("[OutputGuard] repair accepted")
+    return repaired
 
 
 async def _handle_kakao_panel_event(raw_payload: str) -> None:
@@ -594,10 +623,13 @@ async def _run_generation(
     첫 번째 RP 턴에서는 스레드 이름을 사용자 입력으로 설정한다.
     """
     world_id, pc_id, npc_id, npc_name_kor, _ = _wv()
+    commit_id = uuid4().hex
+    thread_id = cl.context.session.thread_id
 
     # 1. 현재 인게임 시간 스냅샷 — 리롤 시 복원 기준점
     prev_game_time = await snapshot_game_time()
     recent_story   = "\n".join(recent_responses[-RECENT_STORY_TURNS:])
+    queued_kakao_messages = cl.user_session.get("pending_kakao_messages") or []
 
     # 2. Manager: 씬 분류 + 시간 계산 + 프롬프트 조립
     async with cl.Step(name="데이터 추출", show_input=False) as step:
@@ -612,12 +644,12 @@ async def _run_generation(
             return_meta  = True,
             suppress_time_plan=bool(ooc_result and ooc_result.get("time_changed")),
             scene_need_hints=cl.user_session.get("scene_need_hints") or {},
-            pending_kakao_messages=cl.user_session.get("pending_kakao_messages") or [],
+            pending_kakao_messages=queued_kakao_messages,
             enable_kakao_preprocessing=not bool(step_suffix) and _social_media_features()["kakao_enabled"],
             social_media_features=_social_media_features(),
+            thread_id=thread_id,
+            commit_id=None if ooc_result else commit_id,
         )
-        if manager_effects.get("kakao_processed"):
-            cl.user_session.set("pending_kakao_messages", [])
         if manager_effects.get("kakao_panel_refresh"):
             await send_kakao_panel(
                 pc_id,
@@ -628,6 +660,8 @@ async def _run_generation(
         suffix      = f" {step_suffix}" if step_suffix else ""
         step.output = f"씬 타입: `{scene_types}`{suffix}"
 
+    if ooc_result:
+        manager_effects["ooc_patch_result"] = ooc_result
     if ooc_result and ooc_result.get("time_changed"):
         manager_effects["ooc_time_patch"] = ooc_result
         manager_effects["time_plan"] = None
@@ -647,7 +681,6 @@ async def _run_generation(
         ]
 
     # 유저노트를 매 턴마다 파일에서 직접 읽어 dynamic 프롬프트 최상단에 삽입
-    thread_id = cl.context.session.thread_id
     note_block = build_usernote_block(load_usernote(thread_id))
     if note_block:
         dynamic = note_block + dynamic
@@ -679,43 +712,29 @@ async def _run_generation(
 
     # 3. Actor 스트리밍
     # blacklist는 프롬프트 지시만으로는 강제되지 않으므로, pending/history 등록 전 검사한다.
-    full_response = ""
-    scene_chars: list[str] = []
-    raw_thinking = ""
-    hour: int | None = None
-    response_msg: cl.Message | None = None
-    actor_dynamic = dynamic
-    for attempt in range(_MAX_BLACKLIST_RETRIES + 1):
-        full_response, scene_chars, response_msg, hour, raw_thinking = await stream_actor(
-            fixed_prompt   = fixed,
-            genre_prompt   = genre,
-            dynamic_prompt = actor_dynamic,
-            history        = history,
-            genai_client   = _genai_client,
-            model_name     = MODEL_ACTOR,
-            max_token      = MAX_TOKEN,
-            npc_name       = npc_name_kor,
-            logs_dir       = _LOGS_DIR,
-            status_text    = random.choice(GENERATING_MSGS).format(char=npc_name_kor),
-            send_output    = False,
-        )
-        blocked_terms = find_forbidden_terms(full_response)
-        if not blocked_terms:
-            response_msg.content = full_response
-            await response_msg.send()
-            break
-
+    full_response, scene_chars, response_msg, hour, raw_thinking = await stream_actor(
+        fixed_prompt   = fixed,
+        genre_prompt   = genre,
+        dynamic_prompt = dynamic,
+        history        = history,
+        genai_client   = _genai_client,
+        model_name     = MODEL_ACTOR,
+        max_token      = MAX_TOKEN,
+        npc_name       = npc_name_kor,
+        logs_dir       = _LOGS_DIR,
+        status_text    = random.choice(GENERATING_MSGS).format(char=npc_name_kor),
+        send_output    = False,
+    )
+    blocked_terms = find_forbidden_terms(full_response)
+    if blocked_terms:
         print(f"[OutputGuard] rejected Actor output for forbidden terms: {blocked_terms}")
-        if attempt >= _MAX_BLACKLIST_RETRIES:
-            await cl.Message(
-                content=(
-                    "Actor 출력이 blacklist를 반복 위반해서 이번 응답을 커밋하지 않았습니다.\n"
-                    f"감지된 표현: `{', '.join(blocked_terms[:12])}`"
-                ),
-                author="시스템",
-            ).send()
+        repaired_response = await _repair_guarded_actor_output(full_response, blocked_terms)
+        if repaired_response is None:
             return
-        actor_dynamic = dynamic + _blacklist_retry_instruction(blocked_terms)
+        full_response = repaired_response
+
+    response_msg.content = full_response
+    await response_msg.send()
     if hour is None:
         hour = hour_from_time_string(await snapshot_game_time())
 
@@ -730,8 +749,9 @@ async def _run_generation(
 
     # 5. 히스토리 갱신
     # msg_id를 함께 저장해 삭제 액션이 history 항목을 찾을 수 있게 한다
+    effective_user_msg_id = user_msg_id or cl.user_session.get("reroll_user_msg_id")
     history += [
-        {"role": "user",      "content": user_input,    "msg_id": user_msg_id},
+        {"role": "user",      "content": user_input,    "msg_id": effective_user_msg_id},
         {"role": "assistant", "content": full_response, "msg_id": response_msg.id},
     ]
     del history[:-MAX_HISTORY_TURNS * 2]
@@ -745,6 +765,8 @@ async def _run_generation(
     # run_needs_update는 npc_id(영문)로 scene_set을 조회하므로 ID가 반드시 포함되어야 한다.
     scene_chars = list(set(scene_chars or []) | set(manager_effects.get("scene_npc_ids") or []))
     pending_commit = PendingCommit(
+        commit_id=commit_id,
+        thread_id=cl.context.session.thread_id,
         user_input=user_input,
         ai_response=full_response,
         scene_types=scene_types,
@@ -756,13 +778,18 @@ async def _run_generation(
         manager_effects=manager_effects,
         ooc_result=ooc_result,
         time_plan=manager_effects.get("time_plan"),
+        pending_kakao_messages=queued_kakao_messages if manager_effects.get("kakao_processed") else [],
         pending_effects=manager_effects.get("pending_effects", []),
         debug_dir=debug_dir,
-        user_msg_id=user_msg_id or cl.user_session.get("reroll_user_msg_id"),
+        user_msg_id=effective_user_msg_id,
         response_msg_id=response_msg.id,
         prev_cot=cl.user_session.get("prev_cot") or "",
     )
-    cl.user_session.set("pending_commit", pending_commit.model_dump())
+    pending_dict = pending_commit.model_dump(mode="json")
+    cl.user_session.set("pending_commit", pending_dict)
+    save_pending_commit(pending_dict, world_id, pc_id, npc_id)
+    if manager_effects.get("kakao_processed"):
+        cl.user_session.set("pending_kakao_messages", [])
     cl.user_session.set("prev_cot",       raw_thinking)
     cl.user_session.set("reroll_user_msg_id", None)
 
@@ -794,8 +821,15 @@ async def _remove_message_if_present(message_id: str | None) -> None:
 async def _reroll_pending_response(
     message_id: str | None = None,
     replacement_user_input: str | None = None,
+    world_id: str | None = None,
+    pc_id: str | None = None,
+    npc_id: str | None = None,
 ) -> None:
     """현재 pending 응답을 버리고 같은 사용자 입력으로 다시 생성합니다."""
+    session_world_id, session_pc_id, session_npc_id, _, _ = _wv()
+    world_id = world_id or session_world_id
+    pc_id = pc_id or session_pc_id
+    npc_id = npc_id or session_npc_id
     pending = cl.user_session.get("pending_commit")
     if not pending:
         await cl.Message(content="다시 쓸 pending 응답이 없습니다.", author="시스템").send()
@@ -809,7 +843,10 @@ async def _reroll_pending_response(
     cl.user_session.set("conversation_history", pending["history_snapshot"])
     cl.user_session.set("recent_responses",     pending["recent_snapshot"])
     cl.user_session.set("pending_commit",        None)
+    discard_pending_commit(pending, world_id, pc_id, npc_id)
     cl.user_session.set("prev_cot",              pending.get("prev_cot", ""))
+    if pending.get("pending_kakao_messages"):
+        cl.user_session.set("pending_kakao_messages", pending.get("pending_kakao_messages") or [])
 
     if pending.get("prev_game_time"):
         await restore_game_time(pending["prev_game_time"])
@@ -904,6 +941,8 @@ async def _handle_user_message_edit(message: cl.Message, user_input: str) -> boo
     cl.user_session.set("conversation_history", pruned_history)
     cl.user_session.set("recent_responses", recent_responses)
     cl.user_session.set("pending_commit", None)
+    if pending:
+        discard_pending_commit(pending, *(_wv()[0:3]))
 
     if pending and pending.get("response_msg_id"):
         await _remove_message_if_present(pending.get("response_msg_id"))
@@ -973,10 +1012,12 @@ async def on_delete_message(action: cl.Action) -> None:
             or pending.get("user_msg_id") == msg_id
         ):
             cl.user_session.set("pending_commit", None)
+            discard_pending_commit(pending, *(_wv()[0:3]))
         elif pending.get("history_snapshot"):
             snapshot = [h for h in pending["history_snapshot"] if h.get("msg_id") != msg_id]
             pending["history_snapshot"] = snapshot
             cl.user_session.set("pending_commit", pending)
+            save_pending_commit(pending, *(_wv()[0:3]))
 
 
 # ════════════════════════════════════════════════════════════
@@ -1099,7 +1140,11 @@ async def on_chat_resume(thread: ThreadDict) -> None:
         current_time=await _current_game_datetime(),
         features=_social_media_features(),
     )
-    await upsert_debug_graph(pc_id=cl.user_session.get("pc_id"), npc_id=cl.user_session.get("npc_id"), world_id=world_id)
+    await _upsert_debug_graph_best_effort(
+        pc_id=cl.user_session.get("pc_id"),
+        npc_id=cl.user_session.get("npc_id"),
+        world_id=world_id,
+    )
 
 
 @cl.on_chat_end
@@ -1119,6 +1164,7 @@ async def on_chat_end() -> None:
                 show_toast=False,
             )
             cl.user_session.set("pending_commit", None)
+            discard_pending_commit(pending, world_id, pc_id, npc_id)
         except Exception as exc:
             if not _is_closed_connection_error(exc):
                 raise
@@ -1184,7 +1230,7 @@ async def on_message(message: cl.Message) -> None:
 
     if route == TurnInputType.REROLL:
         await message.remove()
-        await _reroll_pending_response()
+        await _reroll_pending_response(world_id=world_id, pc_id=pc_id, npc_id=npc_id)
         return
 
     if await _handle_user_message_edit(message, user_input):
@@ -1199,7 +1245,8 @@ async def on_message(message: cl.Message) -> None:
         updated_msgs=UPDATED_MSGS,
         scheduler=_get_scheduler(world_id),
     )
-    await upsert_debug_graph(pc_id=pc_id, npc_id=npc_id, world_id=world_id)
+    if not await _upsert_debug_graph_best_effort(pc_id=pc_id, npc_id=npc_id, world_id=world_id):
+        return
     await send_kakao_panel(
         pc_id,
         npc_id,
@@ -1229,7 +1276,13 @@ async def on_message(message: cl.Message) -> None:
     if is_ooc(user_input):
         ooc_changes: dict = {}
         async with cl.Step(name="⚙️ OOC", show_input=False) as step:
-            result      = await parse_ooc(user_input, npc_id, npc_name_kor, pc_id=pc_id)
+            result      = await parse_ooc(
+                user_input,
+                npc_id,
+                npc_name_kor,
+                pc_id=pc_id,
+                world_config=world_config,
+            )
             ooc_result  = result
             ooc_changes = result.get("state_changes", {})
             lines       = [f"**{result['summary']}**"]
@@ -1261,6 +1314,7 @@ async def on_message(message: cl.Message) -> None:
             user_input,
             pc_id,
             participant_ids=ooc_participant_ids,
+            world_config=world_config,
         )
         if named_updates:
             async with cl.Step(name="보조 캐릭터 상태", show_input=False) as step:
@@ -1269,7 +1323,8 @@ async def on_message(message: cl.Message) -> None:
                     for item in named_updates
                 )
         await _sses_advance_slot_if_needed(world_id, ooc_changes)
-        await upsert_debug_graph(pc_id=pc_id, npc_id=npc_id, world_id=world_id)
+        if not await _upsert_debug_graph_best_effort(pc_id=pc_id, npc_id=npc_id, world_id=world_id):
+            return
 
         if route == TurnInputType.OOC_PATCH:
             # *마커* 를 벗겨야 actor가 '도'(also) 를 이전 context 인물과 연관짓지 않는다.
@@ -1292,4 +1347,4 @@ async def on_message(message: cl.Message) -> None:
         ooc_result=ooc_result,
         user_msg_id=getattr(message, "id", None),
     )
-    await upsert_debug_graph(pc_id=pc_id, npc_id=npc_id, world_id=world_id)
+    await _upsert_debug_graph_best_effort(pc_id=pc_id, npc_id=npc_id, world_id=world_id)

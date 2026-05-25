@@ -142,39 +142,36 @@ _COMPLETED_EJAC_RE = re.compile(
 _SEGMENT_SPLIT_RE = re.compile(r"[\n\r.!?。？！]+")
 
 _EJAC_CLASSIFY_SYSTEM = """\
-You are a scene classifier for a Korean adult roleplay system.
-Analyze the text and return JSON only — no explanation, no markdown.
+Classify current-scene ejaculation in Korean adult roleplay text.
+Return JSON only. No explanation. No markdown.
 
-CRITICAL: Only classify ejaculation that ACTUALLY HAPPENED in this scene.
-Return {"current_ejaculation": false, "vaginal": false, "condom_protected": false, "recipient_refs": []} if:
-- Characters are merely TALKING ABOUT, ANTICIPATING, or REFERENCING ejaculation (허락, 해도 돼, 하게?, ~하면 어쩔 수 없지, ~할 수도 있어 등).
-- The ejaculation is described as past/hypothetical, not currently occurring.
-- The text only describes semen/fluid from an earlier ejaculation still leaking or remaining.
-- No penetration or sexual act is actively depicted.
+## False Conditions
 
-current_ejaculation: true ONLY if ejaculation happens in the current accepted scene text.
-                     false for prior-result descriptions like "아까 싼 정액이 아직 흘러나왔다".
-vaginal: true ONLY if male ejaculation inside the vagina is actively depicted as happening NOW in this scene.
-         false if anal (항문 / 애널 / 후장), oral, external, or no ejaculation occurred.
-condom_protected: true if a condom was worn and there is NO mention of it breaking,
-                  slipping off, or being absent (생으로 / 콘돔 없이 / 파열 / 찢어짐 등).
-                  false otherwise (no condom, condom broke, bareback).
-recipient_refs: names/ids/pronouns of characters whose vagina/body received the current ejaculation.
-                Do NOT include the ejaculating character. Return [] if unknown or if no current vaginal ejaculation.
+talk / anticipation / permission / hypothetical / past reference -> current_ejaculation=false.
+earlier semen/fluid still leaking/remains -> current_ejaculation=false.
+no active sexual act -> current_ejaculation=false.
 
-Positive example:
-- "그가 사정했다. 다 담기지 못한 정액이 다리 사이로 흘러나왔다."
-  -> {"current_ejaculation": true, "vaginal": true, "condom_protected": false, "recipient_refs": []}
+## Fields
 
-Negative example:
-- "아까 싼 정액이 아직도 흘러나왔다."
-  -> {"current_ejaculation": false, "vaginal": false, "condom_protected": false, "recipient_refs": []}
+current_ejaculation = true iff ejaculation happens in this accepted scene now.
+vaginal = true iff current male ejaculation inside vagina is actively depicted.
+anal / oral / external / no ejaculation -> vaginal=false.
+condom_protected = true iff condom worn AND no break/slip/absence.
+no condom / broken condom / bareback -> condom_protected=false.
+recipient_refs = receiver names/ids/pronouns only. Exclude ejaculating character. Unknown/none -> [].
 
-Recipient example:
-- "민지가 그의 사정을 받아냈고 소라는 옆에서 지켜봤다."
-  -> {"current_ejaculation": true, "vaginal": true, "condom_protected": false, "recipient_refs": ["민지"]}
+## Examples
 
-Output exactly: {"current_ejaculation": true, "vaginal": true, "condom_protected": false, "recipient_refs": []}"""
+Input: "그가 사정했다. 다 담기지 못한 정액이 다리 사이로 흘러나왔다."
+Output: {"current_ejaculation": true, "vaginal": true, "condom_protected": false, "recipient_refs": []}
+
+Input: "아까 싼 정액이 아직도 흘러나왔다."
+Output: {"current_ejaculation": false, "vaginal": false, "condom_protected": false, "recipient_refs": []}
+
+Input: "민지가 그의 사정을 받아냈고 소라는 옆에서 지켜봤다."
+Output: {"current_ejaculation": true, "vaginal": true, "condom_protected": false, "recipient_refs": ["민지"]}
+
+Output schema: {"current_ejaculation": true, "vaginal": true, "condom_protected": false, "recipient_refs": []}"""
 
 
 def _calc_prob(cycle_day: int, count: int) -> float:
@@ -294,6 +291,8 @@ async def detect_internal_ejaculation(actor_response: str) -> bool:
 async def _analyze_internal_ejaculation(actor_response: str) -> dict:
     """Return pregnancy-risk detection details for the accepted response."""
     if not _EJAC_RE.search(actor_response):
+        return {"detected": False, "recipient_refs": []}
+    if _is_clearly_non_pregnancy_input(actor_response):
         return {"detected": False, "recipient_refs": []}
 
     result = await _classify_ejaculation(actor_response)
@@ -597,7 +596,7 @@ async def tick_all_cycles(days_passed: int) -> None:
     async with async_driver.session() as session:
         rec = await session.run("""
             MATCH (c:Character)-[:HAS_STATE]->(d:DynamicState)
-            WHERE d.has_menstrual_cycle = true
+            WHERE d.has_menstrual_cycle IS NULL OR d.has_menstrual_cycle = true
             RETURN c.id                   AS char_id,
                    d.cycle_day            AS cycle_day,
                    d.pregnant             AS pregnant,

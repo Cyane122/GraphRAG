@@ -156,26 +156,35 @@ async def _run_relationship_update(
         "Conservative Pro relationship updater for Korean roleplay. "
         "Update only relationships directly evidenced by the scene."
     )
-    prompt = f"""## Relationship targets
+    prompt = f"""## Relationship Targets
 {_target_lines(targets)}
 
-Extract relationship changes from scene. Use only source_id/target_id from target list.
+## Task
 
-Updates:
-affinity: -100..100 absolute (not delta). trust: -100..100 absolute.
-rel_type: acquaintance/stranger/classmate/coworker/friend/rival/family/lover/ex/customer/mentor
-current_status: 1 concise sentence about how source currently regards/feels about target after the scene. It is NOT what they are physically doing now. summary: 1-2 sentences for durable changes only.
+Extract relationship changes from scene.
+Use only source_id/target_id from Relationship Targets.
+Omit unchanged edges. Skip main PC/NPC pair.
 
-Rules:
-- Omit unchanged edges. Skip main PC/NPC pair.
-- No inference w/o explicit scene evidence.
-- affinity = love/romantic bond. For same-sex close friends, affinity means best-friend+ closeness above trust, not romance.
-- affinity can rise only when current trust >= 80.
-- affinity change ≤ 5; trust change ≤ 3. Larger → rare milestones only (confession/betrayal/rescue/reconciliation/near-breakup/first intimacy).
-- Trust grows slower — no increase from embarrassment/attraction/politeness/compliance alone.
-- First meetings: low nonzero trust OK if they directly interacted.
-- If A/B views differ → return both directed edges.
-- current_status must describe relationship attitude/dynamic only; do not include current actions, positions, scene activity, or "currently/now" details.
+## Fields
+
+affinity = -100..100 absolute, not delta.
+trust = -100..100 absolute, not delta.
+rel_type = acquaintance | stranger | classmate | coworker | friend | rival | family | lover | ex | customer | mentor.
+current_status = 1 concise sentence about relationship attitude after scene.
+summary = 1-2 sentence durable relationship change.
+
+## Rules
+
+explicit scene evidence required.
+affinity = love / romantic bond.
+same-sex close friends: affinity = best-friend+ closeness above trust, not romance.
+affinity rise requires current trust >= 80.
+affinity change <= 5. trust change <= 3.
+larger change iff rare milestone: confession / betrayal / rescue / reconciliation / near-breakup / first intimacy.
+embarrassment / attraction / politeness / compliance alone -> no trust increase.
+first direct interaction -> low nonzero trust OK.
+A/B views differ -> return both directed edges.
+current_status != current action / position / scene activity / currently-now detail.
 
 Return ONLY valid JSON:
 {{

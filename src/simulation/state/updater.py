@@ -7,12 +7,13 @@
 # in src/simulation/state/multi_character.py.
 #
 # Functions
-#   - process_actor_response(actor_response: str, npc_id: str, pc_id: str, scene_types: list[str] | None, scene_chars: list[str] | None, world_config: dict | None, manager_effects: dict | None, history_snapshot: list[dict] | None, recent_snapshot: list[str] | None) -> str | None : Apply accepted actor response side effects.
+#   - process_actor_response(actor_response: str, npc_id: str, pc_id: str, scene_types: list[str] | None, scene_chars: list[str] | None, world_config: dict | None, manager_effects: dict | None, history_snapshot: list[dict] | None, recent_snapshot: list[str] | None, thread_id: str | None = None, commit_id: str | None = None, user_input: str = "") -> str | None : Apply accepted actor response side effects.
 #   - guard_actor_response(actor_response: str, npc_id: str, pc_id: str, world_config: dict | None) -> dict : Validate actor response before DB writes.
 #   - build_time_plan(plan: dict, base_time: datetime) -> dict : Compute time changes without DB writes.
 #   - commit_time_plan(time_plan: dict, pc_id: str, npc_id: str) -> datetime : Persist a computed time plan.
 #   - apply_time_updates(plan: dict, base_time: datetime, pc_id: str, npc_id: str) -> datetime : Compute and persist time changes.
 #   - delegate_complex_update(actor_response: str, npc_id: str, pc_id: str, initial_changes: dict | None, event_only: bool, world_config: dict | None, scene_chars: list[str] | None) -> str | None : Run complex updates for event-only paths.
+#   - _render_dynamic_state_field_policy(field_types: dict[str, str]) -> str : Render allowed DynamicState fields for extractor prompts.
 #   - _write_updater_diff_snapshot(plan: dict, state_candidates: list[dict], rel_candidate: dict | None, event_candidate: dict | None) -> None : LLM 출력과 diff 결과를 logs/updater_diff.json에 저장.
 #   - _select_event_owner_id(npc_id: str, pc_id: str, participant_ids: list[str]) -> str | None : Choose the relationship anchor for Event updates.
 #   - _apply_event_action(plan: dict, event_allowed: bool, active_event: dict | None, actor_response: str, event_owner_id: str, pc_id: str, participant_ids: list[str], state_candidates: list[dict], rel_candidate: dict | None, guard: dict, feasibility_audit: dict) -> dict | None : Apply Event action from an updater plan.
@@ -23,10 +24,11 @@ from datetime import datetime
 from pathlib import Path
 
 from src.core.database import (
+    get_dynamic_state_field_types,
     update_dynamic_state,
     update_relationship_affinity,
 )
-from src.config import MODEL_COMPLEX_UPDATER as COMPLEX_MODEL
+from src.config import MODEL_COMPLEX_UPDATER as COMPLEX_MODEL, TURN_EXTRACTOR_MODE
 from src.simulation.systems.organic import process_ejaculation
 from src.simulation.state.audit import (
     _audit_event_candidate,
@@ -60,6 +62,11 @@ from src.simulation.state.time_plan import (
     build_time_plan,
     commit_time_plan,
 )
+from src.simulation.state.turn_extractor import (
+    facts_to_primary_plan,
+    load_or_extract_turn_facts,
+    write_extractor_shadow_diff,
+)
 from src.simulation.state.update_policy import (
     has_event_signal,
     should_run_auxiliary_character_updates,
@@ -76,10 +83,16 @@ async def _run_auxiliary_character_updates(
     pc_id: str,
     scene_types: list[str] | None,
     participant_ids: list[str],
+    world_config: dict | None = None,
 ) -> None:
     """Run auxiliary multi-character extractors without blocking main state writes."""
     results = await asyncio.gather(
-        apply_multi_character_state_updates(actor_response, pc_id, participant_ids=participant_ids),
+        apply_multi_character_state_updates(
+            actor_response,
+            pc_id,
+            participant_ids=participant_ids,
+            world_config=world_config,
+        ),
         apply_multi_character_dynamic_information_updates(
             actor_response,
             pc_id,
@@ -92,6 +105,37 @@ async def _run_auxiliary_character_updates(
     for label, result in zip(labels, results):
         if isinstance(result, Exception):
             print(f"[StateUpdater] auxiliary {label} update failed (ignored): {result}")
+
+
+def _compact_world_context_text(text: object, limit: int) -> str:
+    """World prompt text를 상태 추출 프롬프트에 넣을 수 있게 길이 제한합니다."""
+    value = str(text or "").strip()
+    if len(value) <= limit:
+        return value
+    return value[:limit].rstrip() + "\n...[truncated]"
+
+
+def _render_state_world_context(world_config: dict | None) -> str:
+    """월드/시나리오 규범을 상태 추출용 컨텍스트로 렌더링합니다."""
+    sections = (world_config or {}).get("prompt", {}).get("sections", {})
+    parts: list[str] = []
+    world_lore = _compact_world_context_text(sections.get("world"), 1200)
+    if world_lore:
+        parts.append("### World Lore\n" + world_lore)
+    scenario_lore = _compact_world_context_text(sections.get("scenario"), 4200)
+    if scenario_lore:
+        parts.append("### Scenario Lore\n" + scenario_lore)
+    return "\n\n".join(parts) if parts else "(none)"
+
+
+def _render_dynamic_state_field_policy(field_types: dict[str, str]) -> str:
+    """Render allowed DynamicState fields for extractor prompts."""
+    lines = [
+        f"- {name}: {field_type}"
+        for name, field_type in sorted(field_types.items())
+        if name != "id"
+    ]
+    return "\n".join(lines) if lines else "- (schema unavailable; use only named fields below)"
 
 
 async def _run_primary_update(
@@ -174,9 +218,34 @@ Context: {recent_context[-2000:] if recent_context else "(none)"}
 Event action is disabled for this turn. Return action="none" and new_event=null.
 """
 
+    try:
+        field_types = await get_dynamic_state_field_types()
+    except Exception as exc:
+        print(f"[StateUpdater] DynamicState schema fetch failed (prompt fallback): {exc}")
+        field_types = {}
+
+    world_context_block = _render_state_world_context(world_config)
+    state_field_policy = _render_dynamic_state_field_policy(field_types)
     prompt = f"""LITERAL=physical facts (injury/illness/clothing). FIGURATIVE=emotion/metaphor — never touch physical_condition/injury_detail.
 
-DynamicState — extract ONLY changed fields:
+World/Scenario Context:
+{world_context_block}
+
+Use World/Scenario Context when interpreting whether an action implies negative emotion,
+stress, injury, resistance, or social consequence. If the scenario says an action is ordinary,
+expected, remapped, or non-alarming, do NOT infer moral shock, fear, anger, stress, injury, or
+negative thoughts from that action unless the accepted scene explicitly states a lasting state change.
+
+DynamicState — extract ONLY changed existing fields.
+Allowed DynamicState fields are exactly:
+{state_field_policy}
+
+Hard field rule:
+- Never invent new DynamicState keys, traits, axes, counters, tags, or attributes.
+- If a changed trait is not already an allowed field above, omit it entirely.
+- Do not use synonyms or new schema names; choose an allowed field only when it exactly fits.
+
+Preferred field meanings:
 mood: calm/happy/sad/angry/anxious/tired/annoyed/excited
 emotional_state: Korean phrase (e.g. "설렘","불안","안도")
 mental_condition: stable/stressed/anxious/depressed/exhausted
@@ -211,7 +280,8 @@ Scene:
         response = await model.generate_content_async(
             prompt,
             generation_config={"temperature": 0.0, "max_output_tokens": 2048,
-                               "response_mime_type": "application/json"},
+                               "response_mime_type": "application/json",
+                               "log_source": "primary_state_updater"},
         )
     except TimeoutError:
         print("[StateUpdater] primary updater timeout")
@@ -375,6 +445,9 @@ async def process_actor_response(
     manager_effects: dict | None = None,
     history_snapshot: list[dict] | None = None,
     recent_snapshot: list[str] | None = None,
+    thread_id: str | None = None,
+    commit_id: str | None = None,
+    user_input: str = "",
 ) -> str | None:
     """
     Analyze an accepted Actor response and apply persistent state side effects.
@@ -431,6 +504,18 @@ async def process_actor_response(
         manager_effects,
         active_event,
     )
+    extractor_mode = "legacy" if (manager_effects or {}).get("ooc_patch_result") else TURN_EXTRACTOR_MODE
+    turn_facts, extractor_metrics = await load_or_extract_turn_facts(
+        actor_response=actor_response,
+        user_input=user_input,
+        thread_id=thread_id,
+        commit_id=commit_id,
+        npc_id=npc_id,
+        pc_id=pc_id,
+        scene_types=scene_types,
+        scene_chars=scene_chars,
+        mode=extractor_mode,
+    )
 
     if scene_types and not _needs_classification(actor_response, scene_types) and not event_allowed:
         print("[StateUpdater] skipped (no state-relevant change)")
@@ -440,6 +525,7 @@ async def process_actor_response(
                 pc_id,
                 scene_types,
                 participant_ids,
+                world_config=world_config,
             )
         if should_run_secondary_relationship_updates(participant_ids):
             await apply_scene_relationship_updates(
@@ -447,6 +533,7 @@ async def process_actor_response(
                 participant_ids,
                 primary_pair=(npc_id, pc_id),
             )
+        write_extractor_shadow_diff(thread_id, commit_id, turn_facts, None, extractor_metrics)
         return None
 
     if npc_id == pc_id:
@@ -459,15 +546,29 @@ async def process_actor_response(
                 pc_id,
                 scene_types,
                 participant_ids,
+                world_config=world_config,
             )
+        state_plan: dict | None = None
         try:
-            state_plan = await _run_primary_update(
-                actor_response,
-                npc_id,
-                pc_id,
-                world_config,
-                allow_event=False,
-            )
+            if extractor_mode == "unified" and turn_facts:
+                state_plan = facts_to_primary_plan(turn_facts, allow_event=False, npc_id=npc_id, pc_id=pc_id)
+                if not state_plan.get("dynamic_state"):
+                    extractor_metrics["global_fallback_count"] = extractor_metrics.get("global_fallback_count", 0) + 1
+                    state_plan = await _run_primary_update(
+                        actor_response,
+                        npc_id,
+                        pc_id,
+                        world_config,
+                        allow_event=False,
+                    )
+            else:
+                state_plan = await _run_primary_update(
+                    actor_response,
+                    npc_id,
+                    pc_id,
+                    world_config,
+                    allow_event=False,
+                )
             state = dict(state_plan.get("dynamic_state") or {})
             for field in ("stress_level", "workplace_stress_level"):
                 if field in state:
@@ -523,13 +624,16 @@ async def process_actor_response(
             try:
                 # NPC==PC path can still affect a scene partner; organic.py narrows
                 # scene_chars to explicitly mentioned or single-partner candidates.
-                return await process_ejaculation(
+                organic_message = await process_ejaculation(
                     npc_id, actor_response,
                     scene_char_ids=scene_chars,
                     father_id=pc_id,
                 )
+                write_extractor_shadow_diff(thread_id, commit_id, turn_facts, state_plan, extractor_metrics)
+                return organic_message
             except Exception as e:
                 print(f"[PregnancyMgr] processing failed (continuing): {e}")
+        write_extractor_shadow_diff(thread_id, commit_id, turn_facts, state_plan, extractor_metrics)
         return None
 
     # Auxiliary character extraction is independent, but only useful on multi-character or high-signal turns.
@@ -540,26 +644,44 @@ async def process_actor_response(
             pc_id,
             scene_types,
             participant_ids,
+            world_config=world_config,
         ))
     try:
-        plan = await _run_primary_update(
-            actor_response,
-            npc_id,
-            pc_id,
-            world_config,
-            recent_event_context,
-            active_event,
-            allow_event=event_allowed,
-        )
+        if extractor_mode == "unified" and turn_facts:
+            plan = facts_to_primary_plan(turn_facts, allow_event=event_allowed, npc_id=npc_id, pc_id=pc_id)
+            if not any((plan.get("dynamic_state"), plan.get("relationship_delta"), plan.get("new_event"))):
+                extractor_metrics["global_fallback_count"] = extractor_metrics.get("global_fallback_count", 0) + 1
+                plan = await _run_primary_update(
+                    actor_response,
+                    npc_id,
+                    pc_id,
+                    world_config,
+                    recent_event_context,
+                    active_event,
+                    allow_event=event_allowed,
+                )
+        else:
+            plan = await _run_primary_update(
+                actor_response,
+                npc_id,
+                pc_id,
+                world_config,
+                recent_event_context,
+                active_event,
+                allow_event=event_allowed,
+            )
     except Exception as e:
         print(f"[StateUpdater] primary update failed (ignored): {e}")
         if auxiliary_task:
             await auxiliary_task
+        write_extractor_shadow_diff(thread_id, commit_id, turn_facts, None, extractor_metrics)
         return None
     if auxiliary_task:
         await auxiliary_task
     if not plan:
+        write_extractor_shadow_diff(thread_id, commit_id, turn_facts, plan, extractor_metrics)
         return None
+    write_extractor_shadow_diff(thread_id, commit_id, turn_facts, plan, extractor_metrics)
 
     state_candidates: list = []
     rel_candidate: dict | None = None

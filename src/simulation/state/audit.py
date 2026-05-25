@@ -8,6 +8,7 @@
 #   - _needs_classification(actor_response: str, scene_types: list[str]) -> bool : Decide whether LLM classification is needed
 #   - _compact_evidence(evidence: object, max_chars: int = _EVIDENCE_MAX_CHARS) -> str : Keep audit evidence short
 #   - _extract_scene_header(text: str) -> str : Extract the markdown scene header
+#   - _sentence_supports_state_field(sentence: str, field: str, value: object) -> bool : Check whether one sentence supports a state field.
 #   - _audit_state_updates(state: dict, actor_response: str, npc_id: str) -> tuple[dict, list[dict]] : Validate state diffs
 #   - _audit_relationship_delta(delta: object, actor_response: str, npc_id: str, pc_id: str) -> tuple[int | None, dict | None] : Validate relationship deltas
 #   - _clamp_relationship_delta(delta: int) -> int : Limit per-turn affinity movement
@@ -51,6 +52,18 @@ _RELATIONSHIP_ROUTINE_DELTA_CAP = 2
 _RELATIONSHIP_MEANINGFUL_DELTA_CAP = 4
 _EVIDENCE_MAX_CHARS = 160
 _SCENE_HEADER_RE = re.compile(r"^\s*\*\*(?P<header>[^*\n]{1,220})\*\*", re.MULTILINE)
+_STATE_FIELD_EVIDENCE_TERMS = {
+    "outfit": ("옷", "복장", "차림", "체육복", "교복", "유니폼", "갈아입"),
+    "injury_marks": ("상처", "흉터", "자국", "멍", "피", "붉어", "부어"),
+    "injury_detail": ("다치", "상처", "부상", "삐끗", "염좌", "골절", "통증", "아프"),
+    "physical_condition": ("피곤", "지친", "탈진", "아프", "다치", "부상", "병", "입원"),
+    "mental_condition": ("불안", "초조", "우울", "스트레스", "압박", "긴장"),
+    "mood": ("화난", "짜증", "기쁜", "행복", "슬픈", "불안", "피곤", "당황", "어색", "편안", "긴장"),
+    "emotional_state": ("설렘", "불안", "안도", "긴장", "당황", "어색", "흥미", "호기심", "자신감"),
+    "stress_level": ("스트레스", "압박", "긴장", "초조", "불안", "갈등"),
+    "workplace_stress_level": ("직장", "업무", "상사", "동료", "회사", "근무", "압박", "스트레스"),
+    "location_id": ("이동", "간다", "갔다", "향해", "들어", "나와", "도착", "복도", "방", "교실", "체육관"),
+}
 
 
 def _needs_classification(actor_response: str, scene_types: list[str]) -> bool:
@@ -97,7 +110,19 @@ def _extract_scene_header(text: str) -> str:
 def _extract_sentences(text: str) -> list[str]:
     """응답을 짧은 evidence 후보 문장으로 나눕니다."""
     parts = re.split(r"(?<=[.!?。！？])\s+|\n+", text)
-    return [p.strip() for p in parts if p and p.strip()]
+    return [
+        p.strip()
+        for p in parts
+        if p and p.strip() and set(p.strip()) - {"-", "*", "_", "~"}
+    ]
+
+
+def _sentence_supports_state_field(sentence: str, field: str, value: object) -> bool:
+    """Check whether one sentence directly supports a DynamicState field update."""
+    text = sentence.lower()
+    if isinstance(value, str) and value.strip() and value.strip().lower() in text:
+        return True
+    return any(term in sentence for term in _STATE_FIELD_EVIDENCE_TERMS.get(field, ()))
 
 
 def _find_evidence(text: str, field: str, value: object = None) -> str:
@@ -108,18 +133,12 @@ def _find_evidence(text: str, field: str, value: object = None) -> str:
             return _compact_evidence(f"scene header: {header}")
 
     sentences = _extract_sentences(text)
-    if isinstance(value, str) and value:
-        value_l = value.lower()
-        for sentence in sentences:
-            if value_l in sentence.lower():
-                return _compact_evidence(sentence)
-
-    body_sentences = [
-        sentence
-        for sentence in sentences
-        if not _SCENE_HEADER_RE.match(sentence)
-    ]
-    return _compact_evidence(body_sentences[0] if body_sentences else text)
+    for sentence in sentences:
+        if _SCENE_HEADER_RE.match(sentence):
+            continue
+        if _sentence_supports_state_field(sentence, field, value):
+            return _compact_evidence(sentence)
+    return ""
 
 
 def guard_actor_response(
@@ -236,9 +255,8 @@ def _audit_state_updates(state: dict, actor_response: str, npc_id: str) -> tuple
         policy = "commit" if confidence >= _COMMIT_CONFIDENCE and evidence else "hold"
 
         if field == "location_id" and value:
-            confidence = max(confidence, 0.75)
-            evidence = evidence or "location transition inferred from scene"
-            policy = "commit"
+            confidence = 0.75 if evidence else 0.45
+            policy = "commit" if evidence else "hold"
 
         candidates.append(_candidate(
             target=f"Character:{npc_id}/DynamicState",
