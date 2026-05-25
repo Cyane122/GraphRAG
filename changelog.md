@@ -514,3 +514,63 @@
     - `python -m py_compile app.py src\agents\prompt_factory\ooc_handler.py src\agents\manager\planning.py src\agents\manager\queries.py src\agents\manager\effects.py src\agents\context\scene_keys.py src\agents\context\planner.py src\agents\context\generic.py src\ui\actor_stream.py scripts\smoke_arch_stabilization.py`
     - `python scripts\smoke_arch_stabilization.py`
 
+## 2026-05-25
+- [신규] **Actor 출력 blacklist guard 추가**
+  - `src/ui/output_guard.py`, `src/agents/prompt_factory/prompts/blacklist/FORBIDDEN_TERMS.txt` 추가.
+  - Actor 응답을 pending/history/DB commit 전에 검사하고, 금지어가 있으면 최대 2회 비공개 재생성.
+  - 반복 위반 시 해당 응답을 커밋하지 않고 시스템 메시지로 차단 사유를 표시.
+  - `src/ui/actor_stream.py`: `send_output=False` 경로를 추가해 guard 재시도 중에는 중간 응답이 UI에 노출되지 않도록 변경.
+
+- [신규] **스레드별 유저노트 지원**
+  - `data/threads/{thread_id}/usernote.md`를 매 턴 읽어 Dynamic prompt 최상단에 삽입.
+  - `/help`에 유저노트 위치 안내 추가.
+
+- [신규] **카카오톡/SNS 사이드 패널 기반 구현**
+  - `src/simulation/systems/kakao/`, `src/ui/kakao_panel.py`, `public/elements/KakaoPanel.jsx`, `public/social_sidebar.js` 추가.
+  - 톡방 생성, 메시지 큐잉, 초대, 최근 메시지 context 주입, SNS 피드 표시 기반을 구현.
+  - 현재 기본 설정은 카카오톡/인스타그램 모두 강제 비활성화로 변경해 자동 실행되지 않도록 정리.
+
+- [신규] **그래프 디버그 뷰어 확장**
+  - `public/graph/` 정적 뷰어와 `src/ui/graph_loader.py`, `src/ui/graph_writer.py` 추가.
+  - 최근 Event와 Memory 노드를 그래프에 표시하고, 스레드별 Kuzu DB 스냅샷을 직접 불러올 수 있게 변경.
+  - `src/ui/graph_server.py`: 기본 진입점을 `ppt_viewer.html`로 변경.
+  - `/debug graph` 갱신 시 현재 장면 중심 그래프에 Memory/Event 연결을 함께 반영.
+
+- [신규] **시간 규칙 및 스케줄 tick 보강**
+  - `src/simulation/systems/time_rules.py`: Rule 노드에서 시간/일정 관련 힌트를 찾아 Manager world context에 주입.
+  - `src/simulation/systems/schedule_tick.py`: 턴 종료 시 시작된 NPC 스케줄을 감지해 off-scene NPC 위치를 이동하고 경량 Event를 생성.
+  - `src/simulation/systems/needs/location_policy.py`: 욕구 해소 위치 후보를 need type과 스케줄 상태에 따라 제한.
+
+- [개선] **Event / Memory 저장 방식 정리**
+  - active Event가 끝난 턴의 Actor 응답까지 포함해 close summary를 갱신.
+  - Event embedding 기준을 `narrative_summary`가 아니라 canonical `summary`로 단순화.
+  - Memory는 Event summary 복제 대신 캐릭터별 주관 요약을 생성하고, 객관 summary는 `state_summary`에 보존.
+  - `Event` 스키마에 `content`, `status`, `turn_count` 컬럼 추가.
+
+- [개선] **상태/관계 업데이트 오염 방지**
+  - `RELATIONSHIP.current_status`에 현재 자세, 행동, 장면 진행 묘사가 저장되지 않도록 압축/필터링.
+  - 관계 affinity/trust 변화량 상한을 더 보수적으로 조정.
+  - `DynamicInformation.sexual_information`은 현재 행위 묘사가 아니라 durable history summary만 저장하도록 프롬프트와 gating 정리.
+  - NPC=PC self-state 경로에서도 scene partner가 있으면 Event 추출을 수행하도록 보강.
+
+- [개선] **LLM JSON 응답 안정화**
+  - JSON mime 호출에서는 thinking token이 출력 예산을 잠식하지 않도록 `thinking_budget=0`으로 정규화.
+  - JSON 응답이 빈 텍스트로 돌아오면 diagnostics를 남기고 non-JSON streaming 경로로 재시도.
+
+- [개선] **Needs trait 축 재설계**
+  - 기존 단일 trait 목록을 16개 양극 trait-axis로 교체하고 cache version 갱신.
+  - needs multiplier와 memory distortion hint가 새 trait 축을 사용하도록 변경.
+
+- [버그픽스] **임신 감지 smoke check 추가 및 판정 보강**
+  - `tests/smoke_pregnancy_manager.py` 추가.
+  - 질내사정 감지에서 질문/회상/부정/콘돔/비질 삽입 케이스와 명시적 양성 케이스를 smoke check로 검증.
+
+- [문서] **아키텍처 문서 추가**
+  - `docs/ARCHITECTURE.md`, `docs/architecture_analysis.md`, `docs/architecture_validation.md`, `docs/generic_nodes_policy.md`, `docs/long_term_simulation_policy.md` 추가.
+  - turn lifecycle, deferred commit, generic node, 장기 시뮬레이션 정책을 문서화.
+
+- [프롬프트] **프롬프트 개선**
+  - core/checklist/pov/style/emotion/intimate/blacklist 계열 프롬프트를 전반적으로 개선.
+  - 혼합 입력 레이블링이 원문 순서를 보존하도록 수정.
+  - world별 CoT append hook과 통합 blacklist 조립 경로를 보강.
+
