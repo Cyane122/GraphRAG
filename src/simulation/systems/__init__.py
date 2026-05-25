@@ -4,7 +4,7 @@
 # Long-term simulation system facade.
 #
 # Functions
-#   - ensure_memories_for_event(event_id: str, summary: str, importance: int, char_ids: list[str], timestamp: str, embedding: list[float] | None = None, memory_type: str = "episodic", narrative_summary: str = "", state_summary: str = "") -> None : Create character memories for an event.
+#   - ensure_memories_for_event(event_id: str, summary: str, importance: int, char_ids: list[str], timestamp: str, embedding: list[float] | None = None, memory_type: str = "episodic", actor_response: str = "") -> None : Create character memories for an event.
 #   - run_decay(current_game_time: datetime) -> None : Apply memory decay, compression, distortion, and deletion.
 #   - distort_on_affinity_change(char_id: str, pc_id: str, affinity_delta, current_game_time) -> None : Reinterpret memories after large affinity changes.
 #   - ensure_traits(char_id: str) -> dict : Generate and save missing trait_* fields from StaticProfile.

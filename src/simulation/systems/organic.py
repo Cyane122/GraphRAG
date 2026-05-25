@@ -4,7 +4,7 @@
 # 임신 확률 계산 및 생리 주기/임신 상태 관리를 담당합니다.
 #
 # Functions
-#   - detect_internal_ejaculation(actor_response: str) -> bool : regex pre-filter 후 Flash/규칙으로 현재 질내·콘돔 여부 분류
+#   - detect_internal_ejaculation(actor_response: str) -> bool : 명시적 사정 표현 prefilter 후 Flash로 현재 질내·콘돔 여부를 분류
 #   - process_ejaculation(npc_id: str, actor_response: str, scene_char_ids: list[str] | None, intimate_char_ids: list[str] | None) -> str | None : 질내사정 감지 시 확률 계산 후 임신 여부 결정
 #   - set_pregnant_manual(char_ref: str) -> str | None : 이름/ID로 캐릭터를 직접 임신 상태로 전환 (수동 보정용)
 #   - tick_pregnancy_day(npc_id: str, days_passed: int) -> None : 게임 내 날짜 경과 시 pregnancy_day 증가
@@ -43,8 +43,9 @@ DAY_WEIGHT: dict[int, float] = {
     17: 0.10,
 }
 
-# ── 사정·절정 표현 pre-filter (LLM 호출 전 빠른 제외) ──────
-# 독립적인 "쏟아졌다" 같은 동사는 빛/물/가루 묘사와 충돌하므로 성적 맥락이 붙은 표현만 둔다.
+# ── 사정·절정 표현 prefilter/fallback ─────────────────────
+# LLM 호출 전 명시적 사정 묘사가 있는 턴만 통과시키고,
+# Flash 분류 실패 시에는 보수적 fallback으로도 사용합니다.
 _EJAC_RE = re.compile(
     # 직접 사정 표현
     r"질내사정"
@@ -282,8 +283,8 @@ def _text_mentions_ref(actor_response: str, char_id: str, char_name: str) -> boo
 async def detect_internal_ejaculation(actor_response: str) -> bool:
     """임신 가능한 질내사정 여부를 감지한다.
 
-    1단계: regex pre-filter — 사정 표현 없으면 즉시 False
-    2단계: Flash 분류 — 질내 여부·콘돔 상태 판단
+    명시적 사정 표현이 없으면 LLM 호출 없이 False를 반환합니다.
+    표현이 있으면 Flash 분류로 질내 여부·콘돔 상태를 판단합니다.
     Flash 실패 시 명시적·무방비 질내사정 표현이 있을 때만 True.
     """
     analysis = await _analyze_internal_ejaculation(actor_response)
@@ -294,6 +295,7 @@ async def _analyze_internal_ejaculation(actor_response: str) -> dict:
     """Return pregnancy-risk detection details for the accepted response."""
     if not _EJAC_RE.search(actor_response):
         return {"detected": False, "recipient_refs": []}
+
     result = await _classify_ejaculation(actor_response)
     current_ejaculation = result.get("current_ejaculation")
     vaginal          = result.get("vaginal")
@@ -320,9 +322,6 @@ async def _analyze_internal_ejaculation(actor_response: str) -> dict:
     if not vaginal:
         return {"detected": False, "recipient_refs": recipient_refs}
     if condom_protected:
-        return {"detected": False, "recipient_refs": recipient_refs}
-    if _NON_ACTUAL_EJAC_CONTEXT_RE.search(actor_response):
-        print("[PregnancyMgr] ejac classify override → non-actual context")
         return {"detected": False, "recipient_refs": recipient_refs}
     return {"detected": True, "recipient_refs": recipient_refs}
 

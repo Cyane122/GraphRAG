@@ -1,10 +1,10 @@
 ﻿# ================================
 # src/simulation/systems/needs/traits.py
 #
-# Fill missing trait values from NPC StaticProfile and DynamicState.
+# Fill missing bipolar trait-axis values from NPC StaticProfile and DynamicState.
 #
 # Functions
-#   - ensure_traits(char_id: str) -> dict : Generate and save missing trait_* fields with the LLM
+#   - ensure_traits(char_id: str) -> dict : Generate and save missing bipolar trait_* fields with the LLM
 #   - ensure_traits_for_characters(characters: list[dict]) -> dict : Initialize traits from a character list
 #   - _has_nonzero_traits(props: dict) -> bool : Return whether saved traits contain a real bias
 #   - _trait_cache_context() -> tuple[str, str] : Return active world/scenario cache context
@@ -29,27 +29,47 @@ from src.core.database import async_driver
 from src.core.llm.client import get_model, extract_json_from_llm
 
 ALL_TRAIT_KEYS = [
-    "trait_laziness", "trait_vitality", "trait_gluttony", "trait_light_sleeper",
-    "trait_sensitivity", "trait_extroversion", "trait_introversion",
-    "trait_attention_seeking", "trait_independence", "trait_empathy", "trait_jealousy",
-    "trait_ambition", "trait_perfectionism", "trait_curiosity", "trait_control_need",
-    "trait_achievement_drive", "trait_anxiety_prone",
-    "trait_hedonism", "trait_impulsivity", "trait_adventurousness",
-    "trait_comfort_seeking", "trait_indulgence", "trait_risk_aversion",
-    "trait_attachment", "trait_possessiveness", "trait_trust", "trait_loyalty",
-    "trait_intimacy_drive", "trait_dependency",
-    "trait_responsibility", "trait_self_esteem", "trait_morality",
-    "trait_pride", "trait_diligence", "trait_stubbornness", "trait_libido_drive",
+    "trait_direction_of_energy",
+    "trait_recognition",
+    "trait_judgement",
+    "trait_life_pattern",
+    "trait_achievement_orientation",
+    "trait_emotional_reactivity",
+    "trait_attachment_orientation",
+    "trait_social_attention",
+    "trait_control_orientation",
+    "trait_moral_orientation",
+    "trait_pleasure_orientation",
+    "trait_trust_orientation",
+    "trait_vitality",
+    "trait_self_esteem",
+    "trait_empathy",
+    "trait_relational_exclusivity",
 ]
 
-REQUIRED_KEYS = [
-    "trait_laziness", "trait_vitality", "trait_extroversion",
-    "trait_hedonism", "trait_anxiety_prone", "trait_libido_drive",
-    "trait_attachment", "trait_ambition", "trait_impulsivity",
-]
+REQUIRED_KEYS = ALL_TRAIT_KEYS
 
-_CACHE_VERSION = 1
+_CACHE_VERSION = 2
 _DEFAULT_SCENARIO_ID = "default"
+
+TRAIT_AXIS_DESCRIPTIONS = {
+    "trait_direction_of_energy": "Direction of Energy: extroverted(+), introverted(-). Where the character gains energy.",
+    "trait_recognition": "Recognition: sensing(+), intuitive(-). How the character processes information.",
+    "trait_judgement": "Judgement: rational(+), emotional(-). What the character bases decisions on.",
+    "trait_life_pattern": "Life Pattern: planned(+), spontaneous(-). How the character structures life.",
+    "trait_achievement_orientation": "Achievement Orientation: achievement-oriented(+), stability-oriented(-). How the character approaches challenge.",
+    "trait_emotional_reactivity": "Emotional Reactivity: sensitive(+), insensitive(-). How well the character notices emotional shifts around them.",
+    "trait_attachment_orientation": "Attachment Orientation: dependent(+), independent(-). How the character forms attachment.",
+    "trait_social_attention": "Social Attention: attention-seeking(+), low-exposure(-). Whether the character likes being noticed.",
+    "trait_control_orientation": "Control Orientation: leading(+), compliant(-). How the character handles situations.",
+    "trait_moral_orientation": "Moral Orientation: principle-centered(+), pragmatic compromise(-). How the character applies moral principles.",
+    "trait_pleasure_orientation": "Pleasure Orientation: pleasure-seeking(+), restrained(-). How openly the character follows desire.",
+    "trait_trust_orientation": "Trust Orientation: trusting(+), guarded(-). Whether the character trusts others easily.",
+    "trait_vitality": "Vitality: energetic(+), low-vitality(-). Whether the character's activity level is high.",
+    "trait_self_esteem": "Self-Esteem: high self-esteem(+), low self-esteem(-). How strongly the character values themself.",
+    "trait_empathy": "Empathy: empathic(+), cold(-). How much the character empathizes with others' emotions.",
+    "trait_relational_exclusivity": "Relational Exclusivity: possessive(+), open(-). How the character views others' relationships.",
+}
 
 
 # ════════════════════════════════════════════════════════════
@@ -68,8 +88,8 @@ def _has_nonzero_traits(props: dict) -> bool:
 
 async def ensure_traits(char_id: str) -> dict:
     """
-    StaticProfile (또는 DynamicState) 에 trait_* 필드가 없으면
-    Haiku로 생성해 DB에 저장 후 반환.
+    StaticProfile (또는 DynamicState)에 16개 trait 축이 없으면
+    LLM으로 생성해 DB에 저장 후 반환.
     이미 존재하면 DB 조회 결과 그대로 반환 (LLM 호출 없음).
     """
     profile, source_label = await _load_profile(char_id)
@@ -107,7 +127,7 @@ async def ensure_traits(char_id: str) -> dict:
                 parts = [v for v in (dyn_row.get("bf"), dyn_row.get("mood"), dyn_row.get("mc")) if v]
                 personality = " | ".join(parts)
 
-    print(f"[TraitsInit] {char_id}: trait_* 없음 → Haiku 생성 중...")
+    print(f"[TraitsInit] {char_id}: 새 trait 축 없음 → LLM 생성 중...")
 
     generated = await _generate_traits_from_personality(char_id, personality, role, str(age))
     if not generated:
@@ -178,8 +198,11 @@ async def _load_profile(char_id: str) -> tuple[dict, str]:
 async def _generate_traits_from_personality(
     char_id: str, personality: str, role: str, age: str
 ) -> dict:
-    """Haiku에 personality 문자열을 주고 trait 점수 JSON을 생성한다."""
-    keys_inline = ", ".join(ALL_TRAIT_KEYS)
+    """LLM에 personality 문자열을 주고 16개 양극 trait 축 점수 JSON을 생성한다."""
+    keys_inline = "\n".join(
+        f'- "{key}": {description}'
+        for key, description in TRAIT_AXIS_DESCRIPTIONS.items()
+    )
 
     system_instruction = (
         "You are a character trait analyzer. "
@@ -187,12 +210,21 @@ async def _generate_traits_from_personality(
         "Your response must start with { and end with }."
     )
 
-    prompt = f"""Generate trait scores for {char_id} (age={age}, role={role}):
+    prompt = f"""Generate bipolar trait-axis scores for {char_id} (age={age}, role={role}):
 {personality}
 
-Output: single JSON w/ ALL {len(ALL_TRAIT_KEYS)} keys — float -1.0 to 1.0 (positive=trait present, negative=opposite, 0=neutral).
-Keys: {keys_inline}
-Examples: "calm/logical/aloof"→extroversion:-0.4,impulsivity:-0.6; "loud/energetic"→extroversion:0.9,vitality:0.8; "strict/perfectionist"→diligence:0.9,perfectionism:0.9
+Output: a single JSON object with exactly ALL {len(ALL_TRAIT_KEYS)} keys below.
+Each value must be a float from -1.0 to +1.0.
+Positive and negative are not superior/inferior; they only represent opposite concepts.
+Example: trait_direction_of_energy=-0.7 means introverted 0.7.
+
+Keys and meanings:
+{keys_inline}
+
+Examples:
+- "calm/logical/aloof" -> trait_judgement:0.7, trait_direction_of_energy:-0.5, trait_life_pattern:0.2
+- "loud/energetic/social" -> trait_direction_of_energy:0.9, trait_social_attention:0.5, trait_vitality:0.8
+- "strict/perfectionist/principled" -> trait_life_pattern:0.8, trait_moral_orientation:0.7, trait_control_orientation:0.4
 
 Return ONLY raw JSON."""
 
@@ -228,7 +260,7 @@ Return ONLY raw JSON."""
         return result
 
     except Exception as e:
-        print(f"[TraitsInit] Flash 생성 실패 ({char_id}): {e} → 저장 생략")
+        print(f"[TraitsInit] LLM 생성 실패 ({char_id}): {e} → 저장 생략")
         return {}
 
 
@@ -253,6 +285,7 @@ async def _write_traits_to_db(char_id: str, source_label: str, traits: dict) -> 
                 current = json.loads(row["props_json"])
             except (ValueError, TypeError):
                 pass
+        current = {key: value for key, value in current.items() if not key.startswith("trait_")}
         current.update(traits)
         props_json = json.dumps(current, ensure_ascii=False)
         if row:

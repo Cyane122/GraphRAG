@@ -5,7 +5,7 @@
 # 왜곡과 압축은 배치 처리로 LLM 호출 횟수를 최소화합니다.
 #
 # Functions
-#   - ensure_memories_for_event(event_id: str, summary: str, importance: int, char_ids: list[str], timestamp: str, embedding: list[float] | None = None, memory_type: str = "episodic", narrative_summary: str = "", state_summary: str = "") -> None : Event에 관련된 캐릭터별 Memory 노드 생성
+#   - ensure_memories_for_event(event_id: str, summary: str, importance: int, char_ids: list[str], timestamp: str, embedding: list[float] | None = None, memory_type: str = "episodic", actor_response: str = "") -> None : Event에 관련된 캐릭터별 Memory 노드 생성
 #   - run_decay(current_game_time: datetime) -> None : 게임 내 시간 경과에 따라 기억 풍화·왜곡·삭제
 #   - distort_on_affinity_change(char_id: str, pc_id: str, affinity_delta: int, current_game_time: datetime) -> None : 호감도 급변 시 관련 기억을 즉시 재해석
 # ================================
@@ -40,6 +40,86 @@ def _get_decay_rule(importance: int) -> dict:
     return {"distort": None, "level1": None, "level2": None, "delete": None}
 
 
+def _fallback_memory_summary(char_id: str, summary: str, multi_character: bool) -> str:
+    """캐릭터별 Memory 생성 실패 시 사용할 최소 주관화 문장을 반환한다."""
+    if not multi_character:
+        return summary
+    return f"{char_id}의 기억: {summary}"
+
+
+async def _build_subjective_memory_summaries(
+    event_id: str,
+    summary: str,
+    char_ids: list[str],
+    actor_response: str,
+) -> dict[str, str]:
+    """Actor 응답과 객관 Event 요약에서 캐릭터별 주관 Memory 문장을 생성한다."""
+    if not actor_response.strip() or not summary.strip() or not char_ids:
+        return {}
+
+    prompt = f"""Create character-specific Memory summaries for one roleplay event.
+
+Rules:
+- Korean, one concise sentence per character.
+- Keep objective facts aligned with the Event summary.
+- Write from what each character plausibly perceived or was involved in.
+- Do not invent hidden motives, private thoughts, or facts not visible in the scene.
+- If the scene gives no character-specific angle, still phrase the memory from that character's involvement.
+
+Event id: {event_id}
+Characters: {json.dumps(char_ids, ensure_ascii=False)}
+Objective Event summary: {summary}
+
+Scene:
+{actor_response[:2500]}
+
+Return ONLY JSON object:
+{{"character_id": "subjective memory sentence"}}"""
+
+    try:
+        model = get_model(
+            DECAY_MODEL,
+            system_prompt="Create concise character-perspective memories from accepted roleplay scenes.",
+        )
+        resp = await model.generate_content_async(
+            prompt,
+            generation_config={
+                "temperature": 0.0,
+                "max_output_tokens": 768,
+                "response_mime_type": "application/json",
+            },
+        )
+        parsed = extract_json_from_llm(resp.text, source="memory_subjective_create")
+    except Exception as exc:
+        print(f"[DecayManager] 주관 Memory 생성 실패: {exc}")
+        return {}
+
+    if not isinstance(parsed, dict):
+        return {}
+
+    summaries: dict[str, str] = {}
+    allowed = set(char_ids)
+    for key, value in parsed.items():
+        char_id = str(key).strip()
+        memory = str(value or "").strip()
+        if char_id in allowed and memory:
+            summaries[char_id] = memory
+    return summaries
+
+
+async def _memory_embedding(memory_summary: str, shared_embedding: list[float] | None, event_summary: str) -> list[float] | None:
+    """Memory 문장에 맞는 임베딩을 반환하되 동일 문장은 Event 임베딩을 재사용한다."""
+    if shared_embedding is not None and memory_summary == event_summary:
+        return shared_embedding
+    if not memory_summary:
+        return shared_embedding
+    try:
+        return await embed_async(memory_summary)
+    except Exception as e:
+        print(f"[DecayManager] Memory 임베딩 생성 실패: {e}")
+    return shared_embedding
+
+
 # ════════════════════════════════════════════════════════════
 # 1. Memory 노드 생성
 # ════════════════════════════════════════════════════════════
@@ -52,12 +132,11 @@ async def ensure_memories_for_event(
     timestamp:  str,
     embedding:  list[float] | None = None,
     memory_type: str = "episodic",
-    narrative_summary: str = "",
-    state_summary: str = "",
+    actor_response: str = "",
 ) -> None:
     """
     Event에 관련된 캐릭터별 Memory 노드를 생성.
-    중요도와 관계없이 Event에 관련된 각 캐릭터의 원본 Memory를 생성한다.
+    객관 Event summary를 복제하지 않고 캐릭터별 주관 문장으로 저장한다.
 
     timestamp: 반드시 ISO 8601 형식 ("2024-03-08T08:00:00").
     """
@@ -68,9 +147,22 @@ async def ensure_memories_for_event(
         except Exception as e:
             print(f"[DecayManager] 임베딩 생성 실패: {e}")
 
+    subjective_summaries = await _build_subjective_memory_summaries(
+        event_id=event_id,
+        summary=summary,
+        char_ids=char_ids,
+        actor_response=actor_response,
+    )
+    multi_character = len(char_ids) > 1
+
     async with async_driver.session() as session:
         for char_id in char_ids:
             mem_id = f"mem_{char_id}_{event_id}"
+            memory_summary = subjective_summaries.get(
+                char_id,
+                _fallback_memory_summary(char_id, summary, multi_character),
+            )
+            memory_emb = await _memory_embedding(memory_summary, emb, summary)
 
             rec = await session.run(
                 "MATCH (m:Memory {id: $mid}) RETURN m.id AS id",
@@ -87,8 +179,8 @@ async def ensure_memories_for_event(
                     summary:          $summary,
                     embedding:        $emb,
                     memory_type:      $memory_type,
-                    narrative_summary: $narrative_summary,
-                    state_summary:    $state_summary,
+                    narrative_summary: '',
+                    state_summary:    $event_summary,
                     importance:       $importance,
                     distortion_level: 0.0,
                     summary_level:    0,
@@ -96,8 +188,8 @@ async def ensure_memories_for_event(
                     last_decayed_at:  $ts
                 })
             """, mid=mem_id, event_id=event_id, char_id=char_id,
-                 summary=summary, emb=emb, memory_type=memory_type,
-                 narrative_summary=narrative_summary, state_summary=state_summary,
+                 summary=memory_summary, emb=memory_emb, memory_type=memory_type,
+                 event_summary=summary,
                  importance=importance, ts=timestamp)
 
             await session.run("""

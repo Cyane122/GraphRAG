@@ -5,13 +5,12 @@
 #
 # Functions
 #   - apply_scene_relationship_updates(actor_response: str, participant_ids: list[str], primary_pair: tuple[str, str] | None = None) -> list[dict[str, Any]] : Update RELATIONSHIP edges touched by a scene.
-#   - _bounded_score_update(current_value: object, requested_value: int | None, field: str, actor_response: str) -> int | None : Limit secondary relationship score jumps.
+#   - _bounded_score_update(current_value: object, requested_value: int | None, field: str) -> int | None : Limit secondary relationship score jumps.
 # ================================
 
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -21,14 +20,7 @@ from src.core.database import async_driver, update_relationship_fields
 
 
 _AFFINITY_STEP_CAP = 2  # milestone 구분 없음 — affinity는 항상 소폭 상한
-_TRUST_MEANINGFUL_STEP_CAP = 3
-_TRUST_MILESTONE_STEP_CAP = 6
-_TRUST_MILESTONE_RE = re.compile(
-    r"(confess|confession|reconcile|reconciliation|breakup|betray|saved|rescue|"
-    r"first intimacy|near-death|life-saving|고백|화해|이별|배신|구해|구했다|구해줬|"
-    r"목숨|첫 관계|결정적|돌이킬 수)",
-    re.IGNORECASE,
-)
+_TRUST_STEP_CAP = 3
 
 
 class RelationshipTarget(BaseModel):
@@ -172,7 +164,7 @@ Extract relationship changes from scene. Use only source_id/target_id from targe
 Updates:
 affinity: -100..100 absolute (not delta). trust: -100..100 absolute.
 rel_type: acquaintance/stranger/classmate/coworker/friend/rival/family/lover/ex/customer/mentor
-current_status: 1 concise sentence (after scene). summary: 1-2 sentences for durable changes only.
+current_status: 1 concise sentence about how source currently regards/feels about target after the scene. It is NOT what they are physically doing now. summary: 1-2 sentences for durable changes only.
 
 Rules:
 - Omit unchanged edges. Skip main PC/NPC pair.
@@ -183,6 +175,7 @@ Rules:
 - Trust grows slower — no increase from embarrassment/attraction/politeness/compliance alone.
 - First meetings: low nonzero trust OK if they directly interacted.
 - If A/B views differ → return both directed edges.
+- current_status must describe relationship attitude/dynamic only; do not include current actions, positions, scene activity, or "currently/now" details.
 
 Return ONLY valid JSON:
 {{
@@ -232,7 +225,6 @@ def _bounded_score_update(
     current_value: object,
     requested_value: int | None,
     field: str,
-    actor_response: str,
 ) -> int | None:
     """Limit secondary relationship score jumps before writing absolute values."""
     if requested_value is None:
@@ -246,11 +238,7 @@ def _bounded_score_update(
     if requested == current:
         return None
 
-    if field == "trust":
-        milestone = bool(_TRUST_MILESTONE_RE.search(actor_response or ""))
-        cap = _TRUST_MILESTONE_STEP_CAP if milestone else _TRUST_MEANINGFUL_STEP_CAP
-    else:
-        cap = _AFFINITY_STEP_CAP
+    cap = _TRUST_STEP_CAP if field == "trust" else _AFFINITY_STEP_CAP
 
     diff = requested - current
     if abs(diff) <= cap:
@@ -261,12 +249,11 @@ def _bounded_score_update(
 def _updates_for_db(
     update: RelationshipUpdate,
     target: RelationshipTarget,
-    actor_response: str,
 ) -> dict[str, Any]:
     """Map model field names to RELATIONSHIP property names."""
     data: dict[str, Any] = {}
-    affinity = _bounded_score_update(target.current.get("affinity"), update.affinity, "affinity", actor_response)
-    trust = _bounded_score_update(target.current.get("trust"), update.trust, "trust", actor_response)
+    affinity = _bounded_score_update(target.current.get("affinity"), update.affinity, "affinity")
+    trust = _bounded_score_update(target.current.get("trust"), update.trust, "trust")
     if affinity is not None:
         current_trust = _as_int(target.current.get("trust")) or 0
         current_affinity = _as_int(target.current.get("affinity")) or 0
@@ -308,7 +295,7 @@ async def apply_scene_relationship_updates(
         edge = (item.source_id, item.target_id)
         if edge not in allowed_edges:
             continue
-        updates = _updates_for_db(item, target_by_edge[edge], actor_response)
+        updates = _updates_for_db(item, target_by_edge[edge])
         if not updates:
             continue
         await update_relationship_fields(item.source_id, item.target_id, updates)

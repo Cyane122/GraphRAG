@@ -19,6 +19,7 @@ from src.core.embedding.encoder import embed_async
 from src.simulation.systems.memory import ensure_memories_for_event
 from src.simulation.state.audit import _prepare_event_summaries
 
+
 async def _fetch_active_event(npc_id: str, pc_id: str) -> dict | None:
     """RELATIONSHIP.active_event_id에서 현재 열린 이벤트를 조회한다."""
     async with async_driver.session() as session:
@@ -63,9 +64,7 @@ Content:
 
 Return ONLY valid JSON with factual Event text only. Do not add speculation, emotion attribution, or memory distortion:
 {{
-  "summary": "2-4 sentence Korean factual record (who, what, how it concluded)",
-  "narrative_summary": "1 sentence actor hook",
-  "state_summary": "1 sentence factual (who did what, outcome)"
+  "summary": "2-4 sentence Korean factual record (who, what, how it concluded)"
 }}"""
 
     try:
@@ -86,23 +85,22 @@ Return ONLY valid JSON with factual Event text only. Do not add speculation, emo
 
 
 async def _update_event_memories(event_id: str, new_summaries: dict) -> None:
-    """이벤트 닫힘 후 관련 Memory 노드 summary를 갱신한다."""
+    """이벤트 닫힘 후 관련 Memory의 객관 참조 필드만 갱신한다."""
     summary = new_summaries.get("summary", "")
     if not summary:
         return
     async with async_driver.session() as session:
         await session.run("""
             MATCH (m:Memory)-[:OF_EVENT]->(e:Event {id: $eid})
-            SET m.summary = $summary,
-                m.narrative_summary = $ns,
-                m.state_summary = $ss
-        """, eid=event_id, summary=summary,
-             ns=new_summaries.get("narrative_summary", ""),
-             ss=new_summaries.get("state_summary", ""))
+            SET m.state_summary = $summary
+        """, eid=event_id, summary=summary)
 
 
-async def _close_event(event_id: str, npc_id: str, pc_id: str) -> None:
-    """이벤트를 닫고 누적 내용을 압축해 최종 summary를 갱신한다."""
+async def _close_event(event_id: str, npc_id: str, pc_id: str, actor_response: str = "") -> None:
+    """이벤트를 닫고 닫힘 턴까지 포함해 최종 summary를 갱신한다."""
+    if actor_response:
+        await _append_to_event(event_id, actor_response)
+
     async with async_driver.session() as session:
         rec = await session.run(
             "MATCH (e:Event {id: $eid}) RETURN e.content AS content, e.turn_count AS turns",
@@ -115,7 +113,7 @@ async def _close_event(event_id: str, npc_id: str, pc_id: str) -> None:
     content = row.get("content") or ""
     turns = int(row.get("turns") or 1)
     new_summaries: dict = {}
-    if turns > 1 and content:
+    if content:
         new_summaries = await _compress_event_content(content, turns)
 
     async with async_driver.session() as session:
@@ -144,6 +142,9 @@ async def _close_event(event_id: str, npc_id: str, pc_id: str) -> None:
 
 async def _apply_relationship_status(char_a: str, char_b: str, new_status: str) -> None:
     """RELATIONSHIP 양방향 current_status를 갱신한다."""
+    if not new_status:
+        return
+
     async with async_driver.session() as session:
         for a, b in [(char_a, char_b), (char_b, char_a)]:
             await session.run("""
@@ -188,13 +189,13 @@ Importance:
 8-10: Major (hospitalization/surgery/accident/confession)
 5-7: Significant (major injury/near-breakup/VERY FIRST emotional intimacy/public humiliation)
 2-4: Minor durable (new injury/new named char/promise/secret/gift/location transition/small durable conflict/repeated sex incl. arrangement)
-0-1: Routine or atmospheric, but still create when a concrete in-world event occurred.
+0-1: Routine or atmospheric. Do NOT create unless it creates a durable record worth remembering later.
 
-Create for any concrete accepted event regardless of importance. Return null only when no in-world event occurred.
+Create only for events that change durable story state, relationship context, location, commitments, injuries, secrets, gifts, named encounters, or a multi-turn scene anchor. Routine meals, sitting, waiting, casual small talk, and atmosphere should usually return null.
 id: {{location}}_{{description}}_{{YYYYMMDD_HHMM}}
-importance >= 7 → new_relationship_status: 1-3 English sentences (state AFTER).
+importance >= 7 → new_relationship_status: 1-3 English sentences about how they regard each other after the event. This is not their current physical activity; exclude current actions, positions, scene activity, and "currently/now" details.
 summary: 1-2 sentence Korean factual record; only observed facts, no subjective distortion or speculation.
-Include: importance 0-10, memory_type (episodic/emotional/relational), narrative_summary (1 sentence Actor hook), state_summary (1 sentence factual).
+Include: importance 0-10 and memory_type (episodic/emotional/relational).
 
 Return ONLY valid JSON:
 {{
@@ -287,10 +288,9 @@ async def _create_event(
     related_char_ids = list(dict.fromkeys(participant_ids or [npc_id, pc_id]))
 
     embedding = None
-    embedding_text = prepared["narrative_summary"] or summary
-    if embedding_text:
+    if summary:
         try:
-            embedding = await embed_async(embedding_text)
+            embedding = await embed_async(summary)
         except Exception as e:
             print(f"[Updater] 임베딩 생성 실패 (무시): {e}")
 
@@ -348,8 +348,7 @@ async def _create_event(
         timestamp  = timestamp_iso,
         embedding  = embedding,
         memory_type=prepared["memory_type"],
-        narrative_summary=prepared["narrative_summary"],
-        state_summary=prepared["state_summary"],
+        actor_response=actor_response,
     )
 
 
@@ -383,7 +382,7 @@ Previous: {current_summary or "(none yet)"}
 State: affinity={affinity}, trust={trust}
 Event (importance={event_importance}): {event_summary}
 
-2-3 sentences reflecting state AFTER. Capture: current dynamic, emotional undercurrents, unresolved tensions or new intimacy. Present tense. Korean OK.
+2-3 sentences reflecting relationship state AFTER. Capture how they regard each other, emotional undercurrents, unresolved tensions or new intimacy. Present tense. Korean OK. Do not describe what they are physically doing now.
 
 Return ONLY JSON: {{"summary": "..."}}"""
 

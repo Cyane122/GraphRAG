@@ -11,7 +11,7 @@
 # Functions
 #   - _read_optional_prompt(relative_path: str) -> str : prompts/ 하위 Markdown 파일 읽기
 #   - _format_prompt_vars(text: str, *, char_name: str, user_name: str, for_add: str) -> str : 프롬프트 변수 치환
-#   - _label_mixed_input(user_input: str, user_name: str) -> str : *...* 상황설명과 PC 대사를 레이블링
+#   - _label_mixed_input(user_input: str, user_name: str) -> str : *...* 상황설명과 PC 대사를 원문 순서대로 레이블링
 # ================================
 
 import re
@@ -374,7 +374,7 @@ _OOC_SPAN_RE = re.compile(r"(?<!\*)\*(?!\*)(.*?)(?<!\*)\*(?!\*)", re.DOTALL)
 
 
 def _label_mixed_input(user_input: str, user_name: str) -> str:
-    """*...* 상황설명과 PC 대사가 섞인 입력을 레이블링합니다.
+    """*...* 상황설명과 PC 대사가 섞인 입력을 원문 순서대로 레이블링합니다.
 
     *PC가 손을 잡는다* 왜 그래요?
     →
@@ -383,14 +383,30 @@ def _label_mixed_input(user_input: str, user_name: str) -> str:
 
     OOC 없이 순수 대사만 있으면 원본 반환.
     """
-    ooc_spans = _OOC_SPAN_RE.findall(user_input)
-    if not ooc_spans:
+    if not _OOC_SPAN_RE.search(user_input):
         return user_input
 
-    rp_text = _OOC_SPAN_RE.sub("", user_input).strip()
-    if not rp_text:
-        return user_input
+    parts: list[str] = []
+    cursor = 0
+    has_rp_text = False
 
-    parts = [f"[상황] {span.strip()}" for span in ooc_spans if span.strip()]
-    parts.append(f"[{user_name}] {rp_text}")
+    for match in _OOC_SPAN_RE.finditer(user_input):
+        rp_text = user_input[cursor:match.start()].strip()
+        if rp_text:
+            parts.append(f"[{user_name}] {rp_text}")
+            has_rp_text = True
+
+        situation = match.group(1).strip()
+        if situation:
+            parts.append(f"[상황] {situation}")
+
+        cursor = match.end()
+
+    rp_text = user_input[cursor:].strip()
+    if rp_text:
+        parts.append(f"[{user_name}] {rp_text}")
+        has_rp_text = True
+
+    if not has_rp_text:
+        return user_input
     return "\n".join(parts)

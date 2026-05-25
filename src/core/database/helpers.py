@@ -8,6 +8,7 @@
 #   - ensure_location(location_id: str | None, name: str, description: str = "", prompt_hint: str = "", parent_location_id: str | None = None, tags: list[str] | None = None, prompt_priority: int = 8) -> str : Location node create/update helper
 #   - update_dynamic_state(char_id: str, updates: dict) -> None : DynamicState 노드 속성 공통 업데이트
 #   - update_relationship_affinity(char_a: str, char_b: str, delta: int) -> None : 호감도 공통 업데이트 (양방향, ±100 상한)
+#   - _compact_relationship_status(value: object) -> str | None : Remove scene-action detail from RELATIONSHIP current_status.
 #   - move_location(char_id: str, new_loc_id: str) -> None : 캐릭터 장소 이동 공통 로직
 #   - advance_cycle_day(char_id: str, days: int) -> None : 생리/바이오리듬 일자 공통 업데이트
 #   - get_in_universe_time() -> str : GlobalState에서 현재 인게임 시간을 YYYYMMDD_HHMM 형식으로 반환
@@ -330,6 +331,17 @@ async def update_relationship_affinity(char_a: str, char_b: str, delta: int) -> 
 
 RELATIONSHIP_FIELDS = {"type", "affinity", "trust", "current_status", "summary", "last_interaction"}
 RELATIONSHIP_INT_FIELDS = {"affinity", "trust"}
+_SCENE_ACTION_STATUS_RE = re.compile(
+    r"^\s*(currently|now|right now|at the moment|during this scene|in this scene|"
+    r"현재|지금|이번\s*장면|이\s*장면|그\s*순간)\b",
+    re.IGNORECASE,
+)
+_SCENE_ACTION_PHRASE_RE = re.compile(
+    r"\b(currently|now|right now|at the moment)\b.*\b("
+    r"doing|having|sitting|standing|lying|kissing|touching|talking|arguing|"
+    r"walking|eating|drinking|wearing|holding|moving|waiting)\b",
+    re.IGNORECASE,
+)
 
 
 def _clamp_relationship_score(value: object) -> int | None:
@@ -338,6 +350,25 @@ def _clamp_relationship_score(value: object) -> int | None:
     if raw_value is None:
         return None
     return max(-100, min(100, raw_value))
+
+
+def _compact_relationship_status(value: object) -> str | None:
+    """Remove scene-action detail from RELATIONSHIP current_status."""
+    if not isinstance(value, str):
+        return None
+
+    sentences = re.split(r"(?<=[.!?。])\s+", value.strip())
+    durable_sentences = [
+        sentence.strip()
+        for sentence in sentences
+        if (
+            sentence.strip()
+            and not _SCENE_ACTION_STATUS_RE.search(sentence)
+            and not _SCENE_ACTION_PHRASE_RE.search(sentence)
+        )
+    ]
+    compacted = " ".join(durable_sentences).strip()
+    return compacted or None
 
 
 def _normalize_relationship_updates(updates: dict) -> dict:
@@ -350,6 +381,11 @@ def _normalize_relationship_updates(updates: dict) -> dict:
             score = _clamp_relationship_score(value)
             if score is not None:
                 normalized[field] = score
+            continue
+        if field == "current_status":
+            compacted = _compact_relationship_status(value)
+            if compacted:
+                normalized[field] = compacted
             continue
         normalized[field] = str(value)
     return normalized

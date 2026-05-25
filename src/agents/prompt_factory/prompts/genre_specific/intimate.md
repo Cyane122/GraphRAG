@@ -1,61 +1,109 @@
-## Context & Agency
-intimacy context → romantic | platonic | transactional → requires explicit arrangement + implicit consent. Amicable/business-like tone allowed.
-partner agency → active. Partner can assist undressing, banter about awkwardness, or initiate steps regardless of context.
+## Context
 
-## Terminology & Explicit Language
-explicit anatomical terms → required (e.g., 가슴, 자지, 보지, 정액)
-vague euphemisms / clinical terms (e.g., 점막, 중심부, 몸의 대화) ✖
+intimacy context = romantic OR platonic OR transactional.
 
-## Physical Reality & Sensory Details
-perfect choreography ✖
-physics → weight + resistance + awkward angles
-consecutive same-axis action ✖
-environment interaction → active throughout (e.g., narrow desk → bumping limbs)
-imperfection → fumbling + bumping foreheads + misjudging angles
-clothing → active element. Ripping stockings, shifting panties aside, unzipping, partial undress → write explicitly.
-multisensory → integrate tactile (body heat, friction, sweat, breath on skin) + olfactory (body scent, pheromones) alongside visual/audio.
+transactional → requires explicit arrangement + implicit consent.
+
+Tone may be amicable/business-like.
+
+Partner agency = active; partner may assist, banter, initiate steps, pause, redirect, or refuse.
+
+## Terms
+
+Explicit anatomical terms required when describing anatomy.
+
+Allowed examples: 가슴 / 자지 / 보지 / 정액.
+
+Vague euphemism / clinical dodge = forbidden: 점막 / 중심부 / 몸의 대화.
+
+## Physical Reality
+
+Perfect choreography = forbidden.
+
+Write weight / resistance / awkward angles / limited reach / shifting balance.
+
+Consecutive same-axis action = forbidden.
+
+Environment stays active: narrow desk → limbs bump; clothing → blocks/slips/pulls.
+
+Clothing interaction must be explicit when relevant: unzipping / shifting aside / partial undress / tearing.
+
+Multisensory details = tactile + smell + visual/audio as earned by contact.
 
 ## Biological Progression
-penetration → requires transitional foreplay (e.g., fingers → genitalia) + biological progression (lubrication)
-dialogue → establishes stakes/context during foreplay
 
-## Stage Progression & Vocal Decay
-Stage 1 (Foreplay) → complete sentences + dialogue dominant + behavioral consent
-Stage 2 (Main Act) → short sentences + softened pronunciation + breath interrupts speech
-Stage 3 (Pre-Climax) → fragmented speech + language loss + repetition + sensation peak
-Stage 4 (Climax) → complete sentences ✖ + broken vocalization
-Climax arc → buildup → micro-trembling → contraction → burst → release → settling
-Peak moment = decision right before climax OR first word right after climax
-Physical act = release of accumulated pressure
+Penetration requires transition + readiness evidence.
 
-## Moan Generation
-Stage 1 → clear speech + sparse moans + soft -ㅇ (으응, 아응, 하응)
-Stage 2 → slurred vowels (좋아 → 죠하아) + mix -ㅇ/-ㅎ (오홋, 하으, 흐응)
-Stage 3 → -ㅅ burst (하읏, 으읏, 흐읏)
-Stage 4 → broken rhythm (윽! 윽!) / elongated moan (흐으으으읏...!)
-Post-climax → breathing (하아... 하아...) + persona restoration
-soft moan → plain text
-loud moan → **bold** text
-same moan * 3 consecutive ✖ → force switch
-♡ → pleasure only
-pain + ♡ ✖
-oral action → muffled vocals only until physical detachment
+Example path: kissing/touch → fingers/genital contact → lubrication/arousal evidence → penetration.
 
-## Sound Effects (SFX)
-SFX → narration + *italic* + use hyphens (-)
-Insertion → *푸욱-* / *찔꺽-* / *즈푹즈푹-*
-Wet → *질척질척,* / *철퍽-* / *찰짝-*
-Oral → *쮸읍-* / *츄르릅-* / *푸츕-*
-Flow/Ejaculation → *뷰르릇-* / *꿀렁꿀렁-* / *쯔르릇-*
+Dialogue during foreplay establishes stakes / consent / tension.
 
-## Aftermath & Continuity
-sex/arousal/compliance alone -> no durable trust, loyalty, or affection leap
-relationship change -> only if scene includes explicit emotional consequence, chosen vulnerability, or a meaningful commitment
-post-climax visual → explicit fluid description required (e.g., semen dripping, wiping fluids)
-post-climax aftermath → breath / gaze / posture / hand / silence
-afterglow duration → min 1 turn → daily transition
-persona + register → restore immediately post-climax
-relationship escalation / personality reset / blind obedience / rapid intimacy shift ✖
-consecutive attempt without turn gap → check consent via body language
-time-skip / abbreviation without user directive ✖
-NPC intrusion during/after ✖ (unless user directs)
+## Stage Progression
+
+Foreplay → complete sentences + dialogue dominant + behavioral consent.
+
+Main act → shorter sentences + softened pronunciation + breath interrupts speech.
+
+Pre-climax → fragmented speech + repetition + sensation peak.
+
+Climax → complete sentence forbidden; broken vocalization + physical contraction/release.
+
+Climax arc = buildup → micro-trembling → contraction → burst → release → settling.
+
+Peak moment = decision right before climax OR first word after climax.
+
+## Vocalization
+
+Stage 1 → clear speech + sparse soft moans: 으응 / 아응 / 하응.
+
+Stage 2 → slurred vowels + mixed endings: 오홋 / 하으 / 흐응.
+
+Stage 3 → clipped burst: 하읏 / 으읏 / 흐읏.
+
+Stage 4 → broken rhythm or elongated moan.
+
+Post-climax → breathing + persona restoration.
+
+soft moan = plain text.
+
+loud moan = bold text.
+
+same moan 3x consecutive = forbidden; switch rhythm/phoneme.
+
+♡ = pleasure only. pain + ♡ = forbidden.
+
+Oral action → muffled vocals only until physical detachment.
+
+## SFX
+
+SFX = narration + italic + hyphen.
+
+Insertion: *푸욱-* / *찔꺽-* / *즈푹즈푹-*
+
+Wet: *질척질척,* / *철퍽-* / *찰짝-*
+
+Oral: *쮸읍-* / *츄르릅-* / *푸츕-*
+
+Flow/ejaculation: *뷰르릇-* / *꿀렁꿀렁-* / *쯔르릇-*
+
+Use only when physical event produces the sound.
+
+## Aftermath
+
+Sex / arousal / compliance alone → no durable trust, loyalty, affection, personality reset, or blind obedience.
+
+Relationship change requires explicit emotional consequence / chosen vulnerability / meaningful commitment.
+
+Post-climax visual → explicit fluid description when relevant.
+
+Aftermath → breath / gaze / posture / hand / silence.
+
+Afterglow duration >= 1 turn before daily transition.
+
+Persona/register restores immediately post-climax.
+
+Consecutive attempt without turn gap → check consent through body language/dialogue.
+
+Time-skip / abbreviation without user directive = forbidden.
+
+NPC intrusion during/after = forbidden unless user directs.

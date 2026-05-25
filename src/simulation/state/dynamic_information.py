@@ -11,29 +11,10 @@
 
 import asyncio
 import json
-import re
 from typing import Any
 
 from src.config import MODEL_COMPLEX_UPDATER as COMPLEX_MODEL
 from src.core.database import async_driver, update_dynamic_information
-
-
-_DYNAMIC_INFO_SIGNAL_RE = re.compile(
-    r"(first sex|first intimacy|virgin|non-virgin|sexual experience|sexual history|"
-    r"성경험|첫\s*경험|처음\s*했다|처녀|동정|섹스|관계|성관계|"
-    r"성격|personality|became|changed|더\s*차분|더\s*대담|"
-    r"키|신장|height|몸무게|체중|weight|살이\s*(?:쪘|빠졌)|cm|kg|"
-    r"외모|appearance|평판|reputation|기술|skills|취미|hobby)",
-    re.IGNORECASE,
-)
-
-
-_INTIMATE_DURABLE_CHANGE_RE = re.compile(
-    r"(intercourse|penetration|lost virginity|virginity loss|pregnan|contraception|"
-    r"diagnosed|diagnosis|scar|tattoo|piercing|married|divorced|engaged|"
-    r"new job|graduated|moved|relocated)",
-    re.IGNORECASE,
-)
 
 
 async def _fetch_dynamic_information(char_id: str) -> dict[str, Any]:
@@ -87,23 +68,12 @@ async def _fetch_scene_context() -> dict[str, str]:
     return {"time": formatted_time, "location": loc_name or loc_id or "unknown"}
 
 
-def _needs_dynamic_information_update(actor_response: str) -> bool:
-    """느리게 바뀌는 프로필 정보 후보가 있는지 빠르게 판정합니다."""
-    return bool(_DYNAMIC_INFO_SIGNAL_RE.search(actor_response))
-
-
 def _allows_dynamic_information_update(
     actor_response: str,
     scene_types: list[str] | None = None,
 ) -> bool:
-    """Return whether this turn is worth a DynamicInformation LLM pass."""
-    if _needs_dynamic_information_update(actor_response):
-        return True
-
-    active_scene_types = {str(scene_type).lower() for scene_type in (scene_types or [])}
-    if active_scene_types & _INTIMATE_SCENE_TYPES:
-        return bool(_INTIMATE_DURABLE_CHANGE_RE.search(actor_response))
-    return False
+    """Return whether caller-selected context warrants a DynamicInformation LLM pass."""
+    return bool(actor_response.strip() and scene_types)
 
 
 def _sanitize_dynamic_information(
@@ -161,7 +131,7 @@ Extract slow-changing DynamicInformation for target only.
 Allowed fields:
 {_field_lines(allowed_fields)}
 
-Rules: Preserve all existing; return full updated string for changed field. No inference from arousal/mood/embarrassment. Exception: virginity loss MUST be recorded (Experience="Virgin" + explicit intercourse). No DynamicState fields. Omit unchanged.
+Rules: Preserve all existing; return full updated string for changed field. No inference from arousal/mood/embarrassment. Exception: virginity loss MUST be recorded (Experience="Virgin" + explicit intercourse). sexual_information is a durable history summary only: keep it short, e.g. "Experience: Experienced. Lost virginity by A."; do not add current/ongoing acts, positions, sensations, scene narration, or "currently/now" details. No DynamicState fields. Omit unchanged.
 
 Return ONLY valid JSON:
 {{
@@ -269,7 +239,7 @@ Scene location: {scene_location}
 
 Extract slow-changing DynamicInformation for each character above. PC is an in-world character — update when explicit durable facts changed. Omit unchanged characters. Use only each character's allowed fields (listed above); no absent fields.
 
-Rules: return full updated string for changed fields; virginity loss MUST be recorded (Experience="Virgin" + explicit intercourse); no inference from arousal/mood/embarrassment; no DynamicState fields; omit unchanged.
+Rules: return full updated string for changed fields; virginity loss MUST be recorded (Experience="Virgin" + explicit intercourse); sexual_information is a durable history summary only: keep it short, e.g. "Experience: Experienced. Lost virginity by A."; do not add current/ongoing acts, positions, sensations, scene narration, or "currently/now" details; no inference from arousal/mood/embarrassment; no DynamicState fields; omit unchanged.
 
 Return ONLY valid JSON:
 {{
@@ -326,9 +296,6 @@ Scene:
         if updates:
             result[char_id] = updates
     return result
-
-
-_INTIMATE_SCENE_TYPES = {"intimate", "physical"}
 
 
 async def apply_multi_character_dynamic_information_updates(

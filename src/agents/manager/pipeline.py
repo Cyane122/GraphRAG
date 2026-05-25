@@ -88,7 +88,7 @@ async def run_manager_pipeline(
         ),
         social_media_features=social_media_features,
     )
-    kakao_enabled = bool((social_media_features or {}).get("kakao_enabled", True))
+    kakao_enabled = bool((social_media_features or {}).get("kakao_enabled", False))
     if enable_kakao_preprocessing and kakao_enabled:
         try:
             kakao_turn_context = await process_kakao_before_actor(

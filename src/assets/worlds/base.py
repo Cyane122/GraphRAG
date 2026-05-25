@@ -267,10 +267,10 @@ class World:
     # 항목이 있으면 각 Scenario가 별도 ChatProfile ('{world_id}/{scenario_id}')로 노출됩니다.
     SCENARIOS: dict[str, Scenario] = {}
     SOCIAL_MEDIA: dict[str, bool] = {
-        "kakao_enabled": True,
-        "instagram_enabled": True,
-        "force_disable_kakao": False,
-        "force_disable_instagram": False,
+        "kakao_enabled": False,
+        "instagram_enabled": False,
+        "force_disable_kakao": True,
+        "force_disable_instagram": True,
     }
 
     def __init__(
@@ -514,6 +514,9 @@ class World:
                 memory_type STRING,
                 narrative_summary STRING,
                 state_summary STRING,
+                content STRING,
+                status STRING,
+                turn_count INT64,
                 safety_impact DOUBLE, safety_resolved BOOLEAN, safety_decay_rate DOUBLE,
                 embedding FLOAT[{dim}],
                 PRIMARY KEY(id)

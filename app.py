@@ -17,6 +17,7 @@
 #   - _current_game_datetime() -> datetime : 현재 인게임 시간을 datetime으로 반환
 #   - _social_media_features() -> dict : 현재 월드/세션 기준 카카오톡·인스타그램 활성 상태 반환
 #   - _queue_kakao_message(pc_id: str, room_id: str, content: str) -> None : 이번 턴 카카오톡 전송 버퍼에 메시지 추가
+#   - _blacklist_retry_instruction(blocked_terms: list[str]) -> str : 출력 금지어 재생성 지시 생성
 #   - _handle_kakao_panel_event(raw_payload: str) -> None : 카카오톡 패널 이벤트 처리
 #   - _handle_social_panel_event(raw_payload: str) -> None : SNS 패널 설정 이벤트 처리
 #   - on_chat_start() -> None : 신규 세션 초기화 및 오프닝 씬 출력
@@ -60,6 +61,7 @@ from src.agents.prompt_factory.usernote import build_usernote_block, load_userno
 from src.ui.history import build_history_from_steps
 from src.ui.input_routing import TurnInputType, route_user_input
 from src.ui.kakao_panel import send_kakao_panel
+from src.ui.output_guard import find_forbidden_terms
 from src.ui.social_media_settings import (
     resolve_social_media_features,
     set_social_media_override,
@@ -233,6 +235,7 @@ MAX_HISTORY_TURNS  = 10
 RECENT_STORY_TURNS = 3
 _LOGS_DIR          = Path("logs")
 _TURN_DEBUG_DIR    = _LOGS_DIR / "turn_debug"
+_MAX_BLACKLIST_RETRIES = 2
 
 _genai_client = get_client()
 
@@ -413,6 +416,17 @@ async def _queue_kakao_message(pc_id: str, room_id: str, content: str) -> None:
         "created_at": (await _current_game_datetime()).isoformat(),
     })
     cl.user_session.set("pending_kakao_messages", pending)
+
+
+def _blacklist_retry_instruction(blocked_terms: list[str]) -> str:
+    """금지어가 포함된 Actor 응답을 재생성하도록 dynamic prompt 지시를 생성합니다."""
+    return (
+        "\n\n<output_rejection>\n"
+        "The previous draft was rejected before commit by the prose guard.\n"
+        "Regenerate from the same situation without echoing the rejected wording. "
+        "Use concrete action, object, body, dialogue, or environment details.\n"
+        "</output_rejection>"
+    )
 
 
 async def _handle_kakao_panel_event(raw_payload: str) -> None:
@@ -664,18 +678,44 @@ async def _run_generation(
     recent_snapshot  = list(recent_responses)
 
     # 3. Actor 스트리밍
-    full_response, scene_chars, response_msg, hour, raw_thinking = await stream_actor(
-        fixed_prompt   = fixed,
-        genre_prompt   = genre,
-        dynamic_prompt = dynamic,
-        history        = history,
-        genai_client   = _genai_client,
-        model_name     = MODEL_ACTOR,
-        max_token      = MAX_TOKEN,
-        npc_name       = npc_name_kor,
-        logs_dir       = _LOGS_DIR,
-        status_text    = random.choice(GENERATING_MSGS).format(char=npc_name_kor),
-    )
+    # blacklist는 프롬프트 지시만으로는 강제되지 않으므로, pending/history 등록 전 검사한다.
+    full_response = ""
+    scene_chars: list[str] = []
+    raw_thinking = ""
+    hour: int | None = None
+    response_msg: cl.Message | None = None
+    actor_dynamic = dynamic
+    for attempt in range(_MAX_BLACKLIST_RETRIES + 1):
+        full_response, scene_chars, response_msg, hour, raw_thinking = await stream_actor(
+            fixed_prompt   = fixed,
+            genre_prompt   = genre,
+            dynamic_prompt = actor_dynamic,
+            history        = history,
+            genai_client   = _genai_client,
+            model_name     = MODEL_ACTOR,
+            max_token      = MAX_TOKEN,
+            npc_name       = npc_name_kor,
+            logs_dir       = _LOGS_DIR,
+            status_text    = random.choice(GENERATING_MSGS).format(char=npc_name_kor),
+            send_output    = False,
+        )
+        blocked_terms = find_forbidden_terms(full_response)
+        if not blocked_terms:
+            response_msg.content = full_response
+            await response_msg.send()
+            break
+
+        print(f"[OutputGuard] rejected Actor output for forbidden terms: {blocked_terms}")
+        if attempt >= _MAX_BLACKLIST_RETRIES:
+            await cl.Message(
+                content=(
+                    "Actor 출력이 blacklist를 반복 위반해서 이번 응답을 커밋하지 않았습니다.\n"
+                    f"감지된 표현: `{', '.join(blocked_terms[:12])}`"
+                ),
+                author="시스템",
+            ).send()
+            return
+        actor_dynamic = dynamic + _blacklist_retry_instruction(blocked_terms)
     if hour is None:
         hour = hour_from_time_string(await snapshot_game_time())
 
@@ -835,16 +875,6 @@ async def _handle_user_message_edit(message: cl.Message, user_input: str) -> boo
     history: list[dict] = cl.user_session.get("conversation_history") or []
     active_ids = _chat_context_message_ids()
     pending = cl.user_session.get("pending_commit")
-
-    if (
-        pending
-        and active_ids
-        and pending.get("response_msg_id")
-        and pending.get("response_msg_id") not in active_ids
-        and user_input != pending.get("user_input")
-    ):
-        await _reroll_pending_response(replacement_user_input=user_input)
-        return True
 
     edit_idx = _find_user_history_index(history, msg_id)
     if edit_idx is None:

@@ -179,12 +179,18 @@ class _GeminiModel:
         self._system = system_prompt
 
     def _build_config(self, generation_config: dict | None) -> types.GenerateContentConfig:
+        """generation_config dict를 Gemini GenerateContentConfig로 변환한다."""
         cfg = dict(generation_config or {})
         thinking_raw = cfg.pop("thinking_config", None)
+        is_json_response = cfg.get("response_mime_type") == "application/json"
 
-        # thinking 미지정 → LOW 강제 (MINIMAL은 gemini-3-flash-preview 미지원)
+        # JSON 분류/업데이트 호출은 짧은 구조화 출력이 목적이라 thinking 토큰이
+        # max_output_tokens를 잠식하면 빈 JSON 응답으로 끝날 수 있다. 일부 호출자가
+        # thinking_level을 넘기더라도 JSON 요청에서는 budget=0으로 정규화한다.
         if thinking_raw is None:
-            thinking_raw = {"thinking_level": "LOW"}
+            thinking_raw = {"thinking_budget": 0} if is_json_response else {"thinking_level": "LOW"}
+        elif is_json_response and "thinking_budget" not in thinking_raw:
+            thinking_raw = {"thinking_budget": 0}
 
         build: dict = {}
         if self._system:
@@ -211,26 +217,13 @@ class _GeminiModel:
         )
         return _SafeResponse(resp)
 
-    async def generate_content_async(self, contents, generation_config: dict | None = None):
-        """
-        내부적으로 streaming을 사용해 텍스트를 수집한다.
-        non-streaming은 thinking 모델에서 텍스트 파트를 누락하는 버그가 있어서
-        streaming으로 통일한다.
-        """
-        config_dict = generation_config or {}
+    async def _generate_content_stream_text(
+        self,
+        contents: object,
+        generation_config: dict | None = None,
+    ) -> _SafeResponse:
+        """Streaming 호출로 non-thought 텍스트 파트를 수집한 응답 래퍼를 반환한다."""
         config = self._build_config(generation_config)
-
-        if config_dict.get("response_mime_type") == "application/json":
-            resp = await asyncio.wait_for(
-                _client.aio.models.generate_content(
-                    model=self._model,
-                    contents=contents,
-                    config=config,
-                ),
-                timeout=_LLM_TIMEOUT_SEC,
-            )
-            return _SafeResponse(resp)
-
         text_parts: list[str] = []
         usage_metadata = None
         async for chunk in await _client.aio.models.generate_content_stream(
@@ -257,6 +250,35 @@ class _GeminiModel:
                 usage_metadata=usage_metadata,
             )
         )
+
+    async def generate_content_async(self, contents, generation_config: dict | None = None):
+        """
+        비동기 LLM 응답을 반환한다.
+        JSON mime 호출이 빈 텍스트를 반환하면 diagnostics를 남기고 streaming으로 재시도한다.
+        """
+        config_dict = generation_config or {}
+        config = self._build_config(generation_config)
+
+        if config_dict.get("response_mime_type") == "application/json":
+            resp = await asyncio.wait_for(
+                _client.aio.models.generate_content(
+                    model=self._model,
+                    contents=contents,
+                    config=config,
+                ),
+                timeout=_LLM_TIMEOUT_SEC,
+            )
+            safe = _SafeResponse(resp)
+            if safe.text.strip():
+                return safe
+
+            log_empty_response_diagnostics(resp, "json_async")
+            fallback_config = dict(config_dict)
+            fallback_config.pop("response_mime_type", None)
+            fallback_config["thinking_config"] = {"thinking_budget": 0}
+            return await self._generate_content_stream_text(contents, fallback_config)
+
+        return await self._generate_content_stream_text(contents, generation_config)
 
 
 def get_model(model_name: str, system_prompt: str | None = None) -> _GeminiModel:

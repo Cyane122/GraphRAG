@@ -5,7 +5,7 @@
 #
 # Functions
 #   - recover_missing_analyze_prose(raw: str) -> tuple[str, bool] : Recover prose when Actor omits the closing analyze tag
-#   - stream_actor(fixed_prompt: str, genre_prompt: str, dynamic_prompt: str, history: list[dict], genai_client: object, model_name: str, max_token: int, npc_name: str, logs_dir: Path, status_text: str) -> tuple[str, list[str], cl.Message, int | None, str] : Actor 응답 스트리밍
+#   - stream_actor(fixed_prompt: str, genre_prompt: str, dynamic_prompt: str, history: list[dict], genai_client: object, model_name: str, max_token: int, npc_name: str, logs_dir: Path, status_text: str, send_output: bool = True) -> tuple[str, list[str], cl.Message, int | None, str] : Actor 응답 생성
 # ================================
 
 import asyncio
@@ -99,9 +99,12 @@ async def _flush_remainder(
     gen_msg: cl.CustomElement,
     response_msg: cl.Message,
     first_text: bool,
+    send_output: bool,
 ) -> bool:
     """분석 블록 이후 남은 prose를 UI에 출력하고 first_text 상태를 반환합니다."""
     if not remainder:
+        return first_text
+    if not send_output:
         return first_text
     if first_text:
         await gen_msg.remove()
@@ -122,8 +125,9 @@ async def stream_actor(
     npc_name: str,
     logs_dir: Path,
     status_text: str,
+    send_output: bool = True,
 ) -> tuple[str, list[str], cl.Message, int | None, str]:
-    """Gemini generate_content_stream으로 Actor 응답을 스트리밍합니다."""
+    """Gemini 스트림으로 Actor 응답을 생성하고 필요하면 UI에 표시합니다."""
     system_text = f"{fixed_prompt}\n\n{genre_prompt}" if genre_prompt else fixed_prompt
     gemini_msgs = [
         {
@@ -171,11 +175,12 @@ async def stream_actor(
                     raw += text
 
                     if thinking_done:
-                        if first_text:
+                        if send_output and first_text:
                             await gen_msg.remove()
                             await response_msg.send()
                             first_text = False
-                        await response_msg.stream_token(text)
+                        if send_output:
+                            await response_msg.stream_token(text)
                         continue
 
                     thinking_buf += text
@@ -184,7 +189,7 @@ async def stream_actor(
                         raw_thinking = re.sub(r"<analyze>\s*", "", head).strip()
                         thinking_done = True
                         first_text = await _flush_remainder(
-                            tail.lstrip(), gen_msg, response_msg, first_text
+                            tail.lstrip(), gen_msg, response_msg, first_text, send_output
                         )
         except Exception as exc:
             print(f"[Actor] 스트리밍 오류: {exc}")
@@ -202,16 +207,21 @@ async def stream_actor(
             else:
                 raw_thinking = re.sub(r"<analyze>\s*", "", thinking_buf).strip()
                 remainder, recovered_missing_analyze = recover_missing_analyze_prose(thinking_buf)
-            first_text = await _flush_remainder(remainder, gen_msg, response_msg, first_text)
+            first_text = await _flush_remainder(
+                remainder, gen_msg, response_msg, first_text, send_output
+            )
 
-        if first_text:
+        if send_output and first_text:
             await gen_msg.remove()
             await response_msg.send()
     finally:
         # CancelledError(세션 종료) 포함 항상 실행 — step을 JSON에 확정 저장
         # asyncio.shield: 외부 태스크가 취소돼도 update()는 완료까지 보장
         try:
-            await asyncio.shield(response_msg.update())
+            if send_output:
+                await asyncio.shield(response_msg.update())
+            else:
+                await asyncio.shield(gen_msg.remove())
         except Exception:
             pass
 

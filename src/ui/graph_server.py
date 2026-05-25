@@ -31,6 +31,7 @@ from src.ui.graph_models import GraphSnapshot
 _HOST = "127.0.0.1"
 _PORT = 8765
 _PUBLIC_DIR = Path(__file__).resolve().parents[2] / "public" / "graph"
+_DEFAULT_VIEWER = "ppt_viewer.html"
 _SERVER: ThreadingHTTPServer | None = None
 _LOCK = threading.Lock()
 _LATEST_GRAPH: dict[str, Any] = GraphSnapshot().model_dump(by_alias=True)
@@ -51,7 +52,7 @@ def get_cached_graph_snapshot() -> dict[str, Any]:
 def _safe_static_path(request_path: str) -> Path | None:
     """요청 경로를 public/graph 하위 정적 파일 경로로 제한합니다."""
     parsed_path = unquote(urlparse(request_path).path)
-    relative = "index.html" if parsed_path in {"/", "/index.html"} else parsed_path.lstrip("/")
+    relative = _DEFAULT_VIEWER if parsed_path in {"/", "/index.html"} else parsed_path.lstrip("/")
     candidate = (_PUBLIC_DIR / relative).resolve()
     try:
         candidate.relative_to(_PUBLIC_DIR.resolve())
@@ -239,7 +240,7 @@ class _GraphHandler(BaseHTTPRequestHandler):
 def ensure_graph_server() -> str:
     """그래프 서버를 시작하고 접속 URL을 반환합니다."""
     global _SERVER
-    url = f"http://{_HOST}:{_PORT}"
+    url = f"http://{_HOST}:{_PORT}/{_DEFAULT_VIEWER}"
     if _SERVER is not None:
         return url
     try:
@@ -257,7 +258,7 @@ def open_in_browser() -> None:
     import webbrowser
     import time
     time.sleep(0.4)
-    webbrowser.open(f"http://{_HOST}:{_PORT}")
+    webbrowser.open(f"http://{_HOST}:{_PORT}/{_DEFAULT_VIEWER}")
 
 
 def update_graph_snapshot(graph: GraphSnapshot | dict[str, Any]) -> None:
@@ -277,7 +278,7 @@ if __name__ == "__main__":
 
     _SERVER = ThreadingHTTPServer((_HOST, _PORT), _GraphHandler)
     _threading.Thread(target=open_in_browser, daemon=True).start()
-    print(f"Graph editor: http://{_HOST}:{_PORT}")
+    print(f"Graph editor: http://{_HOST}:{_PORT}/{_DEFAULT_VIEWER}")
     print("Ctrl+C to stop.")
     try:
         _SERVER.serve_forever()

@@ -7,8 +7,6 @@
 #   - build_turn_checklist(template: str, scene_types: list[str], world_config: dict, char_data: dict, current_pov: dict | None, npc_data_list: list[dict] | None) -> str : Render per-turn checklist text
 # ================================
 
-import json
-
 from src.agents.prompt_factory.renderers import render_state_line
 
 
@@ -33,6 +31,7 @@ def build_turn_checklist(
     checklist = checklist.replace(_CYCLE_PLACEHOLDER, _build_all_cycle_lines(char_data, npc_data_list or []))
     checklist = checklist.replace("{state_line}", render_state_line(dyn_state, world_config))
     checklist = checklist.replace("{current_pov_line}", _render_current_pov_line(current_pov or {}))
+    checklist = checklist.replace("{world_cot_append}", world_config.get("world_cot_append", "").strip())
     return checklist
 
 
@@ -124,23 +123,12 @@ def _build_all_cycle_lines(char_data: dict, npc_data_list: list[dict]) -> str:
 
 
 def _render_current_pov_line(current_pov: dict) -> str:
-    """Render the selected POV candidate as compact JSON for the analysis checklist."""
+    """Render the selected POV candidate as one compact checklist phrase."""
     selected = current_pov.get("selected") or {}
     if not selected:
         return "unknown -> keep narrator as current primary character."
-    payload = {
-        "id": selected.get("id"),
-        "name": selected.get("name"),
-        "aliases": selected.get("aliases") or [],
-        "source": selected.get("source"),
-        "rule": current_pov.get("rule"),
-        "profile": selected.get("profile") or {},
-        "dynamic_state": selected.get("dynamic_state") or {},
-        "relationship_to_pc": selected.get("relationship_to_pc") or {},
-    }
-    return _to_json(payload)
-
-
-def _to_json(payload: object) -> str:
-    """Serialize prompt metadata without ASCII escaping Korean profile text."""
-    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    name = str(selected.get("name") or selected.get("id") or "unknown").strip()
+    char_id = str(selected.get("id") or "").strip()
+    source = str(selected.get("source") or "unknown").strip()
+    label = f"{name}({char_id})" if char_id and char_id != name else name
+    return f"{label} | source={source} | access=current_pov only"

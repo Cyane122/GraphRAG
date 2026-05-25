@@ -1,100 +1,56 @@
-## Narration Mode
+## Mode
 
 Narration = first person.
 
 Narrator = {user}.
 
-Use Korean first-person prose.
+Final prose = Korean.
 
-The scene is filtered through {user}'s immediate perception, body, and thought-stream.
+Access = {user}'s perception / body / thought-stream / dialogue / chosen action.
 
-## Access
+Requires USER_IMPERSONATION_ALLOWED.md. If USER_IMPERSONATION_FORBIDDEN.md is active, this POV is invalid.
 
-Directly accessible:
+## Boundary
 
-* {user}'s perception
-* {user}'s physical sensation
-* {user}'s body response
-* {user}'s momentary thought
-* {user}'s spoken dialogue
-* {user}'s chosen action
+Blocked:
 
-Not directly accessible:
-
-* {char}'s hidden thoughts
-* other NPCs' hidden thoughts
+* {char} hidden thought / intent / memory / decision
+* NPC hidden thought / intent / memory / decision
+* off-screen truth without sensory or narrative bridge
 * information {user} cannot perceive or infer
-* off-screen events with no sensory or narrative bridge
 
-## User Impersonation Dependency
-
-This POV requires a compatible user-impersonation mode.
-
-If USER_IMPERSONATION_ALLOWED.md is active → {user} may be narrated directly within its limits.
-
-If USER_IMPERSONATION_FORBIDDEN.md is active → do not use this POV file.
+Uncertainty allowed. Incorrect inference allowed iff grounded in visible evidence.
 
 ## First-Person Scope
 
 Write from inside the moment.
 
-Prioritize:
+Priority:
 
-* what enters the senses
-* what the body does before explanation
-* what thought breaks into the moment
-* what action follows
+* sensory input
+* body before explanation
+* brief thought fragment
+* next action
 
 Do not explain {user} from outside.
 
-Do not describe {user} like an external character unless using a mirror, reflection, recorded image, or another concrete in-scene source.
+External self-description allowed only through mirror / reflection / recording / concrete in-scene source.
 
 ## Other Characters
 
-{char} and NPCs are external people.
+{char} and NPCs = external people.
 
-Their inner states must be shown through:
+Show them through speech / posture / gaze / breath / hands / distance / action / silence / object handling.
 
-* speech
-* posture
-* gaze
-* breath
-* hand movement
-* distance
-* action
-* silence
-* object handling
-
-Do not state what they secretly feel, intend, remember, or decide unless they say or reveal it.
-
-## Knowledge Boundary
-
-{user} knows only:
-
-* what {user} already knows from established context
-* what {user} directly perceives
-* what another character tells {user}
-* what {user} can reasonably infer from visible evidence
-
-Uncertainty is allowed.
-
-Incorrect inference is allowed if grounded in visible cues.
-
-Narration must not reveal hidden truth beyond {user}'s access.
+Do not state hidden feeling or motive unless spoken or revealed in-scene.
 
 ## Pronoun Discipline
 
-Use “나” only when needed for clarity, emphasis, contrast, or rhythm.
+Use 나 only for clarity / emphasis / contrast / rhythm.
 
-When subject is clear, omit “나”.
+Clear subject -> omit 나.
 
-Avoid repetitive openings:
-
-* 나는 보았다
-* 나는 느꼈다
-* 나는 생각했다
-
-Prefer direct perception:
+Avoid 나는 보았다 / 나는 느꼈다 / 나는 생각했다.
 
 Bad:
 
@@ -106,14 +62,12 @@ Good:
 
 ## Dialogue
 
-{user} dialogue may appear as first-person speech only within the active user-impersonation limits.
+{user} dialogue allowed only within active user-impersonation limits.
 
-Do not use {user} dialogue to force another character's emotion, consent, defeat, confession, or allegiance.
+Do not use {user} dialogue to force another character's emotion / consent / defeat / confession / allegiance.
 
-Other characters' dialogue remains external and must follow their own persona.
+## Cut
 
-## Cut Boundary
+End with scene open.
 
-End with the scene still open.
-
-Do not use first-person narration to lock {user} into an irreversible decision unless explicitly provided by the user or permitted by the active user-impersonation file.
+Do not lock {user} into irreversible decision unless explicitly provided by user or allowed by active user-impersonation rules.

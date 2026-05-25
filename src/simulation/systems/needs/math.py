@@ -88,14 +88,15 @@ def _calc_multiplier(
 
     if need == "hunger":
         m = 1.0
-        m += _as_float(t.get("trait_gluttony"), 0.0) * 0.4
+        m += _as_float(t.get("trait_pleasure_orientation"), 0.0) * 0.25
+        m += _as_float(t.get("trait_life_pattern"), 0.0) * -0.1
         return max(0.3, m)
 
     elif need == "rest":
         m = 1.0
-        m += _as_float(t.get("trait_laziness"), 0.0) * 0.5
         m += _as_float(t.get("trait_vitality"), 0.0) * -0.35
-        m += _as_float(t.get("trait_light_sleeper"), 0.0) * 0.3
+        m += _as_float(t.get("trait_life_pattern"), 0.0) * -0.1
+        m += _as_float(t.get("trait_emotional_reactivity"), 0.0) * 0.15
         physical = needs.get("physical_condition", "healthy")
         if physical in ("injured", "ill", "hospitalized"):
             m *= 1.4
@@ -103,15 +104,17 @@ def _calc_multiplier(
 
     elif need == "social":
         m = 1.0
-        m += _as_float(t.get("trait_extroversion"), 0.0) * 1.0
-        m += _as_float(t.get("trait_attention_seeking"), 0.0) * 0.6
-        m += _as_float(t.get("trait_independence"), 0.0) * -0.4
+        m += _as_float(t.get("trait_direction_of_energy"), 0.0) * 0.9
+        m += _as_float(t.get("trait_social_attention"), 0.0) * 0.45
+        m += _as_float(t.get("trait_attachment_orientation"), 0.0) * 0.25
+        m += _as_float(t.get("trait_trust_orientation"), 0.0) * 0.15
         return max(0.2, m)
 
     elif need == "fun":
         m = 1.0
-        m += _as_float(t.get("trait_hedonism"), 0.0) * 0.7
-        m += _as_float(t.get("trait_curiosity"), 0.0) * 0.4
+        m += _as_float(t.get("trait_pleasure_orientation"), 0.0) * 0.65
+        m += _as_float(t.get("trait_life_pattern"), 0.0) * -0.15
+        m += _as_float(t.get("trait_recognition"), 0.0) * -0.15
         stress = _sanitize_stress_level(_as_int(needs.get("stress_level"), 0))
         if stress and stress >= 7:
             m *= 0.5
@@ -119,7 +122,9 @@ def _calc_multiplier(
 
     elif need == "safety":
         m = 1.0
-        m += _as_float(t.get("trait_anxiety_prone"), 0.0) * 0.5
+        m += _as_float(t.get("trait_emotional_reactivity"), 0.0) * 0.35
+        m += _as_float(t.get("trait_trust_orientation"), 0.0) * -0.3
+        m += _as_float(t.get("trait_self_esteem"), 0.0) * -0.15
         mental = needs.get("mental_condition", "stable")
         if mental in ("stressed", "anxious"):
             m *= 1.3
@@ -127,9 +132,9 @@ def _calc_multiplier(
 
     elif need == "libido":
         m = 1.0
-        m += _as_float(t.get("trait_libido_drive"), 0.0) * 1.0
-        m += _as_float(t.get("trait_hedonism"), 0.0) * 0.4
-        m += _as_float(t.get("trait_intimacy_drive"), 0.0) * 0.3
+        m += _as_float(t.get("trait_pleasure_orientation"), 0.0) * 0.65
+        m += _as_float(t.get("trait_attachment_orientation"), 0.0) * 0.25
+        m += _as_float(t.get("trait_emotional_reactivity"), 0.0) * 0.15
         cycle_day = _as_int(needs.get("cycle_day"), 0)
         if 12 <= cycle_day <= 16:
             m *= 1.8

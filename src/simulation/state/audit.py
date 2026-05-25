@@ -6,9 +6,11 @@
 # Functions
 #   - guard_actor_response(actor_response: str, npc_id: str, pc_id: str, world_config: dict | None) -> dict : Rule-based guard before DB writes
 #   - _needs_classification(actor_response: str, scene_types: list[str]) -> bool : Decide whether LLM classification is needed
+#   - _compact_evidence(evidence: object, max_chars: int = _EVIDENCE_MAX_CHARS) -> str : Keep audit evidence short
+#   - _extract_scene_header(text: str) -> str : Extract the markdown scene header
 #   - _audit_state_updates(state: dict, actor_response: str, npc_id: str) -> tuple[dict, list[dict]] : Validate state diffs
 #   - _audit_relationship_delta(delta: object, actor_response: str, npc_id: str, pc_id: str) -> tuple[int | None, dict | None] : Validate relationship deltas
-#   - _clamp_relationship_delta(delta: int, actor_response: str) -> int : Limit per-turn affinity movement
+#   - _clamp_relationship_delta(delta: int) -> int : Limit per-turn affinity movement
 #   - _audit_event_candidate(new_event: object, actor_response: str) -> tuple[dict | None, dict | None] : Validate event candidates
 #   - _audit_time_location_schedule(manager_effects: dict | None) -> dict : Validate time/location/schedule feasibility signals
 #   - _write_state_audit_snapshot(actor_response: str, npc_id: str, pc_id: str, guard: dict, state_candidates: list[dict] | None, relationship_candidate: dict | None, event_candidate: dict | None, feasibility_audit: dict | None) -> None : Save an audit snapshot
@@ -24,13 +26,6 @@ from src.core.state_normalization import normalize_stress_level
 # 분류 게이트
 # ════════════════════════════════════════════════════════════
 
-_CHANGE_PATTERN = re.compile(
-    r"다쳤|부상|병원|골절|삐었|쓰러|기절|아프|열이|입원|"
-    r"이동했|나갔|도착|들어왔|장소|"
-    r"스트레스|화났|슬퍼|불안|우울|힘들|짜증|무너|피곤|지쳐|헉헉|숨이\s*차|땀|"
-    r"싸웠|화해|고백|사귀|헤어|"
-    r"injured|hospitalized|arrived|moved|stressed|fatigued|tired"
-)
 _ALWAYS_CLASSIFY = {"intimate", "workplace", "physical"}
 _SYSTEM_LEAK_RE = re.compile(
     r"(system prompt|developer message|as an ai|language model|cannot comply|policy|"
@@ -50,44 +45,19 @@ _PC_CONTROL_EN_RE = re.compile(
     r"\b(you|the player|pc)\b.{0,80}\b(said|thought|felt|decided|walked|moved|smiled|cried)\b",
     re.IGNORECASE | re.DOTALL,
 )
-_FIGURATIVE_PHYSICAL_RE = re.compile(
-    r"(심장[이가]?\s*터질|가슴[이가]?\s*찢|녹아내리|무너져내리|죽을 것 같|"
-    r"숨이\s*막히|피가\s*식|얼어붙)",
-)
-_PHYSICAL_EVIDENCE_RE = re.compile(
-    r"(다쳤|부상|골절|삐었|피가|멍이|상처|입원|병원|열이|기침|토했|통증|아프|"
-    r"피곤|지쳐|헉헉|숨이\s*차|숨을\s*몰아|땀|"
-    r"injured|wound|bruise|hospital|fever|pain|fatigued|tired)",
-    re.IGNORECASE,
-)
-_FIELD_EVIDENCE: dict[str, re.Pattern] = {
-    "mood": re.compile(r"(웃|미소|화[가를]?|짜증|불안|떨|울|눈물|기뻐|행복|긴장|초조)"),
-    "mental_condition": re.compile(r"(불안|우울|혼란|초조|무너|지쳐|탈진|스트레스|긴장)"),
-    "stress_level": re.compile(r"(스트레스|압박|긴장|불안|초조|버겁|힘들|무너)"),
-    "workplace_stress_level": re.compile(r"(손님|직장|업무|상사|동료|근무|가게|회사|스트레스)"),
-    "outfit": re.compile(r"(입고|걸치|벗|옷|코트|셔츠|치마|바지|드레스|잠옷)"),
-    "injury_marks": _PHYSICAL_EVIDENCE_RE,
-    "physical_condition": _PHYSICAL_EVIDENCE_RE,
-    "injury_detail": _PHYSICAL_EVIDENCE_RE,
-}
 _COMMIT_CONFIDENCE = 0.60
 _STATE_AUDIT_DIR = Path("logs/state_audit")
 _RELATIONSHIP_ROUTINE_DELTA_CAP = 2
 _RELATIONSHIP_MEANINGFUL_DELTA_CAP = 4
-_RELATIONSHIP_MILESTONE_DELTA_CAP = 6
-_RELATIONSHIP_MILESTONE_RE = re.compile(
-    r"(confess|confession|reconcile|reconciliation|breakup|betray|saved|rescue|"
-    r"first intimacy|near-death|life-saving|고백|화해|이별|배신|구해|구했다|구해줬|"
-    r"목숨|첫 관계|결정적|돌이킬 수)",
-    re.IGNORECASE,
-)
+_EVIDENCE_MAX_CHARS = 160
+_SCENE_HEADER_RE = re.compile(r"^\s*\*\*(?P<header>[^*\n]{1,220})\*\*", re.MULTILINE)
 
 
 def _needs_classification(actor_response: str, scene_types: list[str]) -> bool:
     """LLM 호출이 필요한지 판단. False면 업데이트 전체 스킵."""
     if any(t in scene_types for t in _ALWAYS_CLASSIFY):
         return True
-    return bool(_CHANGE_PATTERN.search(actor_response))
+    return bool(actor_response.strip())
 
 
 def _sanitize_stress_level(value) -> int | None:
@@ -105,7 +75,23 @@ def _severity_rank(severity: str) -> int:
 
 def _issue(code: str, severity: str, evidence: str) -> dict:
     """Guard issue 구조를 생성합니다."""
-    return {"code": code, "severity": severity, "evidence": evidence[:220]}
+    return {"code": code, "severity": severity, "evidence": _compact_evidence(evidence)}
+
+
+def _compact_evidence(evidence: object, max_chars: int = _EVIDENCE_MAX_CHARS) -> str:
+    """Normalize evidence into one short log-friendly line."""
+    text = re.sub(r"\s+", " ", str(evidence or "")).strip()
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 3].rstrip() + "..."
+
+
+def _extract_scene_header(text: str) -> str:
+    """Extract the leading markdown scene header when present."""
+    match = _SCENE_HEADER_RE.search(text or "")
+    if not match:
+        return ""
+    return _compact_evidence(match.group("header"))
 
 
 def _extract_sentences(text: str) -> list[str]:
@@ -116,20 +102,24 @@ def _extract_sentences(text: str) -> list[str]:
 
 def _find_evidence(text: str, field: str, value: object = None) -> str:
     """상태 변경 후보를 뒷받침하는 짧은 evidence를 찾습니다."""
+    if field == "location_id":
+        header = _extract_scene_header(text)
+        if header:
+            return _compact_evidence(f"scene header: {header}")
+
     sentences = _extract_sentences(text)
     if isinstance(value, str) and value:
         value_l = value.lower()
         for sentence in sentences:
             if value_l in sentence.lower():
-                return sentence[:240]
+                return _compact_evidence(sentence)
 
-    pattern = _FIELD_EVIDENCE.get(field)
-    if pattern:
-        for sentence in sentences:
-            if pattern.search(sentence):
-                return sentence[:240]
-
-    return ""
+    body_sentences = [
+        sentence
+        for sentence in sentences
+        if not _SCENE_HEADER_RE.match(sentence)
+    ]
+    return _compact_evidence(body_sentences[0] if body_sentences else text)
 
 
 def guard_actor_response(
@@ -168,9 +158,6 @@ def guard_actor_response(
     if m_en:
         issues.append(_issue("pc_control", "reject", m_en.group(0)))
 
-    if _FIGURATIVE_PHYSICAL_RE.search(text) and not _PHYSICAL_EVIDENCE_RE.search(text):
-        issues.append(_issue("figurative_physical_risk", "warning", _FIGURATIVE_PHYSICAL_RE.search(text).group(0)))
-
     severity = "none"
     for item in issues:
         if _severity_rank(item["severity"]) > _severity_rank(severity):
@@ -197,7 +184,7 @@ def _candidate(
         "field": field,
         "new_value": new_value,
         "confidence": round(confidence, 2),
-        "evidence": evidence,
+        "evidence": _compact_evidence(evidence),
         "commit_policy": commit_policy,
     }
 
@@ -215,29 +202,26 @@ def _normalize_memory_type(value: object, summary: str, impact: str, importance:
     if isinstance(value, str) and value.strip().lower() in {"episodic", "emotional", "relational"}:
         return value.strip().lower()
 
-    text = f"{summary}\n{impact}".lower()
-    if importance >= 7 or re.search(r"confess|reconcile|breakup|trust|affinity|관계|고백|화해|갈등|신뢰", text):
+    if importance >= 7:
         return "relational"
-    if re.search(r"fear|hurt|relief|shame|anxious|sad|angry|감정|불안|상처|안도|분노|슬픔", text):
+    if importance >= 4:
         return "emotional"
     return "episodic"
 
 
 def _prepare_event_summaries(event_data: dict) -> dict:
-    """Fill Event summary roles without requiring another LLM call."""
+    """Normalize Event fields while keeping one canonical summary."""
     summary = str(event_data.get("summary") or "").strip()
     impact = str(event_data.get("impact") or "").strip()
     importance = max(0, min(10, _safe_int(event_data.get("importance"), 0)))
     memory_type = _normalize_memory_type(event_data.get("memory_type"), summary, impact, importance)
-    narrative_summary = str(event_data.get("narrative_summary") or summary).strip()
-    state_summary = str(event_data.get("state_summary") or impact or summary).strip()
     return {
         "summary": summary,
         "impact": impact,
         "importance": importance,
         "memory_type": memory_type,
-        "narrative_summary": narrative_summary,
-        "state_summary": state_summary,
+        "narrative_summary": "",
+        "state_summary": "",
     }
 
 
@@ -255,15 +239,6 @@ def _audit_state_updates(state: dict, actor_response: str, npc_id: str) -> tuple
             confidence = max(confidence, 0.75)
             evidence = evidence or "location transition inferred from scene"
             policy = "commit"
-
-        if field in {"physical_condition", "injury_detail", "injury_marks"}:
-            if _FIGURATIVE_PHYSICAL_RE.search(actor_response) and not _PHYSICAL_EVIDENCE_RE.search(actor_response):
-                confidence = 0.2
-                policy = "reject"
-                evidence = evidence or _FIGURATIVE_PHYSICAL_RE.search(actor_response).group(0)
-            elif not _PHYSICAL_EVIDENCE_RE.search(actor_response):
-                confidence = min(confidence, 0.5)
-                policy = "hold"
 
         candidates.append(_candidate(
             target=f"Character:{npc_id}/DynamicState",
@@ -286,7 +261,7 @@ def _audit_relationship_delta(delta: object, actor_response: str, npc_id: str, p
     evidence = _find_evidence(actor_response, "mood") or actor_response[:180].strip()
     confidence = 0.7 if evidence else 0.45
     policy = "commit" if confidence >= _COMMIT_CONFIDENCE and evidence else "hold"
-    value = _clamp_relationship_delta(int(delta), actor_response)
+    value = _clamp_relationship_delta(int(delta))
     return (
         value if policy == "commit" else None,
         _candidate(
@@ -300,17 +275,13 @@ def _audit_relationship_delta(delta: object, actor_response: str, npc_id: str, p
     )
 
 
-def _clamp_relationship_delta(delta: int, actor_response: str) -> int:
+def _clamp_relationship_delta(delta: int) -> int:
     """Limit per-turn affinity movement before it reaches the graph."""
     abs_delta = abs(delta)
     if abs_delta <= _RELATIONSHIP_ROUTINE_DELTA_CAP:
         return delta
 
-    cap = (
-        _RELATIONSHIP_MILESTONE_DELTA_CAP
-        if _RELATIONSHIP_MILESTONE_RE.search(actor_response or "")
-        else _RELATIONSHIP_MEANINGFUL_DELTA_CAP
-    )
+    cap = _RELATIONSHIP_MEANINGFUL_DELTA_CAP
     if abs_delta <= cap:
         return delta
     return cap if delta > 0 else -cap

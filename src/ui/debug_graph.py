@@ -241,6 +241,112 @@ async def _fetch_recent_events(character_ids: set[str], limit: int = 6) -> list[
     return unique_rows[:limit]
 
 
+async def _fetch_recent_memory_rows(character_ids: set[str], limit: int = 12) -> list[dict[str, Any]]:
+    """포함된 캐릭터와 연결된 최근 Memory를 조회합니다."""
+    if not character_ids:
+        return []
+
+    rows: list[dict[str, Any]] = []
+    async with async_driver.session() as session:
+        for char_id in sorted(character_ids):
+            result = await session.run(
+                """
+                MATCH (c:Character {id: $char_id})-[:REMEMBERS]->(m:Memory)
+                OPTIONAL MATCH (m)-[:OF_EVENT]->(e:Event)
+                RETURN c.id AS char_id,
+                       m.id AS id,
+                       m.event_id AS event_id,
+                       e.id AS linked_event_id,
+                       m.summary AS summary,
+                       m.memory_type AS memory_type,
+                       m.importance AS importance,
+                       m.distortion_level AS distortion_level,
+                       m.summary_level AS summary_level,
+                       m.created_at AS created_at,
+                       m.last_decayed_at AS last_decayed_at,
+                       m.narrative_summary AS narrative_summary,
+                       m.state_summary AS state_summary
+                ORDER BY m.created_at DESC
+                LIMIT 12
+                """,
+                char_id=char_id,
+            )
+            rows.extend(dict(row) for row in await result.fetch_all())
+
+    seen: set[str] = set()
+    unique_rows: list[dict[str, Any]] = []
+    for row in rows:
+        key = f"{row.get('char_id')}:{row.get('id')}"
+        if not row.get("id") or key in seen:
+            continue
+        seen.add(key)
+        unique_rows.append(row)
+    return unique_rows[:limit]
+
+
+async def _fetch_event_row(event_id: str) -> dict[str, Any] | None:
+    """Event id로 단일 Event 표시 데이터를 조회합니다."""
+    if not event_id:
+        return None
+    async with async_driver.session() as session:
+        result = await session.run(
+            """
+            MATCH (e:Event {id: $event_id})
+            RETURN e.id AS id,
+                   e.summary AS summary,
+                   e.timestamp AS timestamp,
+                   e.importance AS importance,
+                   e.content AS content,
+                   e.status AS status,
+                   e.turn_count AS turn_count,
+                   e.memory_type AS memory_type,
+                   e.narrative_summary AS narrative_summary,
+                   e.state_summary AS state_summary
+            """,
+            event_id=event_id,
+        )
+        rows = await result.fetch_all()
+    return dict(rows[0]) if rows else None
+
+
+async def _fetch_latest_event_ids(limit: int = 20) -> list[str]:
+    """최근 Event id 목록을 관계 유무와 무관하게 조회합니다."""
+    limit = max(1, min(100, int(limit)))
+    async with async_driver.session() as session:
+        result = await session.run(
+            f"""
+            MATCH (e:Event)
+            RETURN e.id AS id
+            ORDER BY e.timestamp DESC
+            LIMIT {limit}
+            """,
+        )
+        rows = await result.fetch_all()
+    return [str(row["id"]) for row in rows if row.get("id")]
+
+
+async def _ensure_event_node(
+    nodes: list[GraphNode],
+    existing_node_ids: set[str],
+    event_id: str,
+) -> None:
+    """Memory 연결에 필요한 Event 노드가 없으면 조회해 추가합니다."""
+    event_node_id = f"event:{event_id}"
+    if not event_id or event_node_id in existing_node_ids:
+        return
+    event = await _fetch_event_row(event_id) or {"id": event_id}
+    nodes.append(
+        _node(
+            event_node_id,
+            event.get("summary") or event.get("content") or event_id,
+            "event",
+            event.get("timestamp") or event.get("status") or "",
+            _compact_details(event),
+        )
+    )
+    existing_node_ids.add(event_node_id)
+
+
 def _pending_time_state() -> dict[str, str | None]:
     """아직 DB에 커밋되지 않은 현재 턴 시간 계획을 읽습니다."""
     try:
@@ -300,6 +406,8 @@ async def build_debug_graph(pc_id: str, npc_id: str, world_id: str) -> GraphSnap
     location_rows = await _fetch_location_rows({str(x) for x in included_location_ids if x})
     relationship_rows = await _fetch_relationship_rows()
     event_rows = await _fetch_recent_events(included_char_ids)
+    latest_event_ids = await _fetch_latest_event_ids()
+    memory_rows = await _fetch_recent_memory_rows(included_char_ids)
     personal_fact_rows = await _fetch_personal_fact_rows(included_char_ids)
 
     nodes: list[GraphNode] = [
@@ -425,6 +533,51 @@ async def build_debug_graph(pc_id: str, npc_id: str, world_id: str) -> GraphSnap
         char_id = event.get("char_id")
         if char_id in included_char_ids:
             edges.append(_edge(f"character:{char_id}", event_node_id, "INVOLVED_IN"))
+
+    existing_node_ids = {node.id for node in nodes}
+    existing_edge_keys = {(edge.source, edge.label, edge.target) for edge in edges}
+    for event_id in latest_event_ids:
+        await _ensure_event_node(nodes, existing_node_ids, event_id)
+
+    for memory in memory_rows:
+        memory_node_id = f"memory:{memory['id']}"
+        if memory_node_id not in existing_node_ids:
+            nodes.append(
+                _node(
+                    memory_node_id,
+                    memory.get("summary") or memory["id"],
+                    "memory",
+                    memory.get("created_at") or memory.get("memory_type") or "",
+                    _compact_details(memory, fields=(
+                        "id",
+                        "event_id",
+                        "linked_event_id",
+                        "summary",
+                        "memory_type",
+                        "importance",
+                        "distortion_level",
+                        "summary_level",
+                        "created_at",
+                        "last_decayed_at",
+                        "narrative_summary",
+                        "state_summary",
+                    )),
+                )
+            )
+            existing_node_ids.add(memory_node_id)
+        char_id = memory.get("char_id")
+        remembers_key = (f"character:{char_id}", "REMEMBERS", memory_node_id)
+        if char_id in included_char_ids and remembers_key not in existing_edge_keys:
+            edges.append(_edge(remembers_key[0], remembers_key[2], remembers_key[1]))
+            existing_edge_keys.add(remembers_key)
+        linked_event_id = memory.get("linked_event_id") or memory.get("event_id")
+        event_node_id = f"event:{linked_event_id}" if linked_event_id else ""
+        of_event_key = (memory_node_id, "OF_EVENT", event_node_id)
+        if linked_event_id:
+            await _ensure_event_node(nodes, existing_node_ids, str(linked_event_id))
+        if event_node_id in existing_node_ids and of_event_key not in existing_edge_keys:
+            edges.append(_edge(of_event_key[0], of_event_key[2], of_event_key[1]))
+            existing_edge_keys.add(of_event_key)
 
     for fact in personal_fact_rows:
         fact_node_id = f"personal_fact:{fact['id']}"

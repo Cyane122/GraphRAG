@@ -23,16 +23,18 @@ def _build_trait_hints(traits: dict) -> list[str]:
     hints: list[str] = []
     if traits.get("trait_self_esteem", 0) > 0.5:
         hints.append("tends to remember things more positively, downplays negatives")
-    if traits.get("trait_anxiety_prone", 0) > 0.5:
+    if traits.get("trait_emotional_reactivity", 0) > 0.5:
         hints.append("tends to amplify threatening or upsetting elements")
     if traits.get("trait_self_esteem", 0) < -0.1:
         hints.append("tends to underplay their own role or worth")
-    if traits.get("trait_stubbornness", 0) > 0.5:
+    if traits.get("trait_control_orientation", 0) > 0.5:
         hints.append("tends to remember their own position as more justified")
-    if traits.get("trait_attachment", 0) > 0.7:
+    if traits.get("trait_attachment_orientation", 0) > 0.7:
         hints.append("keeps partner-related details vivid, fades other details")
-    if traits.get("trait_jealousy", 0) > 0.5:
+    if traits.get("trait_relational_exclusivity", 0) > 0.5:
         hints.append("tends to over-remember moments of perceived rivalry or slight")
+    if traits.get("trait_trust_orientation", 0) < -0.5:
+        hints.append("tends to preserve cautionary details and distrust ambiguous motives")
     return hints
 
 

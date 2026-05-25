@@ -33,8 +33,8 @@ async def fetch_dynamic_world_context(
     """Collect optional dynamic world hints used by the prompt renderer."""
     required_systems = set(context_plan.get("required_systems", []))
     features = social_media_features or {}
-    kakao_enabled = bool(features.get("kakao_enabled", True))
-    instagram_enabled = bool(features.get("instagram_enabled", True))
+    kakao_enabled = bool(features.get("kakao_enabled", False))
+    instagram_enabled = bool(features.get("instagram_enabled", False))
     world_context: dict = {}
     try:
         generic_context = await fetch_generic_prompt_context(

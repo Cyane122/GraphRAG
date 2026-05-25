@@ -14,6 +14,8 @@
 #   - apply_time_updates(plan: dict, base_time: datetime, pc_id: str, npc_id: str) -> datetime : Compute and persist time changes.
 #   - delegate_complex_update(actor_response: str, npc_id: str, pc_id: str, initial_changes: dict | None, event_only: bool, world_config: dict | None, scene_chars: list[str] | None) -> str | None : Run complex updates for event-only paths.
 #   - _write_updater_diff_snapshot(plan: dict, state_candidates: list[dict], rel_candidate: dict | None, event_candidate: dict | None) -> None : LLM 출력과 diff 결과를 logs/updater_diff.json에 저장.
+#   - _select_event_owner_id(npc_id: str, pc_id: str, participant_ids: list[str]) -> str | None : Choose the relationship anchor for Event updates.
+#   - _apply_event_action(plan: dict, event_allowed: bool, active_event: dict | None, actor_response: str, event_owner_id: str, pc_id: str, participant_ids: list[str], state_candidates: list[dict], rel_candidate: dict | None, guard: dict, feasibility_audit: dict) -> dict | None : Apply Event action from an updater plan.
 # ================================
 import asyncio
 import json
@@ -155,17 +157,17 @@ Importance:
 8-10: Major (hospitalization/confession/surgery/death/marriage)
 5-7: Significant (first meeting/major fight+reconciliation/VERY FIRST emotional intimacy/near-breakup/public humiliation)
 2-4: Minor durable (new injury/new named char/promise/secret/gift/location transition/new object or doc/repeated sex incl. arrangement)
-0-1: Routine or atmospheric, but still create when a concrete in-world event occurred.
+0-1: Routine or atmospheric. Do NOT create unless it leaves a durable record worth remembering.
 {active_block}
 action: {actions_hint}
+When an active event exists, close it as soon as the activity concludes, the characters leave, time advances past it, or the scene topic shifts. Routine daily activities such as meals should not remain active after their visible conclusion.
+For new events, skip routine meals, sitting, waiting, casual small talk, and atmosphere unless the turn creates a durable state change or a multi-turn scene anchor.
 For create/close_create include event_data fields:
   id: {{location}}_{{description}}_{{YYYYMMDD_HHMM}}
   summary: 1-2 sentence Korean factual record; only observed facts, no subjective distortion or speculation
   memory_type: episodic/emotional/relational
-  narrative_summary: 1 sentence Actor continuity hook
-  state_summary: 1 sentence factual (who did what)
   importance: 0-10 | impact: brief phrase
-  importance >= 7 → new_relationship_status: 1-2 English sentences (state AFTER)
+  importance >= 7 → new_relationship_status: 1-2 English sentences about how they regard each other after the event; not their current physical activity. Exclude current actions, positions, scene activity, and "currently/now" details.
 
 Context: {recent_context[-2000:] if recent_context else "(none)"}
 """ if allow_event else """
@@ -278,6 +280,91 @@ def _fmt_state_diff(state_candidates: list[dict]) -> str:
 # State update main path
 
 
+def _select_event_owner_id(
+    npc_id: str,
+    pc_id: str,
+    participant_ids: list[str],
+) -> str | None:
+    """Return the character id whose relationship should anchor Event updates."""
+    if npc_id != pc_id:
+        return npc_id
+    for char_id in participant_ids:
+        if char_id and char_id != pc_id:
+            return char_id
+    return None
+
+
+async def _apply_event_action(
+    plan: dict,
+    event_allowed: bool,
+    active_event: dict | None,
+    actor_response: str,
+    event_owner_id: str,
+    pc_id: str,
+    participant_ids: list[str],
+    state_candidates: list[dict],
+    rel_candidate: dict | None,
+    guard: dict,
+    feasibility_audit: dict,
+) -> dict | None:
+    """Create, continue, or close an Event from a primary updater plan."""
+    new_event: dict | None = None
+    event_candidate: dict | None = None
+
+    action = plan.get("action", "none") if event_allowed else "none"
+
+    if action == "continue" and active_event:
+        await _append_to_event(active_event["id"], actor_response)
+
+    elif action == "close" and active_event:
+        await _close_event(active_event["id"], event_owner_id, pc_id, actor_response)
+
+    elif action in ("close_create", "create"):
+        if active_event and action == "close_create":
+            await _close_event(active_event["id"], event_owner_id, pc_id, actor_response)
+        new_event, event_candidate = _audit_event_candidate(plan.get("new_event"), actor_response)
+
+    else:
+        if event_allowed and plan.get("new_event"):
+            new_event, event_candidate = _audit_event_candidate(plan.get("new_event"), actor_response)
+
+    if event_candidate:
+        ev_summary = str(event_candidate.get("evidence") or event_candidate.get("new_value") or "")[:60]
+        print(f"[EventDiff] {ev_summary} [{event_candidate['commit_policy']}]")
+
+    _write_updater_diff_snapshot(plan, state_candidates, rel_candidate, event_candidate)
+    _write_state_audit_snapshot(
+        actor_response          = actor_response,
+        npc_id                  = event_owner_id,
+        pc_id                   = pc_id,
+        guard                   = guard,
+        state_candidates        = state_candidates,
+        relationship_candidate  = rel_candidate,
+        event_candidate         = event_candidate,
+        feasibility_audit       = feasibility_audit,
+    )
+
+    if not new_event:
+        return None
+
+    await _create_event(
+        new_event,
+        event_owner_id,
+        pc_id,
+        actor_response,
+        participant_ids=participant_ids,
+    )
+    new_status = new_event.get("new_relationship_status")
+    event_importance = _safe_int(new_event.get("importance"), 0)
+    if new_status and event_importance >= 7:
+        await _apply_relationship_status(event_owner_id, pc_id, new_status)
+    if event_importance >= 6:
+        asyncio.create_task(update_relationship_narrative(
+            event_owner_id, pc_id, new_event.get("summary", ""), event_importance,
+        ))
+    return new_event
+
+
 async def process_actor_response(
     actor_response: str,
     npc_id:         str,
@@ -318,7 +405,7 @@ async def process_actor_response(
     if world_config and scene_chars:
         try:
             resolved_ids = await wb_resolve(scene_chars, npc_id, pc_id, world_config)
-            participant_ids = [pc_id, npc_id, *resolved_ids]
+            participant_ids = list(dict.fromkeys([pc_id, npc_id, *resolved_ids]))
         except Exception as e:
             print(f"[WorldBuilder] early resolve failed (ignored): {e}")
 
@@ -328,15 +415,17 @@ async def process_actor_response(
         except Exception as e:
             print(f"[RelationshipUpdater] primary relationship ensure failed (ignored): {e}")
 
-    # 현재 열린 이벤트 조회 (npc/pc 쌍 기준)
+    event_owner_id = _select_event_owner_id(npc_id, pc_id, participant_ids)
+
+    # 현재 열린 이벤트 조회 (event owner / pc 쌍 기준)
     active_event: dict | None = None
-    if npc_id != pc_id:
+    if event_owner_id:
         try:
-            active_event = await _fetch_active_event(npc_id, pc_id)
+            active_event = await _fetch_active_event(event_owner_id, pc_id)
         except Exception as _ae_err:
             print(f"[EventAccum] active_event fetch failed (ignored): {_ae_err}")
 
-    event_allowed = npc_id != pc_id and has_event_signal(
+    event_allowed = bool(event_owner_id) and has_event_signal(
         actor_response,
         participant_ids,
         manager_effects,
@@ -361,7 +450,7 @@ async def process_actor_response(
         return None
 
     if npc_id == pc_id:
-        # NPC=PC self-state path: update DynamicState only and skip relationship/event/gossip.
+        # NPC=PC self-state path keeps PC state local; Event extraction uses a scene partner when available.
         # multi_character 와 dynamic_info 는 독립적이므로 병렬 실행
         print("[StateUpdater] NPC=PC: DynamicState update only")
         if should_run_auxiliary_character_updates(actor_response, participant_ids, context_plan):
@@ -392,6 +481,33 @@ async def process_actor_response(
                 await update_dynamic_state(npc_id, state)
         except Exception as e:
             print(f"[StateUpdater] NPC=PC DynamicState update failed (continuing): {e}")
+        if event_allowed and event_owner_id:
+            try:
+                event_plan = await _run_primary_update(
+                    actor_response,
+                    event_owner_id,
+                    pc_id,
+                    world_config,
+                    recent_event_context,
+                    active_event,
+                    allow_event=True,
+                )
+                if event_plan:
+                    await _apply_event_action(
+                        event_plan,
+                        event_allowed,
+                        active_event,
+                        actor_response,
+                        event_owner_id,
+                        pc_id,
+                        participant_ids,
+                        [],
+                        None,
+                        guard,
+                        feasibility_audit,
+                    )
+            except Exception as e:
+                print(f"[StateUpdater] NPC=PC event update failed (continuing): {e}")
         if should_run_secondary_relationship_updates(participant_ids):
             try:
                 await apply_scene_relationship_updates(
@@ -499,55 +615,20 @@ async def process_actor_response(
     # Create/continue/close Event based on action.
     new_event: dict | None = None
     try:
-        action = plan.get("action", "none") if event_allowed else "none"
-        event_candidate: dict | None = None
-
-        if action == "continue" and active_event:
-            await _append_to_event(active_event["id"], actor_response)
-
-        elif action == "close" and active_event:
-            await _close_event(active_event["id"], npc_id, pc_id)
-
-        elif action in ("close_create", "create"):
-            if active_event and action == "close_create":
-                await _close_event(active_event["id"], npc_id, pc_id)
-            new_event, event_candidate = _audit_event_candidate(plan.get("new_event"), actor_response)
-
-        else:
-            # "none" or backward-compat: LLM may return new_event without action field
-            if event_allowed and plan.get("new_event"):
-                new_event, event_candidate = _audit_event_candidate(plan.get("new_event"), actor_response)
-
-        if event_candidate:
-            ev_summary = str(event_candidate.get("evidence") or event_candidate.get("new_value") or "")[:60]
-            print(f"[EventDiff] {ev_summary} [{event_candidate['commit_policy']}]")
-        _write_updater_diff_snapshot(plan, state_candidates, rel_candidate, event_candidate)
-        _write_state_audit_snapshot(
-            actor_response          = actor_response,
-            npc_id                  = npc_id,
-            pc_id                   = pc_id,
-            guard                   = guard,
-            state_candidates        = state_candidates,
-            relationship_candidate  = rel_candidate,
-            event_candidate         = event_candidate,
-            feasibility_audit       = feasibility_audit,
-        )
-        if new_event:
-            await _create_event(
-                new_event,
-                npc_id,
-                pc_id,
+        if event_owner_id:
+            new_event = await _apply_event_action(
+                plan,
+                event_allowed,
+                active_event,
                 actor_response,
-                participant_ids=participant_ids,
+                event_owner_id,
+                pc_id,
+                participant_ids,
+                state_candidates,
+                rel_candidate,
+                guard,
+                feasibility_audit,
             )
-            new_status = new_event.get("new_relationship_status")
-            event_importance = _safe_int(new_event.get("importance"), 0)
-            if new_status and event_importance >= 7:
-                await _apply_relationship_status(npc_id, pc_id, new_status)
-            if event_importance >= 6:
-                asyncio.create_task(update_relationship_narrative(
-                    npc_id, pc_id, new_event.get("summary", ""), event_importance,
-                ))
     except Exception as e:
         print(f"[StateUpdater] event creation failed (ignored): {e}")
 

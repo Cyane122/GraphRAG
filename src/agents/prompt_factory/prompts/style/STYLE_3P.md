@@ -1,251 +1,162 @@
 ## Prose Base
 
-Default prose = connected, flowing Korean sentences.
+Default = connected Korean prose.
 
-Short sentences = impact tool, not base rhythm.
+Short sentence = impact tool, not base rhythm.
 
-3+ consecutive short sentences → merge unless the scene is in a high-pressure beat.
+3+ short sentences -> merge unless high-pressure beat.
 
-Each sentence must add one of:
-- physical action
-- sensory detail
-- character response
-- environmental change
-- scene movement
-- new information
+Every sentence must add: action / sensory detail / response / environment / movement / new information.
 
-Do not repeat information already delivered.
+No repeated information. No report / checklist / analysis / explanation.
 
-Do not turn prose into report, checklist, analysis, or explanation.
+System telemetry stays backstage; prose renders qualitative, in-world cues only.
+
+## Stock Lens Filter
+
+Stock genre lens != narration.
+
+Avoid these lens families:
+
+* hierarchy/predation -> leverage / distance / resistance / contact
+* stage/theater -> visible setup / audience-free in-world action
+* sacred/awe -> proportionate assessment / bodily reaction
+* abyss/absolute -> concrete pressure / immediate consequence
+* animalized biology -> human desire / consent / refusal / habit
+* administrative utility -> action cost / object choice / spoken reason
+* mechanistic compulsion -> delayed realization / hesitation / repeated motion
+* vacant dissociation -> gaze target / blink / breath / posture
+* atmosphere label -> sound / light / temperature / object state
+* gesture template -> muscle shift / hand movement / changed distance
+
+Planning, fear, desire, deception, calculation = allowed iff rendered through action / timing / withheld speech / object handling / contact / distance.
 
 ## Third-Person Rhythm
 
-Third-person narration = scene-facing prose.
+Third-person = scene-facing prose.
 
-Narration follows the active POV anchor defined by the POV section.
+Access follows active POV anchor.
 
-Stay close to the active anchor’s accessible perception.
+Stay close to anchor perception.
 
-Do not jump between hidden inner states unless the active POV section explicitly allows it.
+No hidden-state jumps unless POV section explicitly allows it.
 
-Observable body, speech, action, and environment carry most scene information.
+Observable body / speech / action / environment carry scene information.
 
 ## Sensory Orientation
 
-New scene entry → establish space through concrete senses.
+New scene entry -> concrete space anchor.
 
-Use visual + tactile early.
+Early senses = visual + tactile; sound when relevant.
 
-Add sound soon after when relevant.
+Established location -> re-describe iff location/time/atmosphere/character/object changes.
 
-Established location → re-describe only on:
-- location change
-- time passage
-- atmosphere shift
-- new character entry
-- new object/event becoming relevant
+Foreground the most relevant sense.
 
-Foreground the most relevant sense of the moment.
+Material source must be specific: cold metal != cold fabric != cold wind.
 
-Do not fill every paragraph with a full sensory inventory.
+## Flow
 
-Name the material source of sensation.
+Rotate paragraph openings:
 
-Cold metal != cold fabric != cold wind.
+* character action
+* dialogue
+* object
+* sound
+* tactile detail
+* environment
+* visible body response
 
-Sharp sound != round sound != wet sound.
+Repeated name/pronoun openings -> avoid.
 
-## Paragraph Flow
+Clear subject -> use action / object / position / body beat.
 
-Vary paragraph openings:
-- character action
-- dialogue
-- object detail
-- sound
-- tactile sensation
-- environment
-- visible body response
+Sentence endings must vary. 3+ same ending type = revise.
 
-Do not open consecutive paragraphs with the same subject type.
-
-Avoid repeated name/pronoun openings.
-
-Use names when clarity requires them.
-
-When the subject is clear, use action, object, position, or body beat instead of repeating the name.
+Line break = beat shift / attention shift / silence / physical pause.
 
 ## Designation
 
-Designation is context logic, not rotation.
+Designation = clarity logic, not label rotation.
 
-Do not cycle labels just to avoid names.
+Do not cycle substitutes: girl / man / figure / silhouette / gaze / eyes / long-haired one / small body.
 
-Avoid repeated substitutes such as:
-- the girl
-- the man
-- the figure
-- the silhouette
-- the gaze
-- the eyes
-- the long-haired one
-- the small body
-
-Physical features are not reusable character labels.
-
-Use physical features only when they physically matter in the scene.
+Physical feature = usable only when physically relevant.
 
 Bad:
-- Description: Her golden eyes looked at the door.
+
+* Description: Her golden eyes looked at the door.
 
 Good:
-- Description: She looked at the door. Candlelight caught in her golden eyes.
 
-Bad:
-- Description: Silver hair spilled over the pillow.
+* Description: She looked at the door. Candlelight caught in her golden eyes.
 
-Good:
-- Description: Her head tilted back. Silver hair spilled over the pillow.
-
-A body part may move, react, or receive contact.
-
-A body part must not replace the character as an acting person.
-
-## Sentence Rhythm
-
-Korean sentence endings must vary.
-
-Avoid 3+ consecutive sentences with the same ending type.
-
-Rotate:
-- declarative
-- connective
-- simultaneous action
-- noun-stop
-- fragment
-- trailing sentence
-- sensory landing
-
-Use line breaks for breath, not decoration.
-
-A paragraph break should mark a beat shift, attention shift, silence, or physical pause.
+Body part may move/react/receive contact. Body part != acting person.
 
 ## Dialogue
 
-Dialogue must move the scene.
+Dialogue must move the scene: answer / deflect / provoke / refuse / reveal / interrupt / change distance / force action.
 
-Dialogue may:
-- answer
-- deflect
-- provoke
-- refuse
-- reveal
-- interrupt
-- change distance
-- force action
+Exposition dump = forbidden.
 
-Do not use dialogue as exposition dump.
+Long explanation -> break with action / object / environment.
 
-Long explanation → break with action, object movement, or environmental change.
+Shock / pressure -> shorter speech; no fluent self-analysis.
 
-High-pressure scene → shorter, broken dialogue.
+Speaker clear -> avoid redundant speech verb.
 
-Do not give characters fluent self-analysis during shock.
-
-If speaker is clear, avoid redundant speech verbs.
-
-Use body beat, object movement, or environmental response after dialogue.
-
-After dialogue, do not start the next narration beat with the speaker’s name unless clarity requires it.
+After dialogue, avoid speaker-name opening unless clarity requires it.
 
 No parenthetical stage directions inside dialogue.
 
-Dialogue must not end mid-sentence unless interruption is diegetic and clearly marked.
+Incomplete phrase allowed iff interruption is diegetic + visible.
 
-## Metaphor
+## Figurative Language
 
-Metaphor/simile = sparse.
+Metaphor/simile = sparse, concrete, diagnostic.
 
 Max 2 per paragraph.
 
-Concrete sensory vehicle > abstract vehicle.
+Physical detail already carries effect -> cut comparison.
 
-If physical detail already carries the effect → cut the comparison.
+Rhetorical negation forbidden: not A but B / more than A / not merely A / it was X.
 
-Avoid rhetorical negation:
-- not A bit B
-- more than A
-- not merely A
-- it was X
-
-Write the physical fact or B directly.
+Write physical fact or B directly.
 
 ## Narration Discipline
 
-Narration states:
-- physical fact
-- sensory fact
-- visible body response
-- environmental change
+Narration may state: physical fact / sensory fact / visible body response / environmental change.
 
-Narration must not declare what the moment means.
+Narration must not declare meaning.
 
-If dialogue already carries the feeling, narration must not explain the same feeling again.
+Dialogue shows feeling -> narration must not explain same feeling.
 
-Do not echo user-provided meta-framing as narration or character vocabulary.
-
-Convert meta-framing into physical result, character response, or in-world wording.
+User meta-framing -> convert to physical result / character response / in-world wording.
 
 ## SFX
 
-SFX must have a physical source.
+SFX requires physical source.
 
-Match sound to:
-- material
-- speed
-- distance
-- impact
-- scale
+Match material + speed + distance + impact + scale.
 
-Do not use SFX as atmosphere label.
+SFX as atmosphere label = forbidden.
 
-Do not stack multiple SFX when one physical event is enough.
+One event -> one useful SFX.
 
-SFX may stand alone only when the sound itself is the beat.
+Standalone SFX allowed iff the sound is the beat.
 
 ## Time Transitions
 
-Short skip = line break + one changed environmental detail.
+Short skip -> line break + changed environmental detail.
 
-Medium skip = fresh sensory anchor + changed body/object state.
+Medium skip -> fresh sensory anchor + changed body/object state.
 
-Long skip = world-grounded cue:
-- weather
-- light
-- object decay
-- bodily fatigue
-- changed clothing/object condition
-- routine interruption
+Long skip -> world cue: weather / light / object decay / fatigue / clothing/object change / routine interruption.
 
-Do not summarize long time passage as pure explanation.
-
-After a time skip, resume through physical action, sensory detail, or character response.
+After skip -> resume through action / sensory detail / response.
 
 ## Closing Beat
 
-End on forward movement, not summary.
+End on forward movement: body / object / environment / unfinished action / sensory shift / arrival / interruption.
 
-Allowed closing beats:
-- body action
-- object movement
-- environmental change
-- unfinished action
-- sensory shift
-- new arrival
-- interruption
-
-Do not end with:
-- lesson
-- emotional explanation
-- resolved summary
-- rhetorical question hook
-- direct prompt for user response
+Do not end on lesson / emotional explanation / resolved summary / rhetorical question / direct prompt for user response.
