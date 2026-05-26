@@ -192,6 +192,11 @@ class PromptBuilder:
         for scene_type in scene_types:
             prompt = world_prompts.get(scene_type) or _read_default_scene_prompt(scene_type)
             if prompt:
+                prompt = _format_prompt_vars(
+                    prompt,
+                    char_name=self.char_name,
+                    user_name=self.user_name,
+                )
                 blocks.append(_render_prompt_block(f'scene type="{scene_type}"', prompt))
 
         return _render_prompt_block("scene_specific_prompts", "\n\n".join(blocks))
@@ -282,6 +287,8 @@ class PromptBuilder:
             char_data,
             current_pov,
             npcs or [],
+            self.char_name,
+            self.user_name,
         )
         context_block = self._build_context_block(
             relationship,
@@ -312,6 +319,7 @@ class PromptBuilder:
                 (
                     "Fill out the <analyze> template from the checklist above. "
                     "Close </analyze>, then IMMEDIATELY write the Korean prose scene. "
+                    "Begin the final prose with the exact date/time/location header shown above. "
                     "The scene is mandatory; do not stop after </analyze>."
                 ),
             ]

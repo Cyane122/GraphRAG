@@ -229,6 +229,7 @@ _COLUMN_MIGRATIONS: list[str] = [
     "ALTER TABLE DynamicState ADD attachment_risk DOUBLE DEFAULT 0.0",
     "ALTER TABLE DynamicState ADD expectation_gap DOUBLE DEFAULT 0.0",
     "ALTER TABLE DynamicState ADD penis_size STRING DEFAULT ''",
+    "ALTER TABLE DynamicState ADD led_color STRING DEFAULT ''",
     "ALTER TABLE Location ADD district STRING DEFAULT ''",
     "ALTER TABLE Location ADD summary STRING DEFAULT ''",
     "ALTER TABLE Location ADD prompt_hint STRING DEFAULT ''",

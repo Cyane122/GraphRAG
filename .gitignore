@@ -17,6 +17,15 @@ chat/
 .files/
 .venv/
 __pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+
+tmp_edge_social_panel/
+tmp_test
+tmp_cdp_*.py
+tmp_*.log
+*.tmp
 
 *.zip
 *.json

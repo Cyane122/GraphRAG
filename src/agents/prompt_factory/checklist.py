@@ -4,10 +4,10 @@
 # Actor prompt checklist rendering helpers.
 #
 # Functions
-#   - build_turn_checklist(template: str, scene_types: list[str], world_config: dict, char_data: dict, current_pov: dict | None, npc_data_list: list[dict] | None) -> str : Render per-turn checklist text
+#   - build_turn_checklist(template: str, scene_types: list[str], world_config: dict, char_data: dict, current_pov: dict | None, npc_data_list: list[dict] | None, char_name: str = "", user_name: str = "") -> str : Render per-turn checklist text
 # ================================
 
-from src.agents.prompt_factory.renderers import render_state_line
+from src.agents.prompt_factory.renderers import _SafeFormatDict, render_state_line
 
 
 _CYCLE_PLACEHOLDER = (
@@ -24,18 +24,38 @@ def build_turn_checklist(
     char_data: dict,
     current_pov: dict | None = None,
     npc_data_list: list[dict] | None = None,
+    char_name: str = "",
+    user_name: str = "",
 ) -> str:
     """Render checklist placeholders that depend on current scene and DynamicState."""
-    checklist = template.replace("{intimate_scan}", _build_intimate_scan(scene_types, world_config))
+    checklist = template.replace(
+        "{intimate_scan}",
+        _build_intimate_scan(scene_types, world_config, char_data, char_name, user_name),
+    )
     dyn_state = char_data.get("dynamic_state", {})
     checklist = checklist.replace(_CYCLE_PLACEHOLDER, _build_all_cycle_lines(char_data, npc_data_list or []))
     checklist = checklist.replace("{state_line}", render_state_line(dyn_state, world_config))
     checklist = checklist.replace("{current_pov_line}", _render_current_pov_line(current_pov or {}))
-    checklist = checklist.replace("{world_cot_append}", world_config.get("world_cot_append", "").strip())
+    checklist = checklist.replace(
+        "{world_cot_append}",
+        _format_scene_vars(
+            world_config.get("world_cot_append", "").strip(),
+            world_config,
+            char_data,
+            char_name,
+            user_name,
+        ),
+    )
     return checklist
 
 
-def _build_intimate_scan(scene_types: list[str], world_config: dict) -> str:
+def _build_intimate_scan(
+    scene_types: list[str],
+    world_config: dict,
+    char_data: dict,
+    char_name: str,
+    user_name: str,
+) -> str:
     """Return per-scene checklist append items for all active scene types.
 
     New path: prompt.scenes.checklist_append dict (keyed by scene type,
@@ -44,16 +64,44 @@ def _build_intimate_scan(scene_types: list[str], world_config: dict) -> str:
     """
     checklist_append = world_config.get("prompt", {}).get("scenes", {}).get("checklist_append", {})
     if checklist_append:
-        parts = [v.strip() for k in scene_types if (v := checklist_append.get(k))]
+        parts = [
+            _format_scene_vars(v.strip(), world_config, char_data, char_name, user_name)
+            for k in scene_types
+            if (v := checklist_append.get(k))
+        ]
         return "\n".join(parts)
 
     trigger_types = frozenset(world_config.get("intimate_checklist_scene_types") or ["intimate"])
     if not trigger_types.intersection(scene_types):
         return ""
-    return world_config.get(
-        "intimate_checklist_items",
-        "- Preparation: own body absent from prep narration\n"
-        "- Penetration: entry collapsed into single verb without physical resistance beat",
+    return _format_scene_vars(
+        world_config.get(
+            "intimate_checklist_items",
+            "- Preparation: own body absent from prep narration\n"
+            "- Penetration: entry collapsed into single verb without physical resistance beat",
+        ),
+        world_config,
+        char_data,
+        char_name,
+        user_name,
+    )
+
+
+def _format_scene_vars(
+    text: str,
+    world_config: dict,
+    char_data: dict,
+    char_name: str,
+    user_name: str,
+) -> str:
+    """Apply common scene placeholders while preserving unknown checklist placeholders."""
+    if not text:
+        return ""
+    return text.format_map(
+        _SafeFormatDict(
+            char=str(char_name or char_data.get("name") or world_config.get("npc_name_kor") or ""),
+            user=str(user_name or world_config.get("pc_name_kor") or world_config.get("user_name") or "사용자"),
+        )
     )
 
 

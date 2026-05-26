@@ -36,7 +36,7 @@ DYNAMIC_STATE_FIELDS = {
     "hygiene", "appearance", "physique", "age_presentation", "nervousness",
     "attitude", "social_skill", "consideration", "stamina", "odor",
     "emotional_state", "attachment_risk", "expectation_gap", "penis_size",
-    "age", "circle_level", "robe_grade",
+    "age", "circle_level", "robe_grade", "led_color",
 }
 
 # LLM이 스키마에 존재하는 컬럼명으로 잘못 반환하더라도 쓰지 않을 필드.

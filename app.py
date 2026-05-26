@@ -9,12 +9,9 @@
 #
 # Functions
 #   - set_chat_profiles(current_user: cl.User | None) -> list[cl.ChatProfile] : 세계관 선택 드롭다운
-#   - _thread_db_path(thread_id: str) -> str : 스레드별 Kuzu DB 경로 결정
-#   - _profile_from_thread(thread: ThreadDict) -> str | None : 스레드 태그/메타데이터에서 ChatProfile 이름 복구
-#   - _resolve_thread_world(thread: ThreadDict) -> tuple[str, str | None] : 스레드의 world/scenario 선택값 복구
-#   - _is_closed_connection_error(exc: BaseException) -> bool : 종료 중 닫힌 연결 예외 판별
-#   - _close_session_driver() -> None : 현재 세션의 Kuzu 드라이버 정리
 #   - _upsert_debug_graph_best_effort(pc_id: str | None, npc_id: str | None, world_id: str) -> bool : 디버그 그래프 갱신
+#   - _init_session_world(world_id: str, thread_id: str, scenario_id: str | None = None, *, create_driver: bool = True) -> None : 세션 월드 상태 초기화
+#   - _ensure_db_driver() -> None : 지연 생성된 세션 Kuzu 드라이버 보장
 #   - _current_game_datetime() -> datetime : 현재 인게임 시간을 datetime으로 반환
 #   - _social_media_features() -> dict : 현재 월드/세션 기준 카카오톡·인스타그램 활성 상태 반환
 #   - _queue_kakao_message(pc_id: str, room_id: str, content: str) -> None : 이번 턴 카카오톡 전송 버퍼에 메시지 추가
@@ -37,8 +34,6 @@
 #   - on_delete_message(action: cl.Action) -> None : 삭제 버튼 콜백
 # ================================
 
-import asyncio
-import atexit
 import json
 import logging
 import random
@@ -57,7 +52,7 @@ from chainlit.chat_context import chat_context
 from chainlit.types import ThreadDict
 
 from src.config import PERSPECTIVE, WORLD_ID, MODEL_ACTOR, MODEL_OUTPUT_REPAIR, MAX_TOKEN
-from src.agents.manager import run_manager, load_world_instance
+from src.agents.manager import run_manager
 from src.agents.prompt_factory.ooc_handler import is_ooc, parse_ooc
 from src.agents.prompt_factory.usernote import build_usernote_block, load_usernote
 from src.ui.history import build_history_from_steps
@@ -71,6 +66,15 @@ from src.ui.social_media_settings import (
     set_social_media_override,
 )
 from src.ui.session_models import PendingCommit
+from src.ui.session_world import (
+    close_session_driver as _close_session_driver,
+    discover_world_profiles as _discover_world_profiles,
+    ensure_db_driver as _ensure_session_db_driver,
+    init_session_world as _init_session_world_state,
+    is_closed_connection_error as _is_closed_connection_error,
+    parse_profile_name as _parse_profile_name,
+    resolve_thread_world as _resolve_thread_world,
+)
 from src.ui.turn_debug import write_turn_debug_snapshot
 from src.ui.actor_stream import stream_actor
 from src.ui.deferred_commit import commit_pending, commit_pending_if_any
@@ -94,7 +98,6 @@ from src.simulation.systems.organic import set_pregnant_manual
 from src.simulation.systems.kakao import (
     invite_character,
 )
-from src.core.database import KuzuAsyncDriver
 from src.core.database.helpers import load_graph_info
 from src.core.llm.client import get_client
 from src.core.data_layer import JsonDataLayer
@@ -111,97 +114,6 @@ def _make_data_layer() -> JsonDataLayer:
 async def password_auth_callback(username: str, password: str) -> Optional[cl.User]:
     """어떤 사용자 이름/비밀번호로도 로컬 사용자로 인증합니다."""
     return cl.User(identifier="local", metadata={})
-
-
-# ── 세계관 선택 드롭다운 ─────────────────────────────────────────
-def _parse_profile_name(name: str) -> tuple[str, str | None]:
-    """'rofan/academy' → ('rofan', 'academy'), 'babe_univ' → ('babe_univ', None)"""
-    parts = name.split("/", 1)
-    return parts[0], parts[1] if len(parts) > 1 else None
-
-
-def _discover_world_profiles() -> list[tuple[str, str | None, str]]:
-    """src/assets/worlds/*/schema.py 를 스캔해 (world_id, scenario_id, display_name) 목록을 반환합니다.
-
-    SCENARIOS 가 정의된 세계는 시나리오별로 별도 항목을 생성합니다.
-    """
-    from importlib import import_module as _import
-
-    worlds_dir = Path("src/assets/worlds")
-    result: list[tuple[str, str | None, str]] = []
-    for schema_path in sorted(worlds_dir.glob("*/schema.py")):
-        world_id = schema_path.parent.name
-        if world_id == "default":
-            continue
-        try:
-            module = _import(f"src.assets.worlds.{world_id}.schema")
-            # 신규 스타일: 모듈 레벨 SCENARIOS list
-            scenarios = getattr(module, "SCENARIOS", None)
-            if isinstance(scenarios, list) and scenarios:
-                for sc in scenarios:
-                    result.append((world_id, sc.scenario_id, sc.display_name))
-                continue
-            # 레거시: world.SCENARIOS dict (rofan 등)
-            world = getattr(module, "world_instance", None)
-            if world and isinstance(getattr(world, "SCENARIOS", None), dict) and world.SCENARIOS:
-                for sid, scenario in world.SCENARIOS.items():
-                    result.append((world_id, sid, scenario.display_name))
-                continue
-        except Exception:
-            pass
-        result.append((world_id, None, world_id))
-    return result
-
-
-def _thread_db_path(thread_id: str) -> str:
-    """스레드별 Kuzu DB 경로를 반환합니다.
-
-    기존 배치가 루트/{uuid}/schema를 쓰는 경우를 우선 지원하고,
-    현재 JSON data layer 기반 배치에서는 data/threads/{uuid}/schema를 사용합니다.
-    """
-    root_schema = Path(thread_id) / "schema"
-    data_schema = Path("data") / "threads" / thread_id / "schema"
-    if root_schema.exists():
-        return str(root_schema)
-    return str(data_schema)
-
-
-def _profile_from_thread(thread: ThreadDict) -> str | None:
-    """스레드 태그/메타데이터에서 ChatProfile 이름을 복구합니다."""
-    metadata = thread.get("metadata") or {}
-    for tag in thread.get("tags") or []:
-        if isinstance(tag, str) and tag:
-            return tag
-    profile = metadata.get("chat_profile")
-    return str(profile) if profile else None
-
-
-def _resolve_thread_world(thread: ThreadDict) -> tuple[str, str | None]:
-    """스레드의 world_id/scenario_id를 metadata보다 ChatProfile 태그 우선으로 복구합니다."""
-    metadata = thread.get("metadata") or {}
-    profile = _profile_from_thread(thread)
-    if profile:
-        return _parse_profile_name(profile)
-    return metadata.get("world_id") or WORLD_ID, metadata.get("scenario_id")
-
-
-def _is_closed_connection_error(exc: BaseException) -> bool:
-    """종료 중 닫힌 Kuzu/웹소켓 연결에서 발생한 예외인지 확인합니다."""
-    message = str(exc).lower()
-    return "connection is closed" in message or "connection closed" in message
-
-
-def _close_session_driver() -> None:
-    """현재 Chainlit 세션의 Kuzu 드라이버를 레지스트리에서 제거하고 닫습니다."""
-    db_path = cl.user_session.get("db_path")
-    driver = None
-    if db_path:
-        driver = _ACTIVE_DRIVERS.pop(db_path, None)
-    if driver is None:
-        driver = cl.user_session.get("db_driver")
-    if driver is not None:
-        driver.close()
-    cl.user_session.set("db_driver", None)
 
 
 async def _upsert_debug_graph_best_effort(pc_id: str | None, npc_id: str | None, world_id: str) -> bool:
@@ -256,21 +168,6 @@ _TURN_DEBUG_DIR    = _LOGS_DIR / "turn_debug"
 
 _genai_client = get_client()
 
-# db_path → KuzuAsyncDriver: 재연결 시 이전 세션의 파일 락을 해제하기 위한 전역 레지스트리
-_ACTIVE_DRIVERS: dict[str, KuzuAsyncDriver] = {}
-
-
-def _shutdown_all_drivers() -> None:
-    for driver in list(_ACTIVE_DRIVERS.values()):
-        try:
-            driver.close()
-        except Exception:
-            pass
-    _ACTIVE_DRIVERS.clear()
-
-
-atexit.register(_shutdown_all_drivers)
-
 
 def _cleanup_old_turn_debug(keep_days: int = 3) -> None:
     """turn_debug 디렉터리에서 keep_days 일보다 오래된 항목을 삭제합니다."""
@@ -302,79 +199,19 @@ async def _init_session_world(
     *,
     create_driver: bool = True,
 ) -> None:
-    """세션 변수에 월드 설정과 per-thread Kuzu 드라이버를 설정합니다.
-
-    create_driver=False 이면 world_config만 세팅하고 DB 드라이버는 만들지 않습니다.
-    첫 메시지 시점에 _ensure_db_driver()로 지연 생성합니다.
-    """
-    world_instance = load_world_instance(world_id, scenario_id)
-    world_cfg = world_instance.get_full_config(PERSPECTIVE, scenario_id)
-    world_cfg["npc_name_map"] = world_instance.get_npc_name_map()
-
-    cl.user_session.set("world_id",     world_id)
-    cl.user_session.set("scenario_id",  scenario_id)
-    cl.user_session.set("world_config", world_cfg)
-    cl.user_session.set("pc_id",        world_cfg["pc_id"])
-    cl.user_session.set("npc_id",       world_cfg["npc_id"])
-    cl.user_session.set("npc_name_kor", world_cfg["npc_name_kor"])
-    cl.user_session.set("db_path",      _thread_db_path(thread_id))
-
-    if create_driver:
-        await _open_db_driver(world_id, scenario_id)
-
-
-async def _open_db_driver(world_id: str, scenario_id: str | None = None) -> None:
-    """이전 드라이버를 닫고 새 KuzuAsyncDriver를 세션에 등록합니다.
-
-    같은 db_path를 열려는 이전 세션의 드라이버(재연결 시 남은 파일 락)도 함께 닫습니다.
-    락이 즉시 해제되지 않으면 최대 3초간 0.5초 간격으로 재시도합니다.
-    """
-    old_driver = cl.user_session.get("db_driver")
-    if old_driver is not None:
-        old_driver.close()
-        await asyncio.sleep(0.1)
-
-    db_path = cl.user_session.get("db_path")
-
-    # 전역 레지스트리에 같은 경로의 드라이버가 남아 있으면(이전 세션) 먼저 닫는다
-    stale = _ACTIVE_DRIVERS.pop(db_path, None)
-    if stale is not None:
-        stale.close()
-
-    last_err: Exception | None = None
-    for _ in range(7):  # 최대 3초 (0.5s × 6회 대기)
-        try:
-            driver = KuzuAsyncDriver(db_path, world_id=world_id, scenario_id=scenario_id)
-            _ACTIVE_DRIVERS[db_path] = driver
-            cl.user_session.set("db_driver", driver)
-            return
-        except RuntimeError as e:
-            if "Could not set lock" not in str(e):
-                raise
-            last_err = e
-            await asyncio.sleep(0.5)
-
-    raise RuntimeError(f"DB 락 해제 실패 ({db_path}): {last_err}")
+    """세션 변수에 월드 설정과 per-thread Kuzu 드라이버를 설정합니다."""
+    await _init_session_world_state(
+        world_id=world_id,
+        thread_id=thread_id,
+        perspective=PERSPECTIVE,
+        scenario_id=scenario_id,
+        create_driver=create_driver,
+    )
 
 
 async def _ensure_db_driver() -> None:
     """db_driver가 없으면 지금 생성합니다 (신규 채팅 첫 메시지 진입 시 호출)."""
-    if cl.user_session.get("db_driver") is not None:
-        return
-    world_id    = cl.user_session.get("world_id")    or WORLD_ID
-    scenario_id = cl.user_session.get("scenario_id")
-    await _open_db_driver(world_id, scenario_id)
-    # 신규 채팅의 첫 메시지 시점에 스레드 메타데이터 저장 (빈 채팅방 사이드바 등록 방지)
-    try:
-        thread_id = cl.context.session.thread_id
-        tag = f"{world_id}/{scenario_id}" if scenario_id else world_id
-        await cl.data_layer.update_thread(
-            thread_id=thread_id,
-            metadata={"world_id": world_id, "scenario_id": scenario_id},
-            tags=[tag],
-        )
-    except Exception:
-        pass
+    await _ensure_session_db_driver(default_world_id=WORLD_ID, perspective=PERSPECTIVE)
     await _ensure_session_traits_initialized()
 
 
@@ -1093,7 +930,7 @@ async def on_chat_start() -> None:
 @cl.on_chat_resume
 async def on_chat_resume(thread: ThreadDict) -> None:
     """기존 채팅방을 재개할 때 세션 변수를 스레드 데이터로 복원합니다."""
-    world_id, scenario_id = _resolve_thread_world(thread)
+    world_id, scenario_id = _resolve_thread_world(thread, WORLD_ID)
     thread_id = thread["id"]
 
     await _init_session_world(world_id, thread_id, scenario_id)

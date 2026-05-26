@@ -284,6 +284,5 @@ def _format_prompt_vars(
         _SafeFormatDict(
             char=char_name,
             user=user_name,
-            world_cot_append=world_config.get("world_cot_append", ""),
         )
     )

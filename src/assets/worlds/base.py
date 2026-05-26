@@ -297,15 +297,15 @@ class World:
     # classifier LLM에 주입할 씬 타입 정의. name → description(English).
     # 설명은 classifier 프롬프트에 직접 주입되므로 LLM이 타입을 정확히 구분할 수 있다.
     SCENE_TYPES: dict[str, str] = {
-        "daily":       "Everyday life with no significant conflict (meals, casual movement, small talk)",
-        "bonding":     "Emotional intimacy between romantic partners; warmth, vulnerability, closeness",
-        "intimate":    "Romantic/sexual intercourse between lovers; emotionally connected",
-        "formal":      "Meetings, negotiations, or situations requiring decorum and social performance",
-        "tense":       "Pre-conflict chill; unspoken hostility or the moment before something breaks",
-        "vulnerable":  "A character's weakness is exposed — emotional breakdown, exhaustion, confession",
-        "aggressive":  "Verbal confrontation: arguments, threats, power struggles, psychological pressure",
-        "physical":    "Combat, chase, training, or any scene driven by bodily exertion and kinetic energy",
-        "atmospheric": "Environment or mood takes center stage; setting description, sensory immersion",
+        "daily": "Everyday life with no significant conflict (meals, casual movement, small talk)",
+        "bonding": "Emotional intimacy between characters; warmth, vulnerability, closeness — regardless of relationship type",
+        "intimate": "Sexual or erotically charged scene; physical closeness with or without emotional connection",
+        "formal": "Meetings, negotiations, or situations requiring decorum and social performance",
+        "tense": "Unspoken hostility or dread; conflict has not yet surfaced but the air is wrong",
+        "conflict": "Active verbal or psychological confrontation: arguments, threats, power struggles",
+        "vulnerable": "A character's weakness is exposed — emotional breakdown, exhaustion, confession",
+        "action": "Combat, chase, training, or any scene driven by bodily exertion and kinetic energy",
+        "ambient": "Environment or mood takes center stage; setting description, sensory immersion",
     }
 
     def get_scene_types(self) -> list[str]:
@@ -448,6 +448,7 @@ class World:
                 odor STRING, emotional_state STRING, attachment_risk DOUBLE,
                 expectation_gap DOUBLE, penis_size STRING,
                 age INT64, circle_level INT64, robe_grade STRING,
+                led_color STRING,
                 PRIMARY KEY(id)
             )""",
 
