@@ -43,6 +43,7 @@ def _read_few_shot_map(directory: Path, keys: list[str], suffix: str = "") -> di
 
 class DefaultWorld(World):
     WORLD_ID = "default"
+    DEFAULT_PERSPECTIVE = 3
 
     def get_default_time(self) -> datetime:
         """기본 시작 시각을 반환합니다."""

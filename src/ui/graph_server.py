@@ -11,9 +11,14 @@
 # API Endpoints
 #   GET   /graph.json         : 현재 그래프 스냅샷 JSON
 #   GET   /api/threads        : DB가 있는 스레드 목록
-#   POST  /api/load           : {"threadId": "..."} → 해당 스레드 로드 후 스냅샷 반환
+#   GET   /api/schema         : ?threadId=... → Kuzu 테이블 스키마 목록
+#   POST  /api/load           : {"threadId": "..."} → DB 직접 로드 (lock 시 캐시 폴백)
 #   PATCH /api/node           : {"threadId","nodeId","updates"} → 노드 속성 수정 후 갱신 스냅샷 반환
 #   PATCH /api/edge           : {"threadId","source","target","updates"} → 엣지 속성 수정
+#
+# Static files
+#   /  /index.html  /ppt_viewer.html : 프로젝트 루트 ppt_viewer.html
+#   /export/graph_export.js 등       : public/graph/ 하위 정적 파일
 # ================================
 
 from __future__ import annotations
@@ -32,6 +37,7 @@ _HOST = "127.0.0.1"
 _PORT = 8765
 _PUBLIC_DIR = Path(__file__).resolve().parents[2] / "public" / "graph"
 _DEFAULT_VIEWER = "ppt_viewer.html"
+_ROOT_VIEWER = Path(__file__).resolve().parents[2] / "ppt_viewer.html"
 _SERVER: ThreadingHTTPServer | None = None
 _LOCK = threading.Lock()
 _LATEST_GRAPH: dict[str, Any] = GraphSnapshot().model_dump(by_alias=True)
@@ -50,9 +56,15 @@ def get_cached_graph_snapshot() -> dict[str, Any]:
 
 
 def _safe_static_path(request_path: str) -> Path | None:
-    """요청 경로를 public/graph 하위 정적 파일 경로로 제한합니다."""
+    """요청 경로를 정적 파일 경로로 변환합니다.
+
+    기본 뷰어(/  /index.html  /ppt_viewer.html)는 프로젝트 루트의 ppt_viewer.html을,
+    나머지 경로는 public/graph/ 하위 파일을 반환합니다.
+    """
     parsed_path = unquote(urlparse(request_path).path)
-    relative = _DEFAULT_VIEWER if parsed_path in {"/", "/index.html"} else parsed_path.lstrip("/")
+    if parsed_path in {"/", "/index.html", f"/{_DEFAULT_VIEWER}"}:
+        return _ROOT_VIEWER if _ROOT_VIEWER.is_file() else None
+    relative = parsed_path.lstrip("/")
     candidate = (_PUBLIC_DIR / relative).resolve()
     try:
         candidate.relative_to(_PUBLIC_DIR.resolve())
@@ -76,6 +88,10 @@ class _GraphHandler(BaseHTTPRequestHandler):
 
         if path == "/api/threads":
             self._send_threads()
+            return
+
+        if path == "/api/schema":
+            self._send_schema()
             return
 
         static_path = _safe_static_path(self.path)
@@ -137,7 +153,10 @@ class _GraphHandler(BaseHTTPRequestHandler):
             self._send(500, "text/plain; charset=utf-8", str(exc).encode("utf-8"))
 
     def _handle_load(self) -> None:
-        """요청된 스레드 DB를 그래프 스냅샷으로 로드합니다."""
+        """요청된 스레드 DB를 그래프 스냅샷으로 로드합니다.
+
+        DB를 먼저 읽으려 시도하고, lock 중이면 live 캐시로 폴백합니다.
+        """
         try:
             body = self._read_body()
             thread_id = body.get("threadId", "")
@@ -145,19 +164,16 @@ class _GraphHandler(BaseHTTPRequestHandler):
                 self._send(400, "text/plain; charset=utf-8", b"missing threadId")
                 return
 
-            cached = get_cached_graph_snapshot()
-            if cached.get("threadId") == thread_id and cached.get("nodes"):
-                payload = json.dumps(cached, ensure_ascii=False).encode("utf-8")
-                self._send(200, "application/json; charset=utf-8", payload)
-                return
-
             from src.ui.graph_loader import build_graph_from_thread
             try:
                 graph = build_graph_from_thread(thread_id)
+                payload = json.dumps(graph.model_dump(by_alias=True), ensure_ascii=False).encode("utf-8")
+                self._send(200, "application/json; charset=utf-8", payload)
+                return
             except RuntimeError as e:
                 if "Could not set lock" not in str(e):
                     raise
-                # DB가 Chainlit 세션에 의해 lock 중 — live 캐시를 재확인해 반환
+                # DB가 Chainlit 세션에 의해 lock 중 — live 캐시로 폴백
                 live = get_cached_graph_snapshot()
                 if live.get("nodes"):
                     payload = json.dumps(live, ensure_ascii=False).encode("utf-8")
@@ -165,9 +181,24 @@ class _GraphHandler(BaseHTTPRequestHandler):
                     return
                 msg = f"스레드가 Chainlit 세션에서 활성 중입니다. 자동 새로고침을 이용하세요. ({thread_id[:8]})"
                 self._send(423, "text/plain; charset=utf-8", msg.encode("utf-8"))
+        except Exception as exc:
+            self._send(500, "text/plain; charset=utf-8", str(exc).encode("utf-8"))
+
+    def _send_schema(self) -> None:
+        """스레드 Kuzu DB의 테이블 스키마 목록을 반환합니다."""
+        try:
+            from urllib.parse import parse_qs
+            params = parse_qs(urlparse(self.path).query)
+            thread_id = (params.get("threadId") or [""])[0]
+            if not thread_id:
+                cached = get_cached_graph_snapshot()
+                thread_id = str(cached.get("threadId") or "")
+            if not thread_id:
+                self._send(400, "text/plain; charset=utf-8", b"missing threadId")
                 return
-            # historical 로드는 live 캐시를 덮어쓰지 않는다 (캐시 오염 방지)
-            payload = json.dumps(graph.model_dump(by_alias=True), ensure_ascii=False).encode("utf-8")
+            from src.ui.graph_loader import get_thread_schema
+            tables = get_thread_schema(thread_id)
+            payload = json.dumps(tables, ensure_ascii=False).encode("utf-8")
             self._send(200, "application/json; charset=utf-8", payload)
         except Exception as exc:
             self._send(500, "text/plain; charset=utf-8", str(exc).encode("utf-8"))

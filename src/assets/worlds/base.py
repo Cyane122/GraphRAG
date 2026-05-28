@@ -12,6 +12,7 @@
 #             SCENE_TYPES: dict[str, str] — 씬 타입 이름 → 영문 설명 (classifier 프롬프트에 주입)
 #             get_scene_types() -> list[str]           : 타입 이름 목록 (내부 키 조회용)
 #             get_scene_descriptions() -> dict[str, str] : 전체 dict (classifier 주입용)
+#             get_default_perspective() -> int         : 세계 기본 시점 반환
 #             get_social_media_config() -> dict          : 카카오톡/SNS 기능 기본값과 월드 강제 비활성화 설정
 #             _build_tables(conn) -> None              : DDL 전용 (노드·관계 테이블, 벡터 인덱스, GlobalState)
 #             build_schema(conn, scenario_id) -> None  : 기본 구현은 _build_tables + build_scenario_data 호출
@@ -262,6 +263,7 @@ def _normalize_minute(raw_minute: object, raw_time: object) -> int:
 
 class World:
     WORLD_ID = "default"
+    DEFAULT_PERSPECTIVE = 3
 
     # 비어 있으면 이 세계는 단일 ChatProfile로 노출됩니다.
     # 항목이 있으면 각 Scenario가 별도 ChatProfile ('{world_id}/{scenario_id}')로 노출됩니다.
@@ -278,7 +280,7 @@ class World:
         narrator: Character | None = None,
         pc: Character | None = None,
         chars: list[Character] | None = None,
-        perspective: int = 1,
+        perspective: int | None = None,
         scenario_id: str | None = None,
     ) -> None:
         """세계 인스턴스를 초기화합니다.
@@ -291,7 +293,7 @@ class World:
         self.narrator = narrator
         self.pc = pc
         self.chars: list[Character] = chars or []
-        self.perspective = perspective
+        self.perspective = perspective if perspective is not None else self.DEFAULT_PERSPECTIVE
         self.scenario_id = scenario_id
 
     # classifier LLM에 주입할 씬 타입 정의. name → description(English).
@@ -319,6 +321,10 @@ class World:
     def get_default_time(self) -> datetime:
         """기본 시작 시각을 반환합니다."""
         return datetime.now()
+
+    def get_default_perspective(self) -> int:
+        """세계 기본 시점을 반환합니다."""
+        return int(self.perspective or self.DEFAULT_PERSPECTIVE)
 
     def get_world_section(self) -> str:
         """세계관 설명 XML 섹션을 반환합니다."""
@@ -364,6 +370,7 @@ class World:
             "few_shot_examples":    self.get_few_shot_examples(perspective),
             "additional_blacklist": self.get_blacklist(),
             "start_time":           start_time,
+            "perspective":          perspective,
             "pc_id":                self.get_pc_id(),
             "npc_id":               self.get_npc_id(),
             "npc_name_kor":         self.npc_name_kor(),

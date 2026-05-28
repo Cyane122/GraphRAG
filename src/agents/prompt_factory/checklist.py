@@ -179,4 +179,21 @@ def _render_current_pov_line(current_pov: dict) -> str:
     char_id = str(selected.get("id") or "").strip()
     source = str(selected.get("source") or "unknown").strip()
     label = f"{name}({char_id})" if char_id and char_id != name else name
-    return f"{label} | source={source} | access=current_pov only"
+    facts = _compact_pov_facts(selected)
+    facts_part = f" | canon={facts}" if facts else ""
+    return f"{label} | source={source} | access=current_pov only{facts_part}"
+
+
+def _compact_pov_facts(selected: dict) -> str:
+    """Return stable current-POV canon facts that prevent identity hallucination."""
+    profile = selected.get("profile") or {}
+    dynamic_state = selected.get("dynamic_state") or {}
+    fields = [
+        ("age", profile.get("age")),
+        ("gender", profile.get("gender")),
+        ("role", profile.get("role")),
+        ("status", profile.get("current_status") or dynamic_state.get("current_status")),
+        ("location", dynamic_state.get("location_id")),
+    ]
+    parts = [f"{key}={value}" for key, value in fields if value not in (None, "")]
+    return "; ".join(parts)

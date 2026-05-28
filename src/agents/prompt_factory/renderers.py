@@ -14,6 +14,7 @@
 #   - render_state_line(dyn_state: dict, world_config: dict | None) -> str : 상태 한 줄 렌더링
 #   - clean_prompt_dict(data: dict) -> dict : 내부 키·null 값 제거
 #   - join_rendered_context(rendered_context: dict[str, str]) -> str : 동적 컨텍스트 블록 결합
+#   - render_active_characters_section(char_data: dict, user_data: dict, npcs: list[dict], scene_types: list[str]) -> str : 현재 등장 캐릭터 프로필 렌더링
 #   - render_character_section(char_data: dict, scene_types: list[str]) -> str : 캐릭터 프로필 렌더링
 #   - render_npc_section(npcs: list[dict], char_name: str) -> str : 보조 NPC 렌더링
 #   - render_relationship_section(relationship: dict) -> str : 관계 레코드 렌더링
@@ -155,6 +156,40 @@ def join_rendered_context(rendered_context: dict[str, str]) -> str:
     )
     blocks = [rendered_context.get(key, "") for key in order]
     return "<world_context>\n" + "\n\n".join(block for block in blocks if block) + "\n</world_context>"
+
+
+def render_active_characters_section(
+    char_data: dict,
+    user_data: dict,
+    npcs: list[dict],
+    scene_types: list[str],
+) -> str:
+    """Render all currently active character prompt data as Markdown."""
+    character_blocks: list[str] = []
+    seen_ids: set[str] = set()
+
+    for role, data in (
+        ("PC / POV candidate", user_data),
+        ("Primary NPC", char_data),
+    ):
+        block = _render_character_markdown(role, data, scene_types)
+        char_id = str(data.get("id") or data.get("name") or "").strip()
+        if block and char_id not in seen_ids:
+            character_blocks.append(block)
+            seen_ids.add(char_id)
+
+    for npc in npcs:
+        char_id = str(npc.get("id") or npc.get("name") or "").strip()
+        if char_id in seen_ids:
+            continue
+        block = _render_character_markdown("Present NPC", _normalize_npc_prompt_data(npc), scene_types)
+        if block:
+            character_blocks.append(block)
+            seen_ids.add(char_id)
+
+    if not character_blocks:
+        return ""
+    return "<active_characters>\n" + "\n\n---\n\n".join(character_blocks) + "\n</active_characters>"
 
 
 def render_character_section(char_data: dict, scene_types: list[str]) -> str:
@@ -330,6 +365,76 @@ def render_location_context(location_nodes: list[dict]) -> str:
 def _json_block(tag: str, data: dict) -> str:
     """Render a JSON-backed XML-ish prompt block."""
     return f"<{tag}>\n{json.dumps(data, ensure_ascii=False, indent=2)}\n</{tag}>"
+
+
+def _normalize_npc_prompt_data(npc: dict) -> dict:
+    """Map secondary NPC records to the same prompt keys as primary characters."""
+    normalized = dict(npc)
+    if "profile" in npc and "static_profile" not in normalized:
+        normalized["static_profile"] = npc["profile"]
+    return normalized
+
+
+def _render_character_markdown(role: str, data: dict, scene_types: list[str]) -> str:
+    """Render one character's prompt sections as Markdown."""
+    if not data:
+        return ""
+    name = str(data.get("name") or data.get("id") or "?")
+    char_id = str(data.get("id") or "")
+    title = f"## {role}: {name}" + (f" ({char_id})" if char_id and char_id != name else "")
+    sections: list[str] = [title]
+
+    _append_markdown_section(sections, "Aliases", data.get("aliases"))
+    _append_markdown_section(sections, "Static Profile", data.get("static_profile"))
+    _append_markdown_section(sections, "Dynamic Information", data.get("dynamic_information"))
+    _append_markdown_section(sections, "Personality", data.get("personality"))
+    _append_markdown_section(sections, "Dynamic State", data.get("dynamic_state"))
+    if "intimate" in scene_types:
+        _append_markdown_section(sections, "Intimate Profile", data.get("intimate_profile"))
+    if "workplace" in scene_types:
+        _append_markdown_section(sections, "Workplace Profile", data.get("workplace_profile"))
+    _append_markdown_section(sections, "Speech Profiles", data.get("speech_profiles"))
+    _append_markdown_section(sections, "Relationship Profiles", data.get("relationship_profiles"))
+
+    return "\n\n".join(sections)
+
+
+def _append_markdown_section(sections: list[str], title: str, value: object) -> None:
+    """Append a non-empty Markdown subsection."""
+    if value in (None, "", [], {}):
+        return
+    cleaned = clean_prompt_dict(value) if isinstance(value, dict) else value
+    if cleaned in (None, "", [], {}):
+        return
+    sections.append(f"### {title}\n{_markdown_value(cleaned)}")
+
+
+def _markdown_value(value: object, indent: int = 0) -> str:
+    """Render nested prompt data as readable Markdown bullets."""
+    prefix = "  " * indent
+    if isinstance(value, dict):
+        lines: list[str] = []
+        for key, item in value.items():
+            if item in (None, "", [], {}):
+                continue
+            if isinstance(item, (dict, list)):
+                lines.append(f"{prefix}- {key}:")
+                lines.append(_markdown_value(item, indent + 1))
+            else:
+                lines.append(f"{prefix}- {key}: {item}")
+        return "\n".join(lines)
+    if isinstance(value, list):
+        lines = []
+        for item in value:
+            if item in (None, "", [], {}):
+                continue
+            if isinstance(item, (dict, list)):
+                lines.append(f"{prefix}-")
+                lines.append(_markdown_value(item, indent + 1))
+            else:
+                lines.append(f"{prefix}- {item}")
+        return "\n".join(lines)
+    return f"{prefix}{value}"
 
 
 def _append_scene_state(parts: list[str], scene_state: dict) -> None:

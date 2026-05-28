@@ -14,6 +14,7 @@ USER CONTROL: forbidden | first beat={char} perception/reaction/action/env conse
 CORE: continued=[yes/no] | summary-instead-action=[quote/none] | continuity=[yes/no] | new-conflict-overresolved=[quote/none]
 REALITY: time=[plausible/issue] | schedule-conflict=[quote/none] | posture/reach/LOS=[ok/issue] | impossible-action=[quote/none]
 STYLE: flow=[connected/choppy] | sensory-entry=[yes/no] | designation=[clear/issue] | body-part-as-person=[quote/none] | repeated-opening=[quote/none] | closing=[body/object/env/action/sfx]
+PERSON: first-person outside quoted dialogue=[quote/none] | if quote found, rewrite before final prose
 EMOTION: evidence-only=[yes/no] | label=[quote/none] | repeated-reaction=[quote/none] | show-then-tell=[quote/none]
 USER IMPERSONATION: generated-action=[quote/none] | generated-dialogue=[quote/none] | inner/sensation/decision=[quote/none] | scale-boost=[quote/none]
 POV LEAK: omniscient=[quote/none] | NPC-inner=[quote/none] | offscreen-truth=[quote/none]

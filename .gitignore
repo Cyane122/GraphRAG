@@ -11,6 +11,9 @@ graph/
 data/
 scripts/
 chat/
+tests/
+.junie/
+docs/
 
 .chainlit/
 .claude/

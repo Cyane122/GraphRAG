@@ -286,6 +286,5 @@ world_instance = MyWorld(
 | `EMBEDDING_DIM`         | 임베딩 차원 수             |
 | `HF_TOKEN`              | HuggingFace API 토큰   |
 | `WORLD_ID`              | 활성 세계 ID             |
-| `PERSPECTIVE`           | `1` = 1인칭, `3` = 3인칭 |
 | `MAX_TOKEN`             | Actor 출력 토큰 상한       |
 | `IMPERSONATION`         | PC-as-NPC 모드 플래그     |

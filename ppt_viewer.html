@@ -1,0 +1,1352 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GraphRAG Studio</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  /* Base */
+  --bg:       #09090e;
+  --s1:       #111118;
+  --s2:       #16161f;
+  --s3:       #1d1d28;
+  /* Text */
+  --t1: #fafafa;
+  --t2: rgba(250,250,250,.55);
+  --t3: rgba(250,250,250,.28);
+  /* Borders */
+  --b1: rgba(255,255,255,.06);
+  --b2: rgba(255,255,255,.11);
+  --b3: rgba(255,255,255,.18);
+  /* Accent */
+  --ac:     #8b5cf6;
+  --ac-dim: rgba(139,92,246,.14);
+  --ac-glow:rgba(139,92,246,.28);
+  /* Status */
+  --ok: #34d399;
+  --er: #f87171;
+  /* Node type colors */
+  --nc: #a78bfa; /* character  — violet   */
+  --nl: #34d399; /* location   — emerald  */
+  --ne: #fbbf24; /* event      — amber    */
+  --ns: #60a5fa; /* state      — sky      */
+  --ng: #94a3b8; /* global     — slate    */
+  --ni: #818cf8; /* info       — indigo   */
+  --nf: #2dd4bf; /* fact       — teal     */
+  --np: #fb7185; /* static     — rose     */
+}
+
+html, body { height: 100%; background: var(--bg); color: var(--t1);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: 13px; overflow: hidden; }
+
+body { display: grid; grid-template-rows: 56px 1fr; }
+
+/* ─── HEADER ─────────────────────────────────────── */
+header {
+  display: flex; align-items: center; gap: 12px; padding: 0 18px;
+  background: var(--s1);
+  border-bottom: 1px solid var(--b1);
+  position: relative;
+}
+header::after {
+  content: "";
+  position: absolute; bottom: 0; left: 0; right: 0; height: 1px;
+  background: linear-gradient(90deg, transparent, var(--ac-glow) 30%, rgba(96,165,250,.2) 70%, transparent);
+}
+
+.brand { display: flex; align-items: center; gap: 9px; flex-shrink: 0; }
+.brand-logo {
+  width: 28px; height: 28px; border-radius: 8px;
+  background: linear-gradient(135deg, #4c1d95, #1e3a8a);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; box-shadow: 0 0 0 1px rgba(139,92,246,.4), 0 4px 12px rgba(0,0,0,.4);
+}
+.brand-name { font-size: 14px; font-weight: 700; letter-spacing: -.02em; color: var(--t1); }
+.brand-ver  { font-size: 10px; color: var(--t3); margin-left: 2px; }
+.hdiv { width: 1px; height: 20px; background: var(--b2); flex-shrink: 0; }
+
+.toolbar { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+
+.ctl {
+  height: 30px; background: var(--s2); border: 1px solid var(--b2);
+  border-radius: 7px; color: var(--t1); font-size: 12px; padding: 0 10px;
+  outline: none; transition: border-color .15s, box-shadow .15s; font-family: inherit;
+}
+.ctl:focus { border-color: var(--ac); box-shadow: 0 0 0 3px var(--ac-dim); }
+
+#thread-select { width: 210px; }
+#search-input  { width: 170px; }
+#type-filter   { width: 130px; }
+
+.btn {
+  height: 30px; padding: 0 13px; border-radius: 7px; border: 1px solid var(--b2);
+  background: var(--s2); color: var(--t1); font-size: 12px; font-weight: 600;
+  cursor: pointer; transition: all .15s; font-family: inherit; white-space: nowrap;
+}
+.btn:hover  { border-color: var(--b3); background: var(--s3); }
+.btn:active { transform: scale(.97); }
+.btn:disabled { opacity: .45; cursor: not-allowed; transform: none; }
+.btn-v { background: var(--ac-dim); border-color: rgba(139,92,246,.35); color: var(--ac); }
+.btn-v:hover { background: rgba(139,92,246,.22); border-color: rgba(139,92,246,.55); }
+.btn-sm { height: 26px; padding: 0 10px; font-size: 11px; border-radius: 6px; }
+.btn-cancel { background: rgba(248,113,113,.1); border-color: rgba(248,113,113,.3); color: var(--er); }
+
+.stats { margin-left: auto; display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+#s-world { display: none; }
+.stat-chip {
+  display: flex; align-items: center; gap: 5px; padding: 0 9px; height: 24px;
+  border-radius: 99px; background: var(--s2); border: 1px solid var(--b1); font-size: 11px;
+}
+.sc-v { font-weight: 700; color: var(--t1); }
+.sc-l { color: var(--t3); }
+
+/* ─── BODY GRID ──────────────────────────────────── */
+.app-body { display: grid; grid-template-rows: 1fr 248px; min-height: 0; overflow: hidden; }
+.main-area { display: grid; grid-template-columns: 260px minmax(0, 1fr); min-height: 0; }
+
+/* ─── EXPLORER SIDEBAR ───────────────────────────── */
+.explorer-panel {
+  display: flex; flex-direction: column; min-height: 0; overflow: hidden;
+  background: var(--s1); border-right: 1px solid var(--b1);
+}
+.explorer-head {
+  flex-shrink: 0; height: 42px; padding: 0 12px;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  border-bottom: 1px solid var(--b1);
+}
+.explorer-title {
+  font-size: 11px; font-weight: 800; color: var(--t2);
+  letter-spacing: .06em; text-transform: uppercase;
+}
+.explorer-count { color: var(--t3); font-size: 11px; }
+#explorer-list { flex: 1; min-height: 0; overflow-y: auto; padding: 8px; scrollbar-width: thin; scrollbar-color: var(--b2) transparent; }
+.explorer-item {
+  width: 100%; min-height: 44px; height: auto; margin-bottom: 6px; padding: 7px 8px;
+  display: flex; align-items: center; gap: 9px;
+  border: 1px solid var(--b1); border-radius: 8px; background: transparent;
+  color: var(--t1); cursor: pointer; text-align: left; font-family: inherit;
+}
+.explorer-item:hover, .explorer-item.active { border-color: rgba(139,92,246,.45); background: rgba(139,92,246,.10); }
+.explorer-glyph {
+  flex-shrink: 0; min-width: 28px; max-width: 78px; height: 28px; padding: 0 7px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1.5px solid; border-radius: 999px; font-size: 11px; font-weight: 800;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.explorer-meta { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.explorer-name, .explorer-type { display: block; }
+.global-glyph { min-width: 86px; max-width: 120px; border-color: #94a3b8 !important; color: #94a3b8 !important; background: rgba(148,163,184,.08); }
+.explorer-name { font-size: 12px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.explorer-type { font-size: 10px; color: var(--t3); text-transform: uppercase; }
+
+/* ─── GRAPH PANEL ────────────────────────────────── */
+.graph-panel {
+  position: relative; background: var(--bg); overflow: hidden;
+  border-right: 1px solid var(--b1); cursor: grab;
+}
+.graph-panel.is-dragging { cursor: grabbing; user-select: none; }
+
+/* Radial gradient for graph bg depth */
+.graph-panel::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(ellipse 60% 50% at 50% 50%,
+    rgba(139,92,246,.04) 0%, transparent 70%);
+}
+
+/* Dot grid */
+.graph-panel::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background-image: radial-gradient(circle, rgba(255,255,255,.06) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+#graph-svg { width: 100%; height: 100%; display: block; position: relative; z-index: 1; }
+
+.graph-badge {
+  position: absolute; bottom: 12px; left: 14px; z-index: 3;
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 10px; border-radius: 8px; font-size: 11px; color: var(--t3);
+  background: rgba(9,9,14,.75); backdrop-filter: blur(6px);
+  border: 1px solid var(--b1); pointer-events: none;
+}
+.graph-badge-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok);
+  box-shadow: 0 0 6px var(--ok); }
+
+/* ─── DETAIL PANEL ───────────────────────────────── */
+.detail-panel {
+  position: fixed; top: 72px; left: 50%; bottom: 24px; z-index: 250;
+  width: min(920px, calc(100vw - 48px));
+  display: flex; flex-direction: column; background: var(--s1);
+  min-height: 0; overflow: hidden; border: 1px solid var(--b2); border-radius: 12px;
+  box-shadow: 0 24px 90px rgba(0,0,0,.62);
+  opacity: 0; pointer-events: none; transform: translate(-50%, 16px) scale(.98);
+  transition: opacity .16s ease, transform .16s ease;
+}
+.detail-panel.open { opacity: 1; pointer-events: auto; transform: translate(-50%, 0) scale(1); }
+#detail-empty {
+  flex: 1; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 10px; color: var(--t3); padding: 20px; text-align: center;
+}
+.de-icon { font-size: 40px; opacity: .3; }
+.de-text { font-size: 12px; line-height: 1.6; }
+
+#detail-header { flex-shrink: 0; }
+#detail-body   { flex: 1; overflow-y: auto; min-height: 0; scrollbar-width: thin;
+  scrollbar-color: var(--b2) transparent; }
+
+/* Node header */
+.node-header {
+  padding: 18px 16px 14px;
+  background: linear-gradient(180deg, var(--s2) 0%, var(--s1) 100%);
+  border-bottom: 1px solid var(--b1);
+  display: flex; align-items: flex-start; gap: 13px;
+}
+.node-av {
+  flex-shrink: 0; min-width: 46px; max-width: 168px; height: 46px; padding: 0 12px; border-radius: 999px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px; font-weight: 800;
+  box-shadow: 0 0 0 2px var(--bg), 0 0 0 3px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.node-hd-info { flex: 1; min-width: 0; }
+.node-hd-name { font-size: 15px; font-weight: 700; line-height: 1.3;
+  overflow-wrap: anywhere; letter-spacing: -.01em; }
+.node-hd-sub  { margin-top: 3px; font-size: 11px; color: var(--t2); }
+.node-type-pill {
+  display: inline-flex; align-items: center; gap: 4px;
+  margin-top: 7px; height: 20px; padding: 0 9px;
+  border-radius: 99px; font-size: 10px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .05em; border: 1px solid;
+}
+.node-type-dot { width: 6px; height: 6px; border-radius: 50%; }
+.node-hd-actions { flex-shrink: 0; padding-top: 3px; }
+
+/* Tabs */
+.tab-bar {
+  display: flex; background: var(--s1); border-bottom: 1px solid var(--b1);
+  overflow-x: auto; scrollbar-width: none; flex-shrink: 0;
+  position: sticky; top: 0; z-index: 4;
+}
+.tab-bar::-webkit-scrollbar { display: none; }
+.tab-btn {
+  flex-shrink: 0; height: 36px; padding: 0 13px;
+  border: none; border-bottom: 2px solid transparent; border-radius: 0;
+  background: transparent; color: var(--t2); font-size: 12px;
+  cursor: pointer; white-space: nowrap; font-family: inherit;
+  display: flex; align-items: center; gap: 5px; transition: color .12s;
+}
+.tab-btn:hover  { color: var(--t1); }
+.tab-btn.active { color: var(--ac); border-bottom-color: var(--ac); }
+.tab-ct { padding: 12px 14px 20px; }
+.tbadge {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 16px; height: 16px; padding: 0 4px; border-radius: 99px;
+  background: rgba(139,92,246,.15); color: var(--ac); font-size: 9px; font-weight: 700;
+}
+
+/* KV rows */
+.sec-ttl {
+  margin: 16px 0 8px; font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .06em; color: var(--t3); display: flex; align-items: center; gap: 6px;
+}
+.sec-ttl::after { content: ""; flex: 1; height: 1px; background: var(--b1); }
+.kv-row {
+  margin-bottom: 5px; padding: 9px 11px; border: 1px solid var(--b1);
+  border-radius: 8px; background: var(--s2); transition: border-color .12s;
+}
+.kv-row:hover { border-color: var(--b2); }
+.kv-row.editable { border-color: rgba(139,92,246,.25); background: rgba(139,92,246,.04); }
+.kv-key { font-size: 10px; color: var(--t3); font-weight: 600;
+  text-transform: uppercase; letter-spacing: .04em; }
+.kv-val { margin-top: 4px; font-size: 12px; line-height: 1.5;
+  color: var(--t1); white-space: pre-wrap; overflow-wrap: anywhere; }
+.edit-input {
+  width: 100%; margin-top: 4px; padding: 5px 8px;
+  border: 1px solid rgba(139,92,246,.4); border-radius: 6px;
+  background: rgba(9,9,14,.8); color: var(--t1); font-size: 12px;
+  font-family: inherit; line-height: 1.4; resize: none; overflow: hidden;
+  box-sizing: border-box; outline: none; transition: border-color .12s;
+}
+.edit-input:focus { border-color: var(--ac); box-shadow: 0 0 0 3px var(--ac-dim); }
+.edit-num { width: 56px; height: 24px; padding: 0 6px; text-align: right; resize: none; }
+
+/* Stat bars */
+.stat-row { display: flex; align-items: center; gap: 8px; margin-top: 7px; }
+.stat-lbl { flex-shrink: 0; width: 42px; font-size: 10px; color: var(--t3); text-align: right; }
+.stat-track { flex: 1; height: 6px; border-radius: 99px; background: rgba(255,255,255,.06); overflow: hidden; }
+.stat-fill  { height: 100%; border-radius: 99px; transition: width .4s ease; }
+.stat-num   { flex-shrink: 0; width: 30px; font-size: 11px; font-weight: 700; text-align: right; }
+
+/* Relation cards */
+.rel-card {
+  margin-bottom: 8px; padding: 11px 12px; border: 1px solid var(--b1);
+  border-radius: 10px; background: var(--s2); transition: border-color .12s;
+}
+.rel-card:hover { border-color: var(--b2); }
+.rel-head { display: flex; align-items: center; gap: 9px; margin-bottom: 8px; }
+.rel-av {
+  flex-shrink: 0; width: 34px; height: 34px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700; cursor: pointer; background: transparent;
+  border: 1.5px solid; transition: opacity .1s; font-family: inherit;
+}
+.rel-av:hover { opacity: .7; }
+.rel-info { flex: 1; min-width: 0; }
+.rel-name {
+  font-size: 12px; font-weight: 600; cursor: pointer; background: none; border: none;
+  color: var(--t1); padding: 0; font-family: inherit; text-align: left;
+  display: block; width: 100%; transition: color .12s;
+}
+.rel-name:hover { color: var(--ac); }
+.rel-status { font-size: 11px; color: var(--t2); margin-top: 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rel-dur { font-size: 10px; color: var(--t3); margin-top: 1px; }
+
+/* Event & fact cards */
+.ev-card {
+  position: relative; margin-bottom: 7px; padding: 10px 12px 10px 15px;
+  border: 1px solid rgba(251,191,36,.12); border-left: 3px solid var(--ne);
+  border-radius: 8px; background: rgba(251,191,36,.05); cursor: pointer;
+  text-align: left; width: 100%; color: var(--t1); font-family: inherit;
+  display: block; transition: background .12s;
+}
+.ev-card:hover { background: rgba(251,191,36,.09); }
+.ev-badge {
+  position: absolute; top: 8px; right: 10px;
+  font-size: 10px; font-weight: 700; color: var(--ne);
+  background: rgba(251,191,36,.12); padding: 2px 7px; border-radius: 99px;
+}
+.ev-sum  { font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; padding-right: 52px; }
+.ev-time { margin-top: 4px; font-size: 10px; color: var(--t2); }
+.fc-card {
+  margin-bottom: 7px; padding: 10px 12px 10px 15px;
+  border: 1px solid rgba(45,212,191,.12); border-left: 3px solid var(--nf);
+  border-radius: 8px; background: rgba(45,212,191,.05); cursor: pointer;
+  text-align: left; width: 100%; color: var(--t1); font-family: inherit; display: block;
+}
+.fc-key  { font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+.fc-meta { margin-top: 3px; font-size: 11px; color: var(--t2); }
+.fc-conf { margin-top: 2px; font-size: 10px; color: var(--t3); }
+
+/* Trait bars */
+.trait-card {
+  margin-bottom: 10px; padding: 10px 12px 12px;
+  border: 1px solid rgba(129,140,248,.22); border-radius: 10px; background: var(--s2);
+}
+.trait-bars { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px 12px; }
+.trait-pair {
+  display: grid; grid-template-columns: minmax(54px, 78px) minmax(120px, 1fr) minmax(54px, 78px);
+  gap: 7px; align-items: center; min-width: 0;
+}
+.trait-name { font-size: 11px; color: var(--t2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trait-name.left { text-align: right; }
+.trait-name.right { text-align: left; }
+.trait-axis-bar {
+  position: relative; height: 12px; border-radius: 999px; background: rgba(255,255,255,.07);
+  overflow: hidden; border: 1px solid rgba(255,255,255,.08);
+}
+.trait-axis-bar::before {
+  content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: rgba(250,250,250,.28);
+}
+.trait-fill { position: absolute; top: 0; bottom: 0; }
+.trait-fill.left { right: 50%; background: #fb7185; }
+.trait-fill.right { left: 50%; background: #60a5fa; }
+.trait-value { color: var(--t3); font-size: 10px; margin-left: 5px; }
+@media (max-width: 760px) {
+  .trait-bars { grid-template-columns: 1fr; }
+}
+
+/* Save btn */
+.save-btn {
+  display: block; width: calc(100% - 28px); margin: 10px 14px 16px;
+  height: 36px; border-radius: 8px;
+  background: var(--ac-dim); border: 1px solid rgba(139,92,246,.4);
+  color: var(--ac); font-size: 13px; font-weight: 700;
+  cursor: pointer; transition: all .14s; font-family: inherit;
+}
+.save-btn:hover { background: rgba(139,92,246,.24); }
+.save-btn:disabled { opacity: .45; cursor: not-allowed; }
+
+/* Pill / connected */
+.pill {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 7px 10px; border: 1px solid var(--b1); border-radius: 8px;
+  background: var(--s2); font-size: 11px; margin-bottom: 5px;
+  cursor: pointer; width: 100%; text-align: left; color: var(--t1);
+  font-family: inherit; transition: border-color .12s;
+}
+.pill:hover { border-color: var(--b3); }
+
+/* ─── LOG PANEL ──────────────────────────────────── */
+.log-panel {
+  border-top: 1px solid var(--b1); background: var(--s1);
+  display: flex; flex-direction: column; min-height: 0; overflow: hidden;
+}
+.log-tabs {
+  display: flex; align-items: center; background: var(--s2);
+  border-bottom: 1px solid var(--b1); padding: 0 10px; flex-shrink: 0; gap: 2px;
+}
+.log-tab {
+  height: 36px; padding: 0 12px; border: none;
+  border-bottom: 2px solid transparent; background: transparent;
+  color: var(--t2); font-size: 12px; cursor: pointer;
+  display: flex; align-items: center; gap: 5px; transition: color .12s; font-family: inherit;
+}
+.log-tab:hover  { color: var(--t1); }
+.log-tab.active { color: var(--ac); border-bottom-color: var(--ac); }
+.log-content {
+  flex: 1; overflow-y: auto; overflow-x: hidden; padding: 10px 14px;
+  scrollbar-width: thin; scrollbar-color: var(--b2) transparent;
+}
+
+/* ─── TOASTS ─────────────────────────────────────── */
+#toasts { position: fixed; top: 64px; right: 16px; z-index: 400;
+  display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
+@keyframes tst-in  { from { opacity:0; transform:translateX(18px) scale(.96); }
+                     to   { opacity:1; transform:translateX(0) scale(1); } }
+@keyframes tst-out { from { opacity:1; transform:scale(1); }
+                     to   { opacity:0; transform:scale(.94); } }
+.toast {
+  display: flex; align-items: flex-start; gap: 9px;
+  min-width: 240px; max-width: 340px; padding: 11px 13px;
+  border-radius: 10px; border: 1px solid var(--b2);
+  background: rgba(17,17,24,.92); backdrop-filter: blur(10px);
+  box-shadow: 0 8px 28px rgba(0,0,0,.5);
+  animation: tst-in .2s cubic-bezier(.34,1.36,.64,1);
+  pointer-events: all; font-size: 12px; color: var(--t1);
+}
+.toast.tout { animation: tst-out .25s ease forwards; }
+.toast-ok { border-color: rgba(52,211,153,.25); }
+.toast-er { border-color: rgba(248,113,113,.25); }
+.toast-body { flex: 1; line-height: 1.5; }
+.toast-x {
+  flex-shrink: 0; background: none; border: none; color: var(--t3);
+  font-size: 14px; cursor: pointer; padding: 0; font-family: inherit;
+}
+.toast-x:hover { color: var(--t1); }
+
+/* ─── MISC ───────────────────────────────────────── */
+.empty { text-align: center; color: var(--t3); font-size: 12px; padding: 16px 0; }
+.detail-close {
+  width: 28px; height: 28px; padding: 0; border-radius: 7px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--b2); background: var(--s2); color: var(--t2);
+  cursor: pointer; font-family: inherit; font-size: 14px;
+}
+.detail-close:hover { color: var(--t1); border-color: var(--b3); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <div class="brand-logo">⬡</div>
+    <div class="brand-name">GraphRAG Studio</div>
+  </div>
+  <div class="hdiv"></div>
+  <div class="toolbar">
+    <select class="ctl" id="thread-select"><option value="">Latest thread</option></select>
+    <button class="btn btn-v" id="load-btn">Load</button>
+    <input class="ctl" id="search-input" type="search" placeholder="노드 검색…" autocomplete="off">
+    <select class="ctl" id="type-filter"><option value="all">All types</option></select>
+  </div>
+  <div class="stats">
+    <div class="stat-chip"><span class="sc-v" id="s-nodes">0</span><span class="sc-l">nodes</span></div>
+    <div class="stat-chip"><span class="sc-v" id="s-edges">0</span><span class="sc-l">edges</span></div>
+    <div class="stat-chip" id="s-world" style="max-width:180px;overflow:hidden;text-overflow:ellipsis"><span class="sc-l">—</span></div>
+  </div>
+</header>
+
+<div class="app-body">
+  <div class="main-area">
+
+    <!-- Node explorer -->
+    <aside class="explorer-panel">
+      <div class="explorer-head">
+        <div class="explorer-title">Nodes</div>
+        <div class="explorer-count" id="explorer-count">0개</div>
+      </div>
+      <div id="explorer-list"></div>
+    </aside>
+
+    <!-- Graph canvas -->
+    <div class="graph-panel">
+      <svg id="graph-svg"></svg>
+      <!-- Status badge -->
+      <div class="graph-badge">
+        <div class="graph-badge-dot" id="badge-dot"></div>
+        <span id="graph-info-text">스레드를 로드하세요</span>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Log panel -->
+  <div class="log-panel">
+    <div class="log-tabs">
+      <button class="log-tab active" data-ltab="events">Events</button>
+      <button class="log-tab" data-ltab="relations">Relations</button>
+      <button class="log-tab" data-ltab="facts">Facts</button>
+    </div>
+    <div class="log-content" id="log-content"></div>
+  </div>
+</div>
+
+<!-- Detail overlay -->
+<div class="detail-panel" id="detail-panel" aria-modal="true" aria-label="Node detail">
+  <div id="detail-empty">
+    <div class="de-icon">◎</div>
+    <div class="de-text">노드를 클릭하면<br>상세 정보가 표시됩니다</div>
+  </div>
+  <div id="detail-header" style="display:none"></div>
+  <div id="detail-body" style="display:none;flex:1;overflow-y:auto;min-height:0;scrollbar-width:thin;scrollbar-color:var(--b2) transparent"></div>
+</div>
+
+<div id="toasts"></div>
+
+<script src="export/graph_export.js"></script>
+<script>
+"use strict";
+
+/* ═══ PALETTE ════════════════════════════════════════════════════════ */
+const PAL = {
+  character:          { s:"#a78bfa", f:"#211a34" },
+  location:           { s:"#34d399", f:"#123028" },
+  event:              { s:"#fbbf24", f:"#332711" },
+  memory:             { s:"#e879f9", f:"#2d1832" },
+  state:              { s:"#60a5fa", f:"#14253c" },
+  global:             { s:"#94a3b8", f:"#1b2028" },
+  info:               { s:"#818cf8", f:"#1b1d38" },
+  dynamic_information:{ s:"#818cf8", f:"#1b1d38" },
+  personal_fact:      { s:"#2dd4bf", f:"#12312d" },
+  static:             { s:"#fb7185", f:"#351923" },
+  static_information: { s:"#fb7185", f:"#351923" },
+};
+const DEF_PAL = { s:"#fbbf24", f:"#332711" };
+
+const TYPE_LABEL = {
+  character:"Character", location:"Location", event:"Event", state:"State",
+  memory:"Memory", global:"Global", info:"Info", dynamic_information:"Info",
+  personal_fact:"Fact", static:"Profile", static_information:"Profile",
+};
+const SKIP = new Set(["id","_id","_label","_offset","_table"]);
+const TRAIT_LABEL = {
+  trait_direction_of_energy:"Direction of Energy",
+  trait_recognition:"Recognition",
+  trait_judgement:"Judgement",
+  trait_life_pattern:"Life Pattern",
+  trait_achievement_orientation:"Achievement Orientation",
+  trait_emotional_reactivity:"Emotional Reactivity",
+  trait_attachment_orientation:"Attachment Orientation",
+  trait_social_attention:"Social Attention",
+  trait_control_orientation:"Control Orientation",
+  trait_moral_orientation:"Moral Orientation",
+  trait_pleasure_orientation:"Pleasure Orientation",
+  trait_trust_orientation:"Trust Orientation",
+  trait_vitality:"Vitality",
+  trait_self_esteem:"Self-Esteem",
+  trait_empathy:"Empathy",
+  trait_relational_exclusivity:"Relational Exclusivity",
+};
+const TRAIT_AXES = [
+  {key:"trait_direction_of_energy", positive:"외향적", negative:"내향적"},
+  {key:"trait_recognition", positive:"감각적", negative:"직관적"},
+  {key:"trait_judgement", positive:"이성적", negative:"감정적"},
+  {key:"trait_life_pattern", positive:"계획적", negative:"즉흥적"},
+  {key:"trait_achievement_orientation", positive:"성취지향", negative:"안정지향"},
+  {key:"trait_emotional_reactivity", positive:"예민함", negative:"둔감함"},
+  {key:"trait_attachment_orientation", positive:"의존적", negative:"독립적"},
+  {key:"trait_social_attention", positive:"주목추구", negative:"비노출"},
+  {key:"trait_control_orientation", positive:"주도적", negative:"순응적"},
+  {key:"trait_moral_orientation", positive:"원칙중심", negative:"현실타협"},
+  {key:"trait_pleasure_orientation", positive:"쾌락추구", negative:"절제"},
+  {key:"trait_trust_orientation", positive:"신뢰형", negative:"경계형"},
+  {key:"trait_vitality", positive:"활력형", negative:"비활력형"},
+  {key:"trait_self_esteem", positive:"자존감 높음", negative:"자존감 낮음"},
+  {key:"trait_empathy", positive:"감정이입", negative:"냉담"},
+  {key:"trait_relational_exclusivity", positive:"독점욕", negative:"개방적"},
+];
+
+/* ═══ STATE ══════════════════════════════════════════════════════════ */
+let graph = { nodes:[], edges:[] };
+let sel = "";
+let centerId = "";
+let centerHistory = [];
+let activeTab = "info";
+let activeEventId = "";
+let logTab = "events";
+let editMode = false;
+let saving = false;
+let manualTid = "";
+let lastPayload = "";
+let knownEvtIds = new Set();
+let panX = 0, panY = 0;
+let dragging = false, didDrag = false;
+let dragStart = { x:0, y:0, px:0, py:0 };
+let threadSyncErrorShown = false;
+let liveThreadId = "";
+
+const GRAPH_SERVER_ORIGIN = "http://127.0.0.1:8765";
+
+/* ═══ DOM REFS ═══════════════════════════════════════════════════════ */
+const $  = id => document.getElementById(id);
+const threadSel   = $("thread-select");
+const loadBtn     = $("load-btn");
+const searchInp   = $("search-input");
+const typeFilter  = $("type-filter");
+const gSvg        = $("graph-svg");
+const badgeDot    = $("badge-dot");
+const graphInfoTx = $("graph-info-text");
+const explorerList = $("explorer-list");
+const explorerCount = $("explorer-count");
+const detailPanel = $("detail-panel");
+const detailEmpty = $("detail-empty");
+const detailHdr   = $("detail-header");
+const detailBody  = $("detail-body");
+const logContent  = $("log-content");
+const sNodes      = $("s-nodes");
+const sEdges      = $("s-edges");
+const sWorld      = $("s-world");
+const toastsEl    = $("toasts");
+
+/* ═══ UTILS ══════════════════════════════════════════════════════════ */
+function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+function short(v,n=40){const s=String(v??"");return s.length<=n?s:s.slice(0,n-1)+"…"}
+function initials(lbl){
+  const s=String(lbl||"?").trim();if(!s)return"?";
+  const p=s.split(/\s+/);return p.length>1?(p[0][0]+p[1][0]).toUpperCase():[...s].slice(0,2).join("")}
+function glyph(node){
+  if(isChar(node))return String(node.label||"?");
+  if(node?.type==="static_information"||node?.type==="static")return"S";
+  if(node?.type==="dynamic_information"||node?.type==="info")return"D";
+  if(node?.type==="state")return"S";
+  if(node?.type==="event")return"E";
+  if(node?.type==="memory")return"M";
+  if(node?.type==="location")return"L";
+  if(node?.type==="personal_fact")return"F";
+  if(node?.type==="global")return"G";
+  return initials(node?.label)}
+function nodeById(id){return(graph.nodes||[]).find(n=>n.id===id)}
+function isChar(n){return n?.type==="character"}
+function pal(type){return PAL[type]||DEF_PAL}
+function tlbl(type){return TYPE_LABEL[type]||type}
+function charId(node){return String(node?.details?.id||node?.id?.replace(/^character:/,"")||"")}
+function fmtVal(v){return typeof v==="object"&&v!==null?JSON.stringify(v,null,2):String(v??"")}
+function charDisplayNameByRawId(raw){
+  const rid=String(raw||"").trim();
+  if(!rid)return "";
+  const candidates=[rid, `character:${rid}`];
+  for(const id of candidates){const n=nodeById(id);if(n)return n.label||rid;}
+  const byDetails=(graph.nodes||[]).find(n=>n.type==="character"&&String(n.details?.id||"")===rid);
+  return byDetails?.label||rid;
+}
+function parseMaybeJsonArray(value){
+  if(Array.isArray(value))return value;
+  if(typeof value==="string"){
+    const s=value.trim();
+    if(s.startsWith("[")&&s.endsWith("]")){try{const p=JSON.parse(s);if(Array.isArray(p))return p;}catch(_){}}
+  }
+  return null;
+}
+function fmtField(k,v){
+  const key=String(k||"").toLowerCase();
+  if(["current_chars","currentchars","current_characters","currentcharacters"].includes(key)){
+    const arr=parseMaybeJsonArray(v);
+    if(arr)return arr.map(charDisplayNameByRawId).filter(Boolean).join(", ");
+  }
+  return fmtVal(v);
+}
+function tid(){return manualTid||graph.threadId||""}
+function keyLabel(k){return TRAIT_LABEL[k]||String(k).replace(/^trait_/,"").replaceAll("_"," ")}
+function searchable(node){return`${node.id} ${node.label} ${node.subtitle} ${JSON.stringify(node.details||{})}`.toLowerCase()}
+function isOwnedInfoNode(node){
+  if(!node)return false;
+  const t=String(node.type||"").toLowerCase();
+  const id=String(node.id||"").toLowerCase();
+  const label=String(node.label||"").toLowerCase();
+  return ["state","static","static_information","dynamic_information","info","dynamicstate","staticinformation","dynamicinformation","staticprofile"].includes(t)
+    || id.startsWith("state:") || id.startsWith("static:") || id.startsWith("info:")
+    || label.endsWith(" dynamicstate") || label.endsWith(" dynamicinformation") || label.endsWith(" staticinformation") || label.endsWith(" staticprofile");
+}
+function hiddenProfileEdge(edge){
+  return ["HAS_STATE","HAS_PROFILE","HAS_INFO"].includes(String(edge?.label||""));
+}
+function visibleNode(node){
+  if(isOwnedInfoNode(node))return false;
+  const q=searchInp.value.trim().toLowerCase();
+  const t=typeFilter.value;
+  return(t==="all"||node.type===t)&&(!q||searchable(node).includes(q))}
+function traitList(data){
+  return Object.entries(data||{}).filter(([k,v])=>k.startsWith("trait_")&&Number.isFinite(Number(v)))
+    .map(([k,v])=>({k,label:keyLabel(k),v:Math.max(-1,Math.min(1,Number(v)))}))}
+function traitValue(data,key){
+  const v=Number(data?.[key]);
+  return Number.isFinite(v)?Math.max(-1,Math.min(1,v)):0}
+function graphCenterId(){
+  if(centerId&&nodeById(centerId)&&visibleNode(nodeById(centerId)))return centerId;
+  const nodes=(graph.nodes||[]).filter(visibleNode);
+  return nodes.find(n=>n.type==="character")?.id||nodes[0]?.id||""}
+function scoreColor(n){
+  n=Number(n??0);
+  if(n>=70)return"#34d399";if(n>=35)return"#86efac";
+  if(n>=0)return"#93c5fd";if(n>=-35)return"#fcd34d";return"#f87171"}
+function apiUrl(path){
+  const onGraphServer = location.hostname==="127.0.0.1"&&location.port==="8765";
+  return onGraphServer?path:GRAPH_SERVER_ORIGIN+path}
+function staticExport(){return window.GRAPH_EXPORT||null}
+function exportedThreads(){return staticExport()?.threads||[]}
+function exportedSnapshot(threadId){
+  const data=staticExport();
+  if(!data)return null;
+  return data.snapshots?.[threadId]||null}
+
+/* ═══ TYPE FILTER SYNC ═══════════════════════════════════════════════ */
+function syncTypeFilter(){
+  const types=[...new Set((graph.nodes||[]).filter(n=>!isOwnedInfoNode(n)).map(n=>n.type))].sort();
+  const cur=typeFilter.value||"all";
+  typeFilter.innerHTML=`<option value="all">All types</option>`+
+    types.map(t=>`<option value="${esc(t)}">${esc(tlbl(t))}</option>`).join("");
+  typeFilter.value=types.includes(cur)?cur:"all"}
+
+/* ═══ APPLY GRAPH ════════════════════════════════════════════════════ */
+function applyGraph(next){
+  detectNewEvents(next);
+  graph=next;
+  syncTypeFilter();
+  sNodes.textContent=(graph.nodes||[]).filter(n=>!isOwnedInfoNode(n)).length;
+  sEdges.textContent=(graph.edges||[]).length;
+  sWorld.innerHTML=`<span class="sc-l">${esc(graph.worldId||"—")} · ${esc(graph.visibleTime||"—")}</span>`;
+  badgeDot.style.background="#34d399";
+  badgeDot.style.boxShadow="0 0 6px #34d399";
+  renderExplorer()}
+
+function renderExplorer(){
+  const currentCenter=graphCenterId();
+  const nodes=(graph.nodes||[]).filter(visibleNode).sort((a,b)=>{
+    const ta=tlbl(a.type),tb=tlbl(b.type);
+    return ta.localeCompare(tb)||String(a.label).localeCompare(String(b.label),"ko")});
+  explorerCount.textContent=`${nodes.length}개`;
+  explorerList.innerHTML=nodes.map(n=>{
+    const {s}=pal(n.type);const active=n.id===sel||n.id===currentCenter?" active":"";
+    if(n.type==="global")return`<button class="explorer-item${active}" type="button" data-sel="${esc(n.id)}" aria-label="GlobalState"><span class="explorer-glyph global-glyph">GlobalState</span></button>`;
+    return`<button class="explorer-item${active}" type="button" data-sel="${esc(n.id)}">
+      <span class="explorer-glyph" style="border-color:${s};color:${s}">${esc(glyph(n))}</span>
+      <span class="explorer-meta">
+        <span class="explorer-name">${esc(n.label)}</span>
+        <span class="explorer-type">${esc(tlbl(n.type))} · ${esc(short(n.subtitle||"",34))}</span>
+      </span>
+    </button>`}).join("")||`<div class="empty">표시할 노드 없음</div>`;
+  explorerList.querySelectorAll("[data-sel]").forEach(b=>b.addEventListener("click",()=>openDetail(b.dataset.sel)))}
+
+/* ═══ HOP COMPUTATION ════════════════════════════════════════════════ */
+function computeHops(cid){
+  const center=nodeById(cid);if(!center||!visibleNode(center))return null;
+  const edges=(graph.edges||[]).filter(e=>!hiddenProfileEdge(e));
+  const h1set=new Set();const e1=[];
+  edges.forEach(e=>{
+    if(e.source===cid){const target=nodeById(e.target);if(visibleNode(target)){h1set.add(e.target);e1.push(e)}}
+    else if(e.target===cid){const source=nodeById(e.source);if(visibleNode(source)){h1set.add(e.source);e1.push(e)}}});
+  const h2set=new Set();const e2=[];const h2par=new Map();
+  edges.forEach(e=>{
+    const si=h1set.has(e.source),ti=h1set.has(e.target);
+    if(si&&!h1set.has(e.target)&&e.target!==cid){
+      const target=nodeById(e.target);if(visibleNode(target)){if(!h2set.has(e.target))h2par.set(e.target,e.source);h2set.add(e.target);e2.push(e)}}
+    if(ti&&!h1set.has(e.source)&&e.source!==cid){
+      const source=nodeById(e.source);if(visibleNode(source)){if(!h2set.has(e.source))h2par.set(e.source,e.target);h2set.add(e.source);e2.push(e)}}});
+  const hop1=[...h1set].map(nodeById).filter(Boolean);
+  const hop2=[...h2set].map(nodeById).filter(Boolean).slice(0,18);
+  return{center,hop1,hop2,e1,e2,h2par}}
+
+/* ═══ LAYOUT ═════════════════════════════════════════════════════════ */
+function computeLayout(hops){
+  const rc=gSvg.getBoundingClientRect();
+  const W=rc.width||700,H=rc.height||440;
+  const cx=W/2,cy=H/2;
+  const R1=Math.min(168,Math.min(W,H)*.25);
+  const R2=Math.min(305,Math.min(W,H)*.44);
+  const pos=new Map();
+  pos.set(hops.center.id,{x:cx,y:cy,hop:0});
+  const n1=hops.hop1.length;
+  hops.hop1.forEach((node,i)=>{
+    const a=n1===1?-Math.PI/2:(2*Math.PI*i/n1)-Math.PI/2;
+    pos.set(node.id,{x:cx+R1*Math.cos(a),y:cy+R1*Math.sin(a),hop:1,a})});
+  const byPar=new Map();
+  hops.hop2.forEach(node=>{
+    const pid=hops.h2par.get(node.id)||"";
+    if(!byPar.has(pid))byPar.set(pid,[]);
+    byPar.get(pid).push(node)});
+  byPar.forEach((kids,pid)=>{
+    const pp=pos.get(pid);
+    const pa=pp?Math.atan2(pp.y-cy,pp.x-cx):0;
+    const n=kids.length;
+    const sp=Math.min(Math.PI/2.5,Math.PI/(n+1));
+    kids.forEach((node,i)=>{
+      const off=n===1?0:(i-(n-1)/2)*sp;
+      pos.set(node.id,{x:cx+R2*Math.cos(pa+off),y:cy+R2*Math.sin(pa+off),hop:2,a:pa+off})})});
+  return pos}
+
+/* ═══ SVG DRAW ═══════════════════════════════════════════════════════ */
+const DEFS=`<defs>
+  <filter id="fdrop" x="-50%" y="-50%" width="200%" height="200%">
+    <feDropShadow dx="0" dy="3" stdDeviation="7" flood-color="#000" flood-opacity="0.55"/>
+  </filter>
+  <filter id="fglow" x="-120%" y="-120%" width="340%" height="340%">
+    <feGaussianBlur stdDeviation="14" result="b"/>
+    <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+  </filter>
+  <filter id="fglow-sm" x="-60%" y="-60%" width="220%" height="220%">
+    <feGaussianBlur stdDeviation="6" result="b"/>
+    <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+  </filter>
+</defs>`;
+
+function drawGraph(){
+  const rc=gSvg.getBoundingClientRect();
+  const W=rc.width||700,H=rc.height||440;
+  const currentCenterId=graphCenterId();
+
+  if(!currentCenterId){
+    gSvg.innerHTML="";
+    graphInfoTx.textContent="스레드를 로드하세요";
+    renderExplorer();
+    return}
+
+  const hops=computeHops(currentCenterId);
+  if(!hops){
+    gSvg.innerHTML="";
+    graphInfoTx.textContent="표시할 그래프 없음";
+    return}
+  const pos=computeLayout(hops);
+
+  let es="",ns="";
+
+  /* Edges */
+  const seen=new Set();
+  [...hops.e1,...hops.e2].forEach(e=>{
+    const k=[e.source,e.target].sort().join("|");
+    if(seen.has(k))return;seen.add(k);
+    const p1=pos.get(e.source),p2=pos.get(e.target);
+    if(!p1||!p2)return;
+    const is1=hops.e1.includes(e);
+    const dx=p2.x-p1.x,dy=p2.y-p1.y,len=Math.sqrt(dx*dx+dy*dy)||1;
+    const bend=is1?20:10;
+    const qx=(p1.x+p2.x)/2+(-dy/len)*bend;
+    const qy=(p1.y+p2.y)/2+(dx/len)*bend;
+    const srcCol=pal(nodeById(e.source)?.type).s;
+    const tgtCol=pal(nodeById(e.target)?.type).s;
+    const col=is1?srcCol+"99":srcCol+"44";
+    const dash=is1?"":`stroke-dasharray="6 4"`;
+    const sw=is1?1.8:1;
+    es+=`<path d="M${p1.x},${p1.y} Q${qx},${qy} ${p2.x},${p2.y}" fill="none" stroke="${col}" stroke-width="${sw}" ${dash}/>`;
+    if(is1&&e.label){
+      const lbl=short(e.label,12);
+      es+=`<text x="${qx}" y="${qy-5}" text-anchor="middle" font-size="8.5" fill="rgba(250,250,250,.25)" font-family="system-ui" pointer-events="none">${esc(lbl)}</text>`}});
+
+  /* Nodes */
+  [hops.center,...hops.hop1,...hops.hop2].forEach(node=>{
+    const p=pos.get(node.id);if(!p)return;
+    const {s:col,f:fill}=pal(node.type);
+    const hop=p.hop;
+    const R=hop===0?50:hop===1?28:16;
+    const inits=glyph(node);
+    const name=short(node.label,hop===0?18:hop===1?13:10);
+    let g=`<g class="gn" data-id="${esc(node.id)}" style="cursor:pointer">`;
+
+    if(hop===0){
+      /* Outer glow ring */
+      g+=`<circle cx="${p.x}" cy="${p.y}" r="${R+18}" fill="${col}" opacity="0.07" filter="url(#fglow)"/>`;
+      g+=`<circle cx="${p.x}" cy="${p.y}" r="${R+8}" fill="none" stroke="${col}" stroke-width="1.5" opacity="0.2"/>`;
+      /* Main circle */
+      g+=`<circle cx="${p.x}" cy="${p.y}" r="${R}" fill="${fill}" stroke="${col}" stroke-width="2.5" filter="url(#fdrop)" fill-opacity="1"/>`;
+      /* Inner shine arc */
+      const arc=`M ${p.x-R*.65} ${p.y-R*.55} Q ${p.x} ${p.y-R*.9} ${p.x+R*.65} ${p.y-R*.55}`;
+      g+=`<path d="${arc}" fill="none" stroke="rgba(255,255,255,.12)" stroke-width="1.5" stroke-linecap="round"/>`;
+      /* Initials */
+      g+=`<text x="${p.x}" y="${p.y-6}" text-anchor="middle" dominant-baseline="middle" font-size="17" font-weight="800" fill="${col}" font-family="system-ui" pointer-events="none">${esc(inits)}</text>`;
+      g+=`<text x="${p.x}" y="${p.y+10}" text-anchor="middle" font-size="${isChar(node)?11:10}" fill="rgba(250,250,250,.65)" font-family="system-ui" pointer-events="none">${esc(isChar(node)?short(node.label,16):name)}</text>`;
+      /* Type label below */
+      g+=`<text x="${p.x}" y="${p.y+R+17}" text-anchor="middle" font-size="9" font-weight="700" fill="${col}" opacity="0.7" font-family="system-ui" letter-spacing="0.05em" pointer-events="none">${esc(tlbl(node.type).toUpperCase())}</text>`;
+    } else if(hop===1){
+      g+=`<circle cx="${p.x}" cy="${p.y}" r="${R}" fill="${fill}" stroke="${col}" stroke-width="1.8" filter="url(#fdrop)" fill-opacity="1"/>`;
+      g+=`<text x="${p.x}" y="${p.y}" text-anchor="middle" dominant-baseline="middle" font-size="${isChar(node)?8.5:11}" font-weight="800" fill="${col}" font-family="system-ui" pointer-events="none">${esc(short(inits,isChar(node)?8:2))}</text>`;
+      g+=`<text x="${p.x}" y="${p.y+R+13}" text-anchor="middle" font-size="10" fill="rgba(250,250,250,.65)" font-family="system-ui" pointer-events="none">${esc(name)}</text>`;
+      g+=`<text x="${p.x}" y="${p.y+R+24}" text-anchor="middle" font-size="8" fill="${col}" opacity="0.5" font-family="system-ui" pointer-events="none">${esc(tlbl(node.type))}</text>`;
+    } else {
+      g+=`<circle cx="${p.x}" cy="${p.y}" r="${R}" fill="${fill}" stroke="${col}" stroke-width="1.2" fill-opacity=".7"/>`;
+      g+=`<text x="${p.x}" y="${p.y}" text-anchor="middle" dominant-baseline="middle" font-size="${isChar(node)?7.5:8.5}" font-weight="700" fill="${col}" font-family="system-ui" pointer-events="none">${esc(short(inits,isChar(node)?7:2))}</text>`;
+      g+=`<text x="${p.x}" y="${p.y+R+11}" text-anchor="middle" font-size="9" fill="rgba(250,250,250,.38)" font-family="system-ui" pointer-events="none">${esc(name)}</text>`;
+    }
+    g+=`</g>`;ns+=g});
+
+  // Init SVG structure (defs + root group) only when missing
+  if(!gSvg.querySelector("defs")){gSvg.innerHTML=DEFS+`<g id="gr"></g>`}
+  const gr=gSvg.querySelector("#gr");
+  gr.setAttribute("transform",`translate(${panX},${panY})`);
+  gr.innerHTML=es+ns;
+  gr.querySelectorAll(".gn").forEach(g=>{
+    g.addEventListener("click",ev=>{ev.stopPropagation();if(didDrag)return;graphNodeClick(g.dataset.id)})});
+  graphInfoTx.textContent=`${short(hops.center.label,16)} · 1-hop ${hops.hop1.length} · 2-hop ${hops.hop2.length} (노드 1회=중심, 2회=상세)`;
+  renderExplorer()}
+
+/* ═══ SELECTION ══════════════════════════════════════════════════════ */
+function setCenter(id){
+  if(centerId&&centerId!==id)centerHistory.push(centerId);
+  panX=0;panY=0;
+  centerId=id}
+function openDetail(id){
+  if(!nodeById(id))return;
+  setCenter(id);
+  sel=id;activeTab="info";activeEventId="";editMode=false;renderAll()}
+function graphNodeClick(id){
+  if(!nodeById(id))return;
+  if(centerId===id&&!sel){
+    sel=id;activeTab="info";activeEventId="";editMode=false;renderAll();return}
+  setCenter(id);
+  sel="";activeTab="info";activeEventId="";editMode=false;renderAll()}
+function deselect(){
+  if(sel)centerId=sel;
+  sel="";activeTab="info";activeEventId="";editMode=false;renderAll()}
+function goBack(){
+  if(centerHistory.length){
+    const prev=centerHistory.pop();panX=0;panY=0;
+    centerId=prev;sel="";activeTab="info";activeEventId="";editMode=false;renderAll()
+  }else deselect()}
+function renderAll(){drawGraph();renderDetail();renderLog()}
+
+/* ═══ DETAIL PANEL ═══════════════════════════════════════════════════ */
+function renderDetail(){
+  const node=nodeById(sel);
+  if(!node){
+    detailPanel.classList.remove("open");
+    detailEmpty.style.display="flex";
+    detailHdr.style.display="none";
+    detailBody.style.display="none";return}
+  detailPanel.classList.add("open");
+  detailEmpty.style.display="none";
+  detailHdr.style.display="block";
+  detailBody.style.display="block";
+  isChar(node)?renderCharDetail(node):renderGenericDetail(node)}
+
+function renderCharDetail(node){
+  const {s}=pal(node.type);
+  const stNode=relNode(node,"HAS_STATE");
+  const prNode=relNode(node,"HAS_PROFILE");
+  const inNode=relNode(node,"HAS_INFO");
+  const relCnt=relEdges(node).length;
+  const evtCnt=evtEdges(node).length;
+  if(!["info","state","relations","events"].includes(activeTab))activeTab="info";
+
+  detailHdr.innerHTML=`
+    <div class="node-header">
+      <div class="node-av" style="background:${s}22;border:2px solid ${s};color:${s};box-shadow:0 0 0 2px var(--bg),0 0 0 3px ${s}44">${esc(node.label)}</div>
+      <div class="node-hd-info">
+        <div class="node-hd-name">${esc(node.label)}</div>
+        <div class="node-hd-sub">${esc(node.subtitle||tlbl(node.type))}</div>
+        <div class="node-type-pill" style="border-color:${s}55;color:${s}">
+          <span class="node-type-dot" style="background:${s}"></span>
+          ${esc(tlbl(node.type))}
+        </div>
+      </div>
+      <div class="node-hd-actions">${editBtn()} <button class="detail-close" type="button" data-close-detail>x</button></div>
+    </div>
+    <div class="tab-bar">
+      ${tb("info","Info")}${tb("state","State")}${tb("relations","Relations",relCnt)}${tb("events","Events",evtCnt)}
+    </div>`;
+
+  let body="";
+  if(activeTab==="info"){
+    if(prNode)body+=renderTraitGraph(prNode.details)+`<div class="sec-ttl">StaticInformation</div>`+kvRows(prNode.details,["role","age","gender","grade_class","position"],prNode.id);
+    if(inNode)body+=`<div class="sec-ttl">DynamicInformation</div>`+kvRows(inNode.details,[],inNode.id);
+    if(!body)body=`<div class="empty">Info 노드 없음</div>`;
+  }else if(activeTab==="state"){
+    body=stNode?kvRows(stNode.details,["mood","physical_condition","mental_condition","location_id","energy","stress"],stNode.id):`<div class="empty">State 노드 없음</div>`;
+  }else if(activeTab==="relations"){body=renderRelCards(node)}
+  else if(activeTab==="events"){body=renderEvtCards(node)}
+
+  detailBody.innerHTML=`<div class="tab-ct">${body||`<div class="empty">데이터 없음</div>`}</div>${saveBtn()}`;
+  wireDetail()}
+
+
+function renderGenericDetail(node){
+  const {s}=pal(node.type);
+  const related=(graph.edges||[]).filter(e=>e.source===node.id||e.target===node.id);
+  const pills=related.map(e=>{
+    const oid=e.source===node.id?e.target:e.source;
+    const other=nodeById(oid);const{s:os}=pal(other?.type||"event");
+    return`<button class="pill" type="button" data-sel="${esc(oid)}">
+      <span style="color:${os}">${esc(short(other?.label||oid,28))}</span>
+      <span style="font-size:10px;color:var(--t3)">${esc(e.label)}</span></button>`}).join("");
+
+  detailHdr.innerHTML=`
+    <div class="node-header">
+      <div class="node-av" style="background:${s}22;border:2px solid ${s};color:${s}">${esc(glyph(node))}</div>
+      <div class="node-hd-info">
+        <div class="node-hd-name">${esc(node.label)}</div>
+        <div class="node-hd-sub">${esc(node.id)}</div>
+        <div class="node-type-pill" style="border-color:${s}55;color:${s}">
+          <span class="node-type-dot" style="background:${s}"></span>
+          ${esc(tlbl(node.type))}
+        </div>
+      </div>
+      <div class="node-hd-actions">${editBtn()} <button class="detail-close" type="button" data-close-detail>x</button></div>
+    </div>`;
+  detailBody.innerHTML=`
+    <div class="tab-ct">
+      ${renderTraitGraph(node.details)}
+      ${kvRows(node.details,[],node.id)||`<div class="empty">데이터 없음</div>`}
+      ${related.length?`<div class="sec-ttl">Connected (${related.length})</div>${pills}`:""}
+    </div>${saveBtn()}`;
+  wireDetail()}
+
+/* ═══ DETAIL HELPERS ═════════════════════════════════════════════════ */
+function relNode(node,lbl){
+  const e=(graph.edges||[]).find(e=>e.source===node.id&&e.label===lbl);
+  return e?nodeById(e.target):null}
+function relEdges(node){return(graph.edges||[]).filter(e=>e.label.startsWith("REL")&&e.source===node.id)}
+function evtEdges(node){return(graph.edges||[]).filter(e=>e.source===node.id&&e.label==="INVOLVED_IN")}
+function memEdges(node){return(graph.edges||[]).filter(e=>e.source===node.id&&e.label==="REMEMBERS")}
+function memoriesForEvent(node,eventId){
+  const owned=new Set(memEdges(node).map(e=>e.target));
+  return (graph.edges||[]).filter(e=>e.label==="OF_EVENT"&&e.target===eventId&&owned.has(e.source)).map(e=>nodeById(e.source)).filter(Boolean)
+}
+function factEdges(node){return(graph.edges||[]).filter(e=>e.source===node.id&&e.label==="KNOWS_FACT")}
+
+function tb(id,lbl,cnt){
+  const a=activeTab===id?" active":"";
+  const badge=cnt!==undefined?`<span class="tbadge">${cnt}</span>`:"";
+  return`<button class="tab-btn${a}" type="button" data-tab="${esc(id)}">${esc(lbl)}${badge}</button>`}
+
+function kvRows(data,pref=[],nid=""){
+  const entries=Object.entries(data||{}).filter(([k])=>!SKIP.has(k)&&!k.startsWith("trait_"))
+    .sort(([a],[b])=>{const ia=pref.indexOf(a),ib=pref.indexOf(b);
+      return(ia<0?99:ia)-(ib<0?99:ib)||a.localeCompare(b)});
+  return entries.map(([k,v])=>{
+    const ce=editMode&&!SKIP.has(k);
+    const vs=esc(fmtField(k,v));
+    const vel=ce?`<textarea class="edit-input" data-key="${esc(k)}" data-nid="${esc(nid)}" rows="1">${vs}</textarea>`
+      :`<div class="kv-val">${vs}</div>`;
+    return`<div class="kv-row${ce?" editable":""}"><div class="kv-key">${esc(keyLabel(k))}</div>${vel}</div>`}).join("")}
+
+function statBar(lbl,val,editable=false,key=""){
+  const n=Math.max(-100,Math.min(100,Number(val??0)));
+  const w=`${Math.abs(n)}%`;const col=scoreColor(n);
+  const vel=editable
+    ?`<input class="edit-input edit-num" data-key="${esc(key)}" type="number" min="-100" max="100" value="${n}">`
+    :`<div class="stat-num" style="color:${col}">${n}</div>`;
+  return`<div class="stat-row">
+    <div class="stat-lbl">${esc(lbl)}</div>
+    <div class="stat-track"><div class="stat-fill" style="width:${w};background:${col}"></div></div>
+    ${vel}</div>`}
+
+function renderTraitGraph(data){
+  const hasAxis=TRAIT_AXES.some(axis=>Object.prototype.hasOwnProperty.call(data||{},axis.key));
+  if(!hasAxis)return"";
+  const rows=TRAIT_AXES.map(axis=>{
+    const value=traitValue(data,axis.key);
+    return{...axis,value,left:Math.max(0,-value),right:Math.max(0,value)}});
+  return`<div class="trait-card">
+    <div class="sec-ttl">Trait Axes</div>
+    <div class="trait-bars">
+      ${rows.map(row=>`<div class="trait-pair" title="${esc(keyLabel(row.key))}: ${row.value.toFixed(2)} (${esc(row.negative)} ↔ ${esc(row.positive)})">
+        <div class="trait-name left">${esc(row.negative)}<span class="trait-value">${row.left.toFixed(2)}</span></div>
+        <div class="trait-axis-bar">
+          <div class="trait-fill left" style="width:${Math.round(row.left*50)}%"></div>
+          <div class="trait-fill right" style="width:${Math.round(row.right*50)}%"></div>
+        </div>
+        <div class="trait-name right">${esc(row.positive)}<span class="trait-value">${row.right.toFixed(2)}</span></div>
+      </div>`).join("")}
+    </div>
+  </div>`}
+
+function renderRelCards(node){
+  const rows=relEdges(node).map(edge=>{
+    const oid=edge.target;
+    const other=nodeById(oid);const{s}=pal(other?.type||"character");
+    const d=edge.details||{};const ce=editMode;
+    const stats=ce
+      ?statBar("TRUST",d.trust,true,`__rel__${edge.source}__${edge.target}__trust`)+statBar("AFFINITY",d.affinity,true,`__rel__${edge.source}__${edge.target}__affinity`)
+      :statBar("TRUST",d.trust)+statBar("AFFINITY",d.affinity);
+    const stEl=ce
+      ?`<input class="edit-input" style="height:22px;margin-top:2px" data-key="__rel__${esc(edge.source)}__${esc(edge.target)}__current_status" value="${esc(d.current_status||"")}">`
+      :`<div class="rel-status">${esc(d.current_status||d.type||edge.label)}</div>`;
+    return`<div class="rel-card">
+      <div class="rel-head">
+        <button class="rel-av" type="button" data-sel="${esc(oid)}" style="border-color:${s};color:${s}">${esc(initials(other?.label||oid))}</button>
+        <div class="rel-info">
+          <button class="rel-name" type="button" data-sel="${esc(oid)}">${esc(other?.label||oid)}</button>
+          ${stEl}
+          <div class="rel-dur">${esc(d.duration||d.last_interaction||"")}</div>
+        </div>
+      </div>${stats}</div>`}).join("");
+  return rows||`<div class="empty">관계 없음</div>`}
+
+function renderEvtCards(node){
+  const rows=evtEdges(node).map(e=>nodeById(e.target)).filter(Boolean).map(evt=>{
+    const d=evt.details||{};
+    const active=activeEventId===evt.id;
+    const mems=active?memoriesForEvent(node,evt.id):[];
+    const memBlock=active?`<div class="sec-ttl">Memory</div>${mems.map(mem=>{const md=mem.details||{};return`<button class="ev-card" type="button" data-sel="${esc(mem.id)}" style="border-left-color:var(--np);margin-left:8px;width:calc(100% - 8px)">
+      ${md.importance?`<div class="ev-badge" style="color:var(--np);background:rgba(251,113,133,.12)">${esc(md.importance)}</div>`:""}
+      <div class="ev-sum">${esc(md.summary||mem.label)}</div>
+      <div class="ev-time">${esc([md.memory_type,md.created_at||mem.subtitle].filter(Boolean).join(" / "))}</div>
+    </button>`}).join("")||`<div class="empty">이 이벤트와 연결된 Memory 없음</div>`}`:"";
+    return`<div class="event-wrap">
+      <button class="ev-card" type="button" data-event-memory="${esc(evt.id)}">
+        ${d.importance?`<div class="ev-badge">${esc(d.importance)}</div>`:""}
+        <div class="ev-sum">${esc(d.summary||evt.label)}</div>
+        <div class="ev-time">${esc(d.timestamp||evt.subtitle||"")}</div>
+      </button>
+      ${memBlock}
+    </div>`}).join("");
+  return rows||`<div class="empty">이벤트 없음</div>`}
+
+function renderMemCards(node){
+  return memEdges(node).map(e=>nodeById(e.target)).filter(Boolean).map(mem=>{
+    const d=mem.details||{};
+    return`<button class="ev-card" type="button" data-sel="${esc(mem.id)}" style="border-left-color:var(--np)">
+      ${d.importance?`<div class="ev-badge" style="color:var(--np);background:rgba(251,113,133,.12)">${esc(d.importance)}</div>`:""}
+      <div class="ev-sum">${esc(d.summary||mem.label)}</div>
+      <div class="ev-time">${esc([d.memory_type,d.created_at||mem.subtitle].filter(Boolean).join(" / "))}</div>
+    </button>`}).join("")||`<div class="empty">기억 없음</div>`}
+
+function renderFctCards(node){
+  return factEdges(node).map(e=>nodeById(e.target)).filter(Boolean).map(fact=>{
+    const d=fact.details||{};
+    return`<button class="fc-card" type="button" data-sel="${esc(fact.id)}">
+      <div class="fc-key">${esc(d.fact_text||fact.label)}</div>
+      <div class="fc-meta">${esc([d.category,d.status,d.source].filter(Boolean).join(" / "))}</div>
+      ${d.confidence!==undefined?`<div class="fc-conf">confidence ${esc(d.confidence)}</div>`:""}</button>`}).join("")||`<div class="empty">팩트 없음</div>`}
+
+function editBtn(){
+  if(!tid()||staticExport())return"";
+  return`<button class="btn btn-sm${editMode?" btn-cancel":""}" type="button" id="toggle-edit">${editMode?"취소":"편집"}</button>`}
+function saveBtn(){
+  return editMode?`<button class="save-btn" type="button" id="save-edits" ${saving?"disabled":""}>${saving?"저장 중…":"변경사항 저장"}</button>`:"";}
+
+function wireDetail(){
+  detailHdr.querySelector("#toggle-edit")?.addEventListener("click",()=>{editMode=!editMode;renderDetail()});
+  detailHdr.querySelector("[data-close-detail]")?.addEventListener("click",deselect);
+  detailBody.querySelector("#save-edits")?.addEventListener("click",saveEdits);
+  detailHdr.querySelectorAll("[data-tab]").forEach(b=>b.addEventListener("click",()=>{activeTab=b.dataset.tab;activeEventId="";renderDetail()}));
+  detailHdr.querySelectorAll("[data-sel]").forEach(b=>b.addEventListener("click",()=>openDetail(b.dataset.sel)));
+  detailBody.querySelectorAll("[data-sel]").forEach(b=>b.addEventListener("click",()=>openDetail(b.dataset.sel)));
+  detailBody.querySelectorAll("[data-event-memory]").forEach(b=>b.addEventListener("click",()=>{activeEventId=activeEventId===b.dataset.eventMemory?"":b.dataset.eventMemory;renderDetail()}));
+  detailBody.querySelectorAll("textarea.edit-input").forEach(ta=>{
+    ta.style.height="auto";ta.style.height=ta.scrollHeight+"px";
+    ta.addEventListener("input",()=>{ta.style.height="auto";ta.style.height=ta.scrollHeight+"px"})})}
+
+/* ═══ SAVE ═══════════════════════════════════════════════════════════ */
+function collectEdits(){
+  const byNode={},byEdge={};
+  document.querySelectorAll(".edit-input").forEach(el=>{
+    const key=el.dataset.key||"",val=el.value;
+    const m=key.match(/^__rel__(.+?)__(.+?)__(.+)$/);
+    if(m){const[,src,tgt,field]=m;const k=`${src}||${tgt}`;
+      if(!byEdge[k])byEdge[k]={source:src,target:tgt,updates:{}};byEdge[k].updates[field]=val}
+    else if(key){const nid=el.dataset.nid||sel;
+      if(!byNode[nid])byNode[nid]={};byNode[nid][key]=val}});
+  return{byNode,byEdge}}
+
+async function saveEdits(){
+  if(staticExport()){toast("정적 export 모드에서는 저장할 수 없습니다","e");return}
+  if(saving)return;const t=tid();if(!t)return;
+  const{byNode,byEdge}=collectEdits();saving=true;renderDetail();let ok=true;
+  try{
+    for(const[nid,updates]of Object.entries(byNode)){
+      if(!Object.keys(updates).length)continue;
+      const r=await fetch(apiUrl("/api/node"),{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({threadId:t,nodeId:nid,updates})});
+      if(!r.ok)throw new Error(await r.text());applyGraph(await r.json())}
+    for(const{source,target,updates}of Object.values(byEdge)){
+      const r=await fetch(apiUrl("/api/edge"),{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({threadId:t,source,target,updates})});
+      if(!r.ok)throw new Error(await r.text());applyGraph(await r.json())}
+  }catch(err){ok=false;toast("저장 실패: "+err,"e")}
+  saving=false;
+  if(ok){editMode=false;toast("저장 완료","ok")}
+  renderAll()}
+
+/* ═══ LOG PANEL ══════════════════════════════════════════════════════ */
+function renderLog(){
+  const node=nodeById(sel);
+  if(logTab==="events")renderLogEvents(node);
+  else if(logTab==="relations")renderLogRelations(node);
+  else renderLogFacts(node)}
+
+function renderLogEvents(node){
+  let evts=node?evtEdges(node).map(e=>nodeById(e.target)).filter(Boolean)
+    :(graph.nodes||[]).filter(n=>n.type==="event");
+  evts=evts.sort((a,b)=>(b.details?.timestamp||b.subtitle||"").localeCompare(a.details?.timestamp||a.subtitle||"")).slice(0,40);
+  if(!evts.length){logContent.innerHTML=`<div class="empty">이벤트 없음</div>`;return}
+  logContent.innerHTML=evts.map(evt=>{
+    const d=evt.details||{};
+    return`<button class="ev-card" type="button" data-sel="${esc(evt.id)}" style="margin-bottom:6px">
+      ${d.importance?`<div class="ev-badge">${esc(d.importance)}</div>`:""}
+      <div class="ev-sum">${esc(d.summary||evt.label)}</div>
+      <div class="ev-time">${esc(d.timestamp||evt.subtitle||"")}</div>
+    </button>`}).join("");
+  logContent.querySelectorAll("[data-sel]").forEach(b=>b.addEventListener("click",()=>openDetail(b.dataset.sel)))}
+
+function renderLogRelations(node){
+  let edges=node?relEdges(node):(graph.edges||[]).filter(e=>e.label.startsWith("REL")).slice(0,40);
+  if(!edges.length){logContent.innerHTML=`<div class="empty">관계 없음</div>`;return}
+  logContent.innerHTML=edges.map(edge=>{
+    const sn=nodeById(edge.source),tn=nodeById(edge.target);
+    const d=edge.details||{};
+    const{s:ss}=pal(sn?.type||"character");const{s:ts}=pal(tn?.type||"character");
+    return`<div class="rel-card" style="margin-bottom:6px">
+      <div class="rel-head">
+        <button class="rel-av" type="button" data-sel="${esc(edge.source)}" style="border-color:${ss};color:${ss}">${esc(initials(sn?.label||edge.source))}</button>
+        <div class="rel-info">
+          <div style="font-size:10px;color:var(--t3)">${esc(edge.label)}</div>
+          <div class="rel-status">${esc(d.current_status||d.type||"")}</div>
+        </div>
+        <button class="rel-av" type="button" data-sel="${esc(edge.target)}" style="border-color:${ts};color:${ts}">${esc(initials(tn?.label||edge.target))}</button>
+      </div>
+      ${statBar("aff",d.affinity)}${statBar("trust",d.trust)}</div>`}).join("");
+  logContent.querySelectorAll("[data-sel]").forEach(b=>b.addEventListener("click",()=>openDetail(b.dataset.sel)))}
+
+function renderLogFacts(node){
+  let facts=node?factEdges(node).map(e=>nodeById(e.target)).filter(Boolean)
+    :(graph.nodes||[]).filter(n=>n.type==="personal_fact").slice(0,40);
+  if(!facts.length){logContent.innerHTML=`<div class="empty">팩트 없음</div>`;return}
+  logContent.innerHTML=facts.map(fact=>{
+    const d=fact.details||{};
+    return`<button class="fc-card" type="button" data-sel="${esc(fact.id)}" style="margin-bottom:6px">
+      <div class="fc-key">${esc(d.fact_text||fact.label)}</div>
+      <div class="fc-meta">${esc([d.category,d.status,d.source].filter(Boolean).join(" / "))}</div>
+      ${d.confidence!==undefined?`<div class="fc-conf">confidence ${esc(d.confidence)}</div>`:""}</button>`}).join("");
+  logContent.querySelectorAll("[data-sel]").forEach(b=>b.addEventListener("click",()=>openDetail(b.dataset.sel)))}
+
+/* ═══ TOAST ══════════════════════════════════════════════════════════ */
+function toast(msg,type="i"){
+  const el=document.createElement("div");
+  el.className=`toast${type==="ok"?" toast-ok":type==="e"?" toast-er":""}`;
+  el.innerHTML=`<div class="toast-body">${esc(msg)}</div><button class="toast-x" type="button">×</button>`;
+  el.querySelector(".toast-x").addEventListener("click",()=>dismissToast(el));
+  toastsEl.prepend(el);setTimeout(()=>dismissToast(el),type==="e"?6000:3000)}
+function dismissToast(el){if(!el||el.classList.contains("tout"))return;
+  el.classList.add("tout");setTimeout(()=>el.remove(),260)}
+
+/* ═══ EVENT DETECTION ════════════════════════════════════════════════ */
+function detectNewEvents(next){
+  const ids=new Set((next.nodes||[]).filter(n=>n.type==="event").map(n=>n.id));
+  if(knownEvtIds.size)(next.nodes||[]).forEach(n=>{
+    if(n.type==="event"&&!knownEvtIds.has(n.id)){
+      const d=n.details||{};toast(`새 이벤트: ${short(d.summary||n.label,36)}`)}});
+  knownEvtIds=ids}
+
+/* ═══ THREADS ════════════════════════════════════════════════════════ */
+async function syncThreads(){
+  const exported=exportedThreads();
+  if(exported.length){
+    const cur=threadSel.value;
+    threadSel.innerHTML=`<option value="">Latest thread</option>`+
+      exported.map(t=>`<option value="${esc(t.id)}">${esc(short(`${(t.modifiedAt||t.createdAt||"").slice(0,10)} ${t.name||t.id}`,80))}</option>`).join("");
+    threadSel.value=cur||manualTid||"";
+    threadSyncErrorShown=false;
+    return}
+  try{const r=await fetch(apiUrl("/api/threads"),{cache:"no-store"});if(!r.ok)throw new Error(await r.text());
+    const list=await r.json();const cur=threadSel.value;
+    // 서버는 현재 live 스레드를 항상 첫 번째에 반환
+    if(list.length>0)liveThreadId=list[0].id||"";
+    threadSel.innerHTML=`<option value="">Latest thread</option>`+
+      list.map(t=>`<option value="${esc(t.id)}">${esc(short(`${(t.modifiedAt||t.createdAt||"").slice(0,10)} ${t.name||t.id}`,80))}</option>`).join("");
+    threadSel.value=cur||manualTid||"";
+    threadSyncErrorShown=false}catch(err){
+      if(!threadSyncErrorShown){threadSyncErrorShown=true;toast("Thread 목록 로드 실패: "+err,"e")}}}
+
+async function loadThread(){
+  const t=threadSel.value;
+  if(!t){manualTid="";lastPayload="";centerId="";centerHistory=[];sel="";editMode=false;await refresh();return}
+  manualTid=t;loadBtn.disabled=true;
+  try{
+    let next=exportedSnapshot(t);
+    if(!next){
+      const r=await fetch(apiUrl("/api/load"),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({threadId:t})});
+      if(!r.ok)throw new Error(await r.text());
+      next=await r.json()}
+    lastPayload=JSON.stringify(next);
+    knownEvtIds=new Set((next.nodes||[]).filter(n=>n.type==="event").map(n=>n.id));
+    centerId="";centerHistory=[];sel="";activeTab="info";activeEventId="";editMode=false;
+    applyGraph(next);renderAll();toast("Thread 로드 완료","ok")}
+  catch(err){toast("로드 실패: "+err,"e")}
+  finally{loadBtn.disabled=false}}
+
+/* ═══ POLL ═══════════════════════════════════════════════════════════ */
+async function refresh(){
+  // 현재 live 스레드를 수동 선택한 경우: DB에서 직접 폴링 (lock 시 캐시 폴백)
+  if(manualTid){
+    if(manualTid!==liveThreadId)return;
+    try{
+      const r=await fetch(apiUrl("/api/load"),{method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({threadId:manualTid})});
+      if(!r.ok)return;
+      const p=await r.text();if(p===lastPayload)return;
+      lastPayload=p;applyGraph(JSON.parse(p));renderAll();
+    }catch(_){}
+    return;}
+  const first=exportedThreads()[0];
+  if(first){
+    const next=exportedSnapshot(first.id);
+    const p=JSON.stringify(next||{nodes:[],edges:[]});if(p===lastPayload)return;
+    lastPayload=p;applyGraph(JSON.parse(p));renderAll();return}
+  try{const r=await fetch(apiUrl("/graph.json"),{cache:"no-store"});
+    const p=await r.text();if(p===lastPayload)return;
+    lastPayload=p;
+    const next=JSON.parse(p);
+    if(next.threadId)liveThreadId=next.threadId;
+    applyGraph(next);renderAll()}catch(_){}}
+
+/* ═══ BINDINGS ═══════════════════════════════════════════════════════ */
+loadBtn.addEventListener("click",loadThread);
+searchInp.addEventListener("input",()=>{drawGraph();renderExplorer()});
+typeFilter.addEventListener("change",()=>{drawGraph();renderExplorer()});
+gSvg.addEventListener("click",e=>{
+  if(didDrag){didDrag=false;return}
+  if(!e.target.closest(".gn"))deselect()});
+
+/* ── Drag-to-pan ── */
+const gPanel=document.querySelector(".graph-panel");
+gPanel.addEventListener("mousedown",e=>{
+  if(e.button!==0)return;
+  dragging=true;didDrag=false;
+  dragStart={x:e.clientX,y:e.clientY,px:panX,py:panY};
+  gPanel.classList.add("is-dragging")});
+window.addEventListener("mousemove",e=>{
+  if(!dragging)return;
+  const dx=e.clientX-dragStart.x,dy=e.clientY-dragStart.y;
+  if(Math.abs(dx)>4||Math.abs(dy)>4)didDrag=true;
+  panX=dragStart.px+dx;panY=dragStart.py+dy;
+  const gr=gSvg.querySelector("#gr");
+  if(gr)gr.setAttribute("transform",`translate(${panX},${panY})`)});
+window.addEventListener("mouseup",()=>{
+  dragging=false;gPanel.classList.remove("is-dragging")});
+
+/* ── Right-click = go back ── */
+gPanel.addEventListener("contextmenu",e=>{e.preventDefault();goBack()});
+window.addEventListener("keydown",e=>{
+  if(e.key==="Escape"){if(editMode){editMode=false;renderDetail();return}if(sel)deselect()}});
+window.addEventListener("resize",()=>drawGraph());
+document.querySelectorAll(".log-tab").forEach(b=>{
+  b.addEventListener("click",()=>{
+    logTab=b.dataset.ltab;
+    document.querySelectorAll(".log-tab").forEach(x=>x.classList.toggle("active",x===b));
+    renderLog()})});
+
+/* ═══ BOOT ═══════════════════════════════════════════════════════════ */
+async function boot(){
+  await syncThreads();
+  const first=threadSel.options[1];
+  if(first){threadSel.value=first.value;await loadThread()}
+  else await refresh()}
+
+boot();
+setInterval(refresh,2000);
+setInterval(syncThreads,15000);
+</script>
+</body>
+</html>

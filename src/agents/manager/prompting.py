@@ -57,6 +57,7 @@ def build_prompt_parts(
     fixed_prompt, genre_prompt, dynamic_prompt = builder.build(
         scene_types=scene_plan.scene_types,
         char_data=context.char_data,
+        user_data=context.user_data,
         relationship=context.relationship,
         events=context.recent_events,
         recall_events=recall_events,

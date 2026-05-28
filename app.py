@@ -12,6 +12,7 @@
 #   - _upsert_debug_graph_best_effort(pc_id: str | None, npc_id: str | None, world_id: str) -> bool : 디버그 그래프 갱신
 #   - _init_session_world(world_id: str, thread_id: str, scenario_id: str | None = None, *, create_driver: bool = True) -> None : 세션 월드 상태 초기화
 #   - _ensure_db_driver() -> None : 지연 생성된 세션 Kuzu 드라이버 보장
+#   - _current_perspective() -> int : 현재 세션의 월드 기본 시점 반환
 #   - _current_game_datetime() -> datetime : 현재 인게임 시간을 datetime으로 반환
 #   - _social_media_features() -> dict : 현재 월드/세션 기준 카카오톡·인스타그램 활성 상태 반환
 #   - _queue_kakao_message(pc_id: str, room_id: str, content: str) -> None : 이번 턴 카카오톡 전송 버퍼에 메시지 추가
@@ -51,14 +52,14 @@ import chainlit as cl
 from chainlit.chat_context import chat_context
 from chainlit.types import ThreadDict
 
-from src.config import PERSPECTIVE, WORLD_ID, MODEL_ACTOR, MODEL_OUTPUT_REPAIR, MAX_TOKEN
+from src.config import WORLD_ID, MODEL_ACTOR, MODEL_OUTPUT_REPAIR, MAX_TOKEN
 from src.agents.manager import run_manager
 from src.agents.prompt_factory.ooc_handler import is_ooc, parse_ooc
 from src.agents.prompt_factory.usernote import build_usernote_block, load_usernote
 from src.ui.history import build_history_from_steps
 from src.ui.input_routing import TurnInputType, route_user_input
 from src.ui.kakao_panel import send_kakao_panel
-from src.ui.output_guard import find_forbidden_terms
+from src.ui.output_guard import find_forbidden_terms, find_pov_violations
 from src.ui.output_repair import repair_actor_output
 from src.ui.pending_store import discard_pending_commit, save_pending_commit
 from src.ui.social_media_settings import (
@@ -203,7 +204,6 @@ async def _init_session_world(
     await _init_session_world_state(
         world_id=world_id,
         thread_id=thread_id,
-        perspective=PERSPECTIVE,
         scenario_id=scenario_id,
         create_driver=create_driver,
     )
@@ -211,7 +211,7 @@ async def _init_session_world(
 
 async def _ensure_db_driver() -> None:
     """db_driver가 없으면 지금 생성합니다 (신규 채팅 첫 메시지 진입 시 호출)."""
-    await _ensure_session_db_driver(default_world_id=WORLD_ID, perspective=PERSPECTIVE)
+    await _ensure_session_db_driver(default_world_id=WORLD_ID)
     await _ensure_session_traits_initialized()
 
 
@@ -237,6 +237,12 @@ def _wv() -> tuple[str, str, str, str, dict]:
         cl.user_session.get("npc_name_kor") or "",
         cl.user_session.get("world_config") or {},
     )
+
+
+def _current_perspective() -> int:
+    """현재 세션의 월드 기본 시점을 반환합니다."""
+    world_config = cl.user_session.get("world_config") or {}
+    return int(cl.user_session.get("perspective") or world_config.get("perspective") or 3)
 
 
 async def _current_game_datetime() -> datetime:
@@ -477,7 +483,7 @@ async def _run_generation(
             recent_story = recent_story,
             world_id     = world_id,
             scenario_id  = cl.user_session.get("scenario_id"),
-            perspective  = PERSPECTIVE,
+            perspective  = _current_perspective(),
             return_meta  = True,
             suppress_time_plan=bool(ooc_result and ooc_result.get("time_changed")),
             scene_need_hints=cl.user_session.get("scene_need_hints") or {},
@@ -562,7 +568,7 @@ async def _run_generation(
         status_text    = random.choice(GENERATING_MSGS).format(char=npc_name_kor),
         send_output    = False,
     )
-    blocked_terms = find_forbidden_terms(full_response)
+    blocked_terms = find_forbidden_terms(full_response) + find_pov_violations(full_response, _current_perspective())
     if blocked_terms:
         print(f"[OutputGuard] rejected Actor output for forbidden terms: {blocked_terms}")
         repaired_response = await _repair_guarded_actor_output(full_response, blocked_terms)

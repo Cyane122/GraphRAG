@@ -14,6 +14,10 @@ Final prose = Korean.
 
 Stay inside the fiction.
 
+Outside quoted dialogue, never write first-person Korean pronouns such as "나는", "내가", "나를", "내 몸", "저는", or "제가".
+
+If a character has an immediate thought, render it as third-person limited prose or a brief italic thought anchored to the character, never as narrator-first-person.
+
 ## Continuity
 
 Established facts = canon.
