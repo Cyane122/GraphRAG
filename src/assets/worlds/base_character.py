@@ -8,10 +8,9 @@
 #   - Character : 캐릭터 베이스. build_schema / build_relationship 인터페이스 정의.
 #
 # Functions
-#   - _insert_rel(conn, from_id, to_id, rel_type, affinity, trust, status) -> None
-#   - _merge_static_event(conn, event_id, name, foreshadow_conditions,
-#                         foreshadow_hint, trigger_conditions,
-#                         involved_ids, status) -> None
+#   - _insert_rel(conn: kuzu.Connection, from_id: str, to_id: str, rel_type: str, affinity: int, trust: int, status: str) -> None
+#   - _merge_dict(base: dict, override: dict) -> dict : scenario config를 재귀 병합합니다.
+#   - _merge_static_event(conn: kuzu.Connection, event_id: str, name: str, foreshadow_conditions: str, foreshadow_hint: str, trigger_conditions: str, involved_ids: list[str], status: str = "pending") -> None
 # ================================
 
 from __future__ import annotations
@@ -34,6 +33,18 @@ def _insert_rel(
         "CREATE (a)-[:RELATIONSHIP {type: $t, affinity: $af, trust: $tr, current_status: $st}]->(b)",
         {"a": from_id, "b": to_id, "t": rel_type, "af": affinity, "tr": trust, "st": status},
     )
+
+
+def _merge_dict(base: dict, override: dict) -> dict:
+    """base 위에 override를 재귀 병합한 새 dict를 반환합니다."""
+    merged = dict(base)
+    for key, value in override.items():
+        old_value = merged.get(key)
+        if isinstance(old_value, dict) and isinstance(value, dict):
+            merged[key] = _merge_dict(old_value, value)
+        else:
+            merged[key] = value
+    return merged
 
 
 def _merge_static_event(
@@ -101,10 +112,9 @@ class Character:
     SCENARIO_OVERRIDES: dict[str, dict] = {}
 
     def __init__(self, scenario_id: str | None = None) -> None:
+        """scenario_id에 맞는 DEFAULT_CFG와 SCENARIO_OVERRIDES를 병합합니다."""
         self.scenario_id = scenario_id
-        cfg = dict(self.DEFAULT_CFG)
-        cfg.update(self.SCENARIO_OVERRIDES.get(scenario_id or "default", {}))
-        self.cfg = cfg
+        self.cfg = _merge_dict(self.DEFAULT_CFG, self.SCENARIO_OVERRIDES.get(scenario_id or "default", {}))
 
     def build_schema(self, conn: kuzu.Connection) -> None:
         """캐릭터 노드, StaticProfile, DynamicState를 Kuzu에 삽입합니다."""

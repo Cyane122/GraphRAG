@@ -10,6 +10,8 @@
 #   - _coerce_classifier_result(parsed: object) -> dict | None : Accept common JSON shape variants
 #   - _log_invalid_classifier_result(raw: str, parsed: object) -> None : Print compact invalid classifier diagnostics
 #   - _normalize_classifier_result(parsed: dict, scene_descriptions: dict[str, str]) -> dict : Repair empty classifier fields
+#   - _location_is_grounded_in_scene(location_id: str, new_location: object, allowed_locs: str, user_input: str, context_snippet: str) -> bool : Check planned location grounding
+#   - _clear_unsupported_location_result(parsed: dict, allowed_locs: str, user_input: str, context_snippet: str) -> dict : Drop ungrounded planned locations
 #   - _fallback_classification() -> dict : Return a conservative daily scene parse
 #   - _render_schedule_context_for_classifier(schedule_context: dict) -> str : Render schedule constraints for the classifier prompt
 #   - _format_schedule_for_classifier(schedule: dict, detailed: bool) -> str : Format one schedule constraint line
@@ -221,6 +223,7 @@ new_weather: Clear/Cloudy/Foggy/Drizzle/Rain/Heavy Rain/Thunderstorm/Snow/Heavy 
             raise ValueError("invalid structure")
         parsed = coerced
         parsed = _normalize_classifier_result(parsed, _scenes)
+        parsed = _clear_unsupported_location_result(parsed, allowed_locs, user_input, context_snippet)
         print(f"[Classify+Time / {CLASSIFIER_MODEL}] scene={parsed.get('scene_types')} elapsed={parsed.get('elapsed_minutes')}min")
         return parsed
     except asyncio.TimeoutError:
@@ -337,6 +340,78 @@ def _normalize_classifier_result(parsed: dict, scene_descriptions: dict[str, str
     if not repaired.get("reason"):
         repaired["reason"] = "classifier output normalized"
 
+    return repaired
+
+
+def _parse_allowed_location_names(allowed_locs: str) -> dict[str, str]:
+    """Parse manager location lines into id-to-name lookup data."""
+    locations: dict[str, str] = {}
+    for line in (allowed_locs or "").splitlines():
+        match = re.match(r"\s*-\s*([^:]+):\s*(.+?)\s*$", line)
+        if not match:
+            continue
+        loc_id = match.group(1).strip()
+        loc_name = match.group(2).strip()
+        if loc_id:
+            locations[loc_id] = loc_name
+    return locations
+
+
+def _text_contains_location_token(text: str, token: str) -> bool:
+    """Return whether a non-trivial location token appears in scene-grounded text."""
+    value = str(token or "").strip()
+    if len(value) < 2:
+        return False
+    return value.lower() in text.lower()
+
+
+def _location_is_grounded_in_scene(
+    location_id: str,
+    new_location: object,
+    allowed_locs: str,
+    user_input: str,
+    context_snippet: str,
+) -> bool:
+    """Check whether a planned location is grounded outside schedule hints."""
+    grounded_text = f"{user_input}\n{context_snippet}"
+    if _text_contains_location_token(grounded_text, location_id):
+        return True
+
+    if isinstance(new_location, dict):
+        for key in ("name", "description", "prompt_hint"):
+            if _text_contains_location_token(grounded_text, str(new_location.get(key) or "")):
+                return True
+
+    loc_name = _parse_allowed_location_names(allowed_locs).get(location_id)
+    return _text_contains_location_token(grounded_text, loc_name or "")
+
+
+def _clear_unsupported_location_result(
+    parsed: dict,
+    allowed_locs: str,
+    user_input: str,
+    context_snippet: str,
+) -> dict:
+    """Drop planned locations that are not explicit scene movement."""
+    repaired = dict(parsed)
+    new_location_id = str(repaired.get("new_location_id") or "").strip()
+    if not new_location_id:
+        return repaired
+
+    action_type = str(repaired.get("action_type") or "").strip().lower()
+    grounded = _location_is_grounded_in_scene(
+        new_location_id,
+        repaired.get("new_location"),
+        allowed_locs,
+        user_input,
+        context_snippet,
+    )
+    if action_type not in {"movement", "ooc_jump"} or not grounded:
+        repaired["new_location_id"] = None
+        repaired["new_location"] = None
+        reason = str(repaired.get("reason") or "").strip()
+        suffix = "location cleared: movement target not grounded in input/context"
+        repaired["reason"] = f"{reason}; {suffix}" if reason else suffix
     return repaired
 
 

@@ -126,6 +126,58 @@ def _location_lines(locations: list[dict[str, str | None]]) -> str:
     )
 
 
+def _location_lookup(locations: list[dict[str, str | None]]) -> dict[str, str]:
+    """Return known location id-to-name lookup data."""
+    return {
+        str(item["id"]): str(item.get("name") or item["id"])
+        for item in locations
+        if item.get("id")
+    }
+
+
+def _text_contains_location_token(text: str, token: object) -> bool:
+    """Return whether a non-trivial location token appears in the accepted response."""
+    value = str(token or "").strip()
+    if len(value) < 2:
+        return False
+    return value.lower() in text.lower()
+
+
+def _personal_space_is_grounded(
+    location_id: str,
+    char_id: str,
+    actor_response: str,
+    targets: list[StateUpdateTarget],
+) -> bool:
+    """Allow generated personal-space ids only when the scene says whose space it is."""
+    if location_id != f"{char_id}_house":
+        return False
+    target = next((item for item in targets if item.id == char_id), None)
+    if not target:
+        return False
+    aliases = _target_aliases(target)
+    return any(
+        alias in actor_response and re.search(rf"{re.escape(alias)}.{{0,12}}(집|방|아파트)", actor_response)
+        for alias in aliases
+    )
+
+
+def _location_update_has_scene_evidence(
+    location_id: str,
+    char_id: str,
+    actor_response: str,
+    locations: list[dict[str, str | None]],
+    targets: list[StateUpdateTarget],
+) -> bool:
+    """Return whether a location update target is explicitly named in the response."""
+    lookup = _location_lookup(locations)
+    return (
+        _text_contains_location_token(actor_response, location_id)
+        or _text_contains_location_token(actor_response, lookup.get(location_id))
+        or _personal_space_is_grounded(location_id, char_id, actor_response, targets)
+    )
+
+
 def _state_field_lines(field_types: dict[str, str]) -> str:
     """Format live DynamicState columns for the state extraction prompt."""
     return "\n".join(
@@ -423,6 +475,7 @@ async def apply_multi_character_state_updates(
         print(f"[MultiStateUpdater] failed and ignored: {exc}")
         return []
 
+    known_locations = await _fetch_known_locations()
     applied: list[dict[str, Any]] = []
     change_lines: list[str] = []
     updates = _redistribute_possessive_outfit_updates(
@@ -443,8 +496,20 @@ async def apply_multi_character_state_updates(
             applied_state["location_id"] = location_id
         before = await _fetch_dynamic_state_values(item.char_id, list(applied_state))
         if location_id:
-            await _ensure_location_if_missing(str(location_id))
-            await move_location(item.char_id, str(location_id))
+            location_text = str(location_id)
+            if _location_update_has_scene_evidence(
+                location_text,
+                item.char_id,
+                actor_response,
+                known_locations,
+                targets,
+            ):
+                await _ensure_location_if_missing(location_text)
+                await move_location(item.char_id, location_text)
+            else:
+                applied_state.pop("location_id", None)
+                if not applied_state:
+                    continue
         await update_dynamic_state(item.char_id, state)
         evidence_by_field = _candidate_evidence_by_field(candidates)
         change_lines.extend(_format_state_change_lines(

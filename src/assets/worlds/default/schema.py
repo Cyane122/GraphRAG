@@ -56,7 +56,7 @@ class DefaultWorld(World):
         return read_md(_PROMPT_DIR, "world.md")
 
     def get_blacklist(self) -> str:
-        return read_md(_PROMPT_DIR, "blacklist.md")
+        return read_md(_PROMPT_DIR, "cot_append.md")
 
     def get_specific_prose_rules(self, perspective: int = 3) -> str:
         return read_md(_PROMPT_DIR, "prose_1p.md" if perspective == 1 else "prose_3p.md")

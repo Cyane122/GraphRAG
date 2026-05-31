@@ -174,9 +174,9 @@ _UI_MARKERS = {
 
 
 def _mark_ui_message(content: str, kind: str) -> str:
-    """채팅 화면에서 custom.js가 메시지 박스를 정확히 찾도록 보이지 않는 마커를 붙입니다."""
+    """채팅 화면에서 custom.js가 메시지 박스를 찾도록 본문 양끝에 보이지 않는 마커를 붙입니다."""
     start, end = _UI_MARKERS.get(kind, _UI_MARKERS["actor"])
-    return f"{start}\n{content}\n{end}"
+    return f"{start}{content}{end}"
 
 
 def _strip_ui_markers(content: str | None) -> str:

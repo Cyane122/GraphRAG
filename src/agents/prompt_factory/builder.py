@@ -71,7 +71,7 @@ def _read_default_scene_prompt(scene_type: str) -> str:
 
 def _read_default_scene_blacklist(scene_type: str) -> str:
     """Read default scene blacklist. World scene blacklist overrides this later."""
-    return _read_optional_prompt(f"genre_specific/scenes/{scene_type}.blacklist.md")
+    return _read_optional_prompt(f"genre_specific/scenes/{scene_type}.cot_append.md")
 
 
 def _read_global_blacklist_template() -> str:
