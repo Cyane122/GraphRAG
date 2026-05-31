@@ -1,7 +1,7 @@
 # ================================
 # src/agents/context/renderer.py
 #
-# Dynamic context budget and renderer utilities for Actor prompts.
+# Dynamic context budget and renderer utilities for Actor prompt.
 #
 # Functions
 #   - build_rendered_dynamic_context(scene_state: dict, context_plan: dict, relationship: dict, events: list[dict], recall_events: list[dict], personal_facts: list[dict], npcs: list[dict], world_context: dict, dynamic_state: dict | None = None) -> dict[str, str] : render dynamic context blocks

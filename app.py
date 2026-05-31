@@ -35,6 +35,7 @@
 #   - on_delete_message(action: cl.Action) -> None : 삭제 버튼 콜백
 # ================================
 
+import asyncio
 import json
 import logging
 import random
@@ -78,7 +79,7 @@ from src.ui.session_world import (
 )
 from src.ui.turn_debug import write_turn_debug_snapshot
 from src.ui.actor_stream import stream_actor
-from src.ui.deferred_commit import commit_pending, commit_pending_if_any
+from src.ui.deferred_commit import commit_pending
 from src.ui.debug_graph import send_debug_graph, upsert_debug_graph
 from src.ui.response_editing import (
     apply_edit,
@@ -161,6 +162,121 @@ GENERATING_MSGS = [
     "{char}가 당신의 말을 곱씹고 있습니다...",
     "{char}의 세상을 당신과 함께 만들어갑니다...",
 ]
+
+# ── UI 표시 마커 ────────────────────────────────────────────────
+# Chainlit 내부 DOM 클래스는 버전마다 바뀌므로, CSS 선택자만으로 메시지 박스를
+# 안정적으로 잡기 어렵습니다. 대신 화면에 보이지 않는 유니코드 마커를 메시지 앞뒤에
+# 심고, custom.js가 이 마커의 공통 부모를 정확히 찾아 테두리를 적용합니다.
+_UI_MARKERS = {
+    "actor": ("\u2060\u2061\u2062\u2063", "\u2063\u2062\u2061\u2060"),
+    "user":  ("\u2060\u2060\u2061\u2061", "\u2062\u2062\u2063\u2063"),
+}
+
+
+def _mark_ui_message(content: str, kind: str) -> str:
+    """채팅 화면에서 custom.js가 메시지 박스를 정확히 찾도록 보이지 않는 마커를 붙입니다."""
+    start, end = _UI_MARKERS.get(kind, _UI_MARKERS["actor"])
+    return f"{start}\n{content}\n{end}"
+
+
+def _strip_ui_markers(content: str | None) -> str:
+    """히스토리/라우팅/편집 처리에 UI 마커가 섞이지 않도록 제거합니다."""
+    if not content:
+        return ""
+    text = str(content)
+    for start, end in _UI_MARKERS.values():
+        text = text.replace(start, "").replace(end, "")
+    return text.strip()
+
+
+async def _ui_toast(message: str, type_: str = "info", *, duration: float = 1.35) -> None:
+    """중간 처리 상태를 채팅 로그에 남기지 않고 짧게 표시합니다."""
+    try:
+        await cl.context.emitter.send_toast(message, type_)
+        return
+    except Exception:
+        pass
+
+    temp = cl.Message(content=f"⏳ {message}", author="시스템")
+    try:
+        await temp.send()
+        await asyncio.sleep(duration)
+        await temp.remove()
+    except Exception:
+        try:
+            await temp.remove()
+        except Exception:
+            pass
+
+
+async def _commit_pending_if_any_quiet(
+    *,
+    world_id: str,
+    pc_id: str,
+    npc_id: str,
+    world_config: dict,
+    scheduler=None,
+) -> None:
+    """이전 턴 pending commit을 채팅 메시지 없이 처리합니다."""
+    pending = cl.user_session.get("pending_commit")
+    if not pending:
+        return
+
+    await _ui_toast(random.choice(UPDATING_MSGS), "info")
+    try:
+        await commit_pending(
+            pending=pending,
+            world_id=world_id,
+            pc_id=pc_id,
+            npc_id=npc_id,
+            world_config=world_config,
+            scheduler=scheduler,
+            show_toast=False,
+        )
+        cl.user_session.set("pending_commit", None)
+        discard_pending_commit(pending, world_id, pc_id, npc_id)
+        await _ui_toast(random.choice(UPDATED_MSGS), "success")
+    except Exception:
+        await _ui_toast("세계 상태를 갱신하는 중 문제가 생겼습니다.", "error")
+        raise
+
+
+def _thread_sidebar_name(world_id: str, scenario_id: str | None, world_config: dict, last_message: str) -> str:
+    """사이드바 채팅방 제목을 '세계관/시나리오 > 마지막 메시지' 형식으로 만듭니다."""
+    world_label = (
+        world_config.get("display_name")
+        or world_config.get("name")
+        or world_id
+    )
+    scenario_label = (
+        world_config.get("scenario_name")
+        or scenario_id
+        or "default"
+    )
+    preview = re.sub(r"\s+", " ", last_message).strip()
+    preview = preview.replace("**", "")
+    if len(preview) > 72:
+        preview = preview[:69] + "..."
+    return f"{world_label}/{scenario_label}\n> {preview}"
+
+
+async def _update_thread_sidebar_name(last_message: str) -> None:
+    """Actor 응답 기준으로 사이드바 채팅방 표시명을 갱신합니다."""
+    world_id, _, _, _, world_config = _wv()
+    scenario_id = cl.user_session.get("scenario_id")
+    thread_id = cl.context.session.thread_id
+    title = _thread_sidebar_name(world_id, scenario_id, world_config, last_message)
+    tag = f"{world_id}/{scenario_id}" if scenario_id else world_id
+    try:
+        await cl.data_layer.update_thread(
+            thread_id=thread_id,
+            name=title,
+            metadata={"world_id": world_id, "scenario_id": scenario_id},
+            tags=[tag],
+        )
+    except Exception:
+        pass
+
 
 MAX_HISTORY_TURNS  = 10
 RECENT_STORY_TURNS = 3
@@ -462,8 +578,8 @@ async def _run_generation(
     Manager → Actor 스트리밍 → 히스토리 갱신 → pending_commit 설정까지 한 번에 처리한다.
 
     on_message와 on_reroll이 동일한 파이프라인을 공유하며,
-    step_suffix로 Step 레이블에 "(리롤)" 등을 추가할 수 있다.
-    첫 번째 RP 턴에서는 스레드 이름을 사용자 입력으로 설정한다.
+    step_suffix는 리롤/수정 여부를 내부 처리에만 사용한다.
+    Actor 응답을 기준으로 사이드바 채팅방 표시명을 갱신한다.
     """
     world_id, pc_id, npc_id, npc_name_kor, _ = _wv()
     commit_id = uuid4().hex
@@ -475,33 +591,31 @@ async def _run_generation(
     queued_kakao_messages = cl.user_session.get("pending_kakao_messages") or []
 
     # 2. Manager: 씬 분류 + 시간 계산 + 프롬프트 조립
-    async with cl.Step(name="데이터 추출", show_input=False) as step:
-        fixed, genre, dynamic, scene_types, manager_effects = await run_manager(
-            user_input   = user_input,
-            pc_id        = pc_id,
-            npc_id       = npc_id,
-            recent_story = recent_story,
-            world_id     = world_id,
-            scenario_id  = cl.user_session.get("scenario_id"),
-            perspective  = _current_perspective(),
-            return_meta  = True,
-            suppress_time_plan=bool(ooc_result and ooc_result.get("time_changed")),
-            scene_need_hints=cl.user_session.get("scene_need_hints") or {},
-            pending_kakao_messages=queued_kakao_messages,
-            enable_kakao_preprocessing=not bool(step_suffix) and _social_media_features()["kakao_enabled"],
-            social_media_features=_social_media_features(),
-            thread_id=thread_id,
-            commit_id=None if ooc_result else commit_id,
+    await _ui_toast("데이터를 수집하고 장면을 정리하는 중입니다.", "info")
+    fixed, genre, dynamic, scene_types, manager_effects = await run_manager(
+        user_input   = user_input,
+        pc_id        = pc_id,
+        npc_id       = npc_id,
+        recent_story = recent_story,
+        world_id     = world_id,
+        scenario_id  = cl.user_session.get("scenario_id"),
+        perspective  = _current_perspective(),
+        return_meta  = True,
+        suppress_time_plan=bool(ooc_result and ooc_result.get("time_changed")),
+        scene_need_hints=cl.user_session.get("scene_need_hints") or {},
+        pending_kakao_messages=queued_kakao_messages,
+        enable_kakao_preprocessing=not bool(step_suffix) and _social_media_features()["kakao_enabled"],
+        social_media_features=_social_media_features(),
+        thread_id=thread_id,
+        commit_id=None if ooc_result else commit_id,
+    )
+    if manager_effects.get("kakao_panel_refresh"):
+        await send_kakao_panel(
+            pc_id,
+            npc_id,
+            current_time=await _current_game_datetime(),
+            features=_social_media_features(),
         )
-        if manager_effects.get("kakao_panel_refresh"):
-            await send_kakao_panel(
-                pc_id,
-                npc_id,
-                current_time=await _current_game_datetime(),
-                features=_social_media_features(),
-            )
-        suffix      = f" {step_suffix}" if step_suffix else ""
-        step.output = f"씬 타입: `{scene_types}`{suffix}"
 
     if ooc_result:
         manager_effects["ooc_patch_result"] = ooc_result
@@ -576,19 +690,11 @@ async def _run_generation(
             return
         full_response = repaired_response
 
-    response_msg.content = full_response
+    response_msg.content = _mark_ui_message(full_response, "actor")
     await response_msg.send()
+    await _update_thread_sidebar_name(full_response)
     if hour is None:
         hour = hour_from_time_string(await snapshot_game_time())
-
-    # 4. 첫 번째 RP 턴이면 스레드 이름을 [날짜]-[세계관] 형식으로 설정
-    if not history and not step_suffix:
-        try:
-            thread_id = cl.context.session.thread_id
-            name = f"{datetime.now().strftime('%Y-%m-%d')}-{world_id}"
-            await cl.data_layer.update_thread(thread_id=thread_id, name=name)
-        except Exception:
-            pass
 
     # 5. 히스토리 갱신
     # msg_id를 함께 저장해 삭제 액션이 history 항목을 찾을 수 있게 한다
@@ -743,7 +849,7 @@ def _first_removed_assistant_index(history: list[dict], active_ids: set[str]) ->
 def _recent_responses_from_history(history: list[dict]) -> list[str]:
     """history의 assistant 항목으로 recent_responses 값을 재구성합니다."""
     return [
-        item.get("content", "")[:1500]
+        _strip_ui_markers(item.get("content", ""))[:1500]
         for item in history
         if item.get("role") == "assistant" and item.get("content")
     ][-RECENT_STORY_TURNS:]
@@ -914,16 +1020,8 @@ async def on_chat_start() -> None:
     cl.user_session.set("debug_graph_msg_id",     None)
     cl.user_session.set("traits_initialized",     False)
 
-    await cl.Message(
-        content=(
-            "**GraphRAG 롤플레이 시작**\n\n"
-            "- 일반 입력: 롤플레이 진행\n"
-            "- `*` 로 시작: OOC 명령 (예: `*3시간 후.`, `*장소: 헬스장`)\n"
-            "- 왼쪽 사이드바: 채팅방 목록\n---"
-        )
-    ).send()
     if opening_scene:
-        await cl.Message(content=opening_scene, author="세계").send()
+        await cl.Message(content=_mark_ui_message(opening_scene, "actor"), author="세계").send()
     await inject_time_theme(hour_from_time_string(await snapshot_game_time()))
     await send_kakao_panel(
         cl.user_session.get("pc_id"),
@@ -956,6 +1054,11 @@ async def on_chat_resume(thread: ThreadDict) -> None:
         max_history_turns=MAX_HISTORY_TURNS,
         recent_story_turns=RECENT_STORY_TURNS,
     )
+    history = [
+        {**item, "content": _strip_ui_markers(item.get("content", ""))}
+        for item in history
+    ]
+    recents = [_strip_ui_markers(item) for item in recents]
 
     narrative_turns = []
     for i in range(0, len(history) - 1, 2):
@@ -1038,7 +1141,7 @@ async def on_message(message: cl.Message) -> None:
 
     world_id, pc_id, npc_id, npc_name_kor, world_config = _wv()
 
-    user_input = message.content.strip()
+    user_input = _strip_ui_markers(message.content).strip()
     if user_input.startswith("__SOCIAL_PANEL__:"):
         await message.remove()
         await _handle_social_panel_event(user_input.removeprefix("__SOCIAL_PANEL__:"))
@@ -1046,13 +1149,11 @@ async def on_message(message: cl.Message) -> None:
 
     if user_input.startswith("__KAKAO_PANEL__:"):
         await message.remove()
-        await commit_pending_if_any(
+        await _commit_pending_if_any_quiet(
             world_id=world_id,
             pc_id=pc_id,
             npc_id=npc_id,
             world_config=world_config,
-            updating_msgs=UPDATING_MSGS,
-            updated_msgs=UPDATED_MSGS,
             scheduler=_get_scheduler(world_id),
         )
         await _handle_kakao_panel_event(user_input.removeprefix("__KAKAO_PANEL__:"))
@@ -1079,13 +1180,11 @@ async def on_message(message: cl.Message) -> None:
     if await _handle_user_message_edit(message, user_input):
         return
 
-    await commit_pending_if_any(
+    await _commit_pending_if_any_quiet(
         world_id=world_id,
         pc_id=pc_id,
         npc_id=npc_id,
         world_config=world_config,
-        updating_msgs=UPDATING_MSGS,
-        updated_msgs=UPDATED_MSGS,
         scheduler=_get_scheduler(world_id),
     )
     if not await _upsert_debug_graph_best_effort(pc_id=pc_id, npc_id=npc_id, world_id=world_id):
@@ -1111,40 +1210,24 @@ async def on_message(message: cl.Message) -> None:
     if pending_ooc:
         cl.user_session.set("pending_ooc", None)
         user_input = f"{pending_ooc}\n{user_input}"
-        await cl.Message(content=pending_ooc, author="시스템").send()
+        await _ui_toast("이전 OOC 변경을 이번 턴에 반영합니다.", "info")
         route = route_user_input(user_input, message)
 
     # ── OOC 처리 ─────────────────────────────────────────────
     ooc_result: dict | None = None
     if is_ooc(user_input):
         ooc_changes: dict = {}
-        async with cl.Step(name="⚙️ OOC", show_input=False) as step:
-            result      = await parse_ooc(
-                user_input,
-                npc_id,
-                npc_name_kor,
-                pc_id=pc_id,
-                world_config=world_config,
-            )
-            ooc_result  = result
-            ooc_changes = result.get("state_changes", {})
-            lines       = [f"**{result['summary']}**"]
-            for char_name, char_state in ooc_changes.items():
-                for k, v in char_state.items():
-                    lines.append(f"- `{char_name}.{k}` -> `{v}`")
-            if result.get("time_changed"):
-                lines += [
-                    f"- `time_before` -> `{result.get('time_before')}`",
-                    f"- `time_after` -> `{result.get('time_after')}`",
-                    f"- `elapsed_minutes` -> `{result.get('elapsed_minutes')}`",
-                    f"- `days_passed` -> `{result.get('days_passed')}`",
-                    f"- `applied_time_delta_minutes` -> `{result.get('applied_time_delta_minutes')}`",
-                    f"- `applied_time_set` -> `{result.get('applied_time_set')}`",
-                ]
-            if result.get("location_id"):
-                lines.append(f"- `location_id` -> `{result.get('location_id')}`")
-                lines.append(f"- `moved_character_ids` -> `{result.get('moved_character_ids')}`")
-            step.output = "\n".join(lines)
+        await _ui_toast("OOC 변경 사항을 적용하는 중입니다.", "info")
+        result = await parse_ooc(
+            user_input,
+            npc_id,
+            npc_name_kor,
+            pc_id=pc_id,
+            world_config=world_config,
+        )
+        ooc_result = result
+        ooc_changes = result.get("state_changes", {})
+        await _ui_toast(result.get("summary") or "OOC 변경 사항을 적용했습니다.", "success")
 
         npc_state_changes = ooc_changes.get(npc_name_kor, {})
         if npc_state_changes.get("physical_condition") in ("injured", "ill", "hospitalized"):
@@ -1160,11 +1243,7 @@ async def on_message(message: cl.Message) -> None:
             world_config=world_config,
         )
         if named_updates:
-            async with cl.Step(name="보조 캐릭터 상태", show_input=False) as step:
-                step.output = "\n".join(
-                    f"- `{item['char_id']}` -> `{item['dynamic_state']}`"
-                    for item in named_updates
-                )
+            await _ui_toast(f"보조 NPC 상태 {len(named_updates)}건을 갱신했습니다.", "success")
         await _sses_advance_slot_if_needed(world_id, ooc_changes)
         if not await _upsert_debug_graph_best_effort(pc_id=pc_id, npc_id=npc_id, world_id=world_id):
             return
@@ -1176,7 +1255,9 @@ async def on_message(message: cl.Message) -> None:
                 return
             route = TurnInputType.ROLEPLAY
 
-    # ── RP 턴: 유저 메시지에 삭제 버튼 추가 ─────────────────
+    # ── RP 턴: 유저 메시지에 삭제 버튼 추가 + UI 마커 삽입 ─────────
+    # 실제 프롬프트/히스토리는 user_input 원문을 사용하고, 화면 표시용 메시지에만 마커를 붙입니다.
+    message.content = _mark_ui_message(user_input, "user")
     message.actions = [
         cl.Action(name="delete_message", label="🗑️", payload={"action": "delete"})
     ]

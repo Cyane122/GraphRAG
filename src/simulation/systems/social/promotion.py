@@ -105,7 +105,7 @@ Return ONLY JSON:
         model = get_model(BUILDER_MODEL, system_prompt=system_instruction)
         resp = await model.generate_content_async(
             prompt,
-            generation_config={"response_mime_type": "application/json"},
+            generation_config={"max_output_tokens": 1024, "response_mime_type": "application/json", "log_source": "social_promotion"},
         )
         parsed = extract_json_from_llm(resp.text)
         if isinstance(parsed, dict):

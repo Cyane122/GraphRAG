@@ -839,7 +839,7 @@ async def parse_ooc(
     response = await model.generate_content_async(
         text,
         generation_config={
-            "max_output_tokens": 2048,
+            "max_output_tokens": 4096,
             "temperature": 0.0,
             "thinking_config": {"thinking_budget": 0},
             "response_mime_type": "application/json",

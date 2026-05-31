@@ -7,7 +7,7 @@
 #   - fetch_schedule_context(current_time: datetime, window_minutes: int = 120) -> dict : Fetch routine and same-day schedule hints for all active characters
 #   - fetch_schedule_hints(current_time: datetime, window_minutes: int = 120) -> list[dict] : Fetch same-day schedule hints for all active characters
 # Constants
-#   - SCHEDULE_PROMPT_WINDOW_MIN : Nearby schedule window for dynamic prompts
+#   - SCHEDULE_PROMPT_WINDOW_MIN : Nearby schedule window for dynamic prompt
 #   - SCHEDULE_TIME_PARSE_WINDOW_MIN : Wider schedule window for Manager time parsing
 # ================================
 

@@ -6,12 +6,13 @@
 # Functions
 #   - _cache_key() -> str : Return the current session's cache key (db_path or '__global__')
 #   - _get_known_chars() -> dict[str, str] : Fetch character names and aliases (per-session cached)
+#   - _get_primary_names() -> dict[str, str] : Fetch character id -> primary name map
 #   - _invalidate_cache() -> None : Invalidate the current session's character cache
 #   - _resolve_identity(name: str, known: dict[str, str]) -> str | None : Resolve a name to char_id
-#   - _create_stub(name_kor: str, main_npc_id: str, pc_id: str, world_config: dict) -> str | None : Create a conservative transient NPC
+#   - _create_stub(name_kor: str, main_npc_id: str, pc_id: str, world_config: dict, allow_existing_alias_match: bool = True, source_text: str = "") -> str | None : Create a conservative transient NPC
 #   - _is_stub_candidate(name_kor: str) -> bool : Return whether text is concrete enough to create a stub
 #   - _normalize_relation_descriptor_for_family(name_kor: str) -> str | None : Validate sibling descriptors against StaticProfile.family
-#   - _build_conservative_stub_profile(name_kor: str, main_npc_id: str) -> dict : Build a minimal non-hallucinated stub
+#   - _build_conservative_stub_profile(name_kor: str, main_npc_id: str, source_text: str = "", world_config: dict | None = None) -> dict : Build a transient stub from evidence and plausible defaults
 #   - _increment_appearance(char_id: str) -> None : Increment appearance_count
 #   - _link_to_event(char_id: str, event_id: str) -> None : Link a character to an event
 #   - _kor_to_roman_id(name_kor: str) -> str : Hash-based fallback romanization for Korean names
@@ -21,6 +22,7 @@ import json
 import re
 from datetime import datetime
 
+from src.config import MODEL_STATE_UPDATER as STUB_MODEL
 from src.core.database import async_driver
 from src.core.database.helpers import ensure_relationship
 
@@ -106,6 +108,16 @@ _NO_SIBLING_MARKERS: tuple[str, ...] = (
     "\ud615\uc81c\uac00 \uc5c6",
     "\uc790\ub9e4\uac00 \uc5c6",
 )
+_APPEARANCE_MARKERS: tuple[str, ...] = (
+    "키", "몸", "체형", "얼굴", "머리", "머리카락", "눈", "입술", "피부", "외모",
+    "인상", "표정", "복장", "옷", "유니폼", "제복", "앞치마", "화장", "향수",
+    "마른", "통통", "작은", "큰", "긴", "짧은", "검은", "갈색", "금발",
+)
+_ROLE_MARKERS: tuple[str, ...] = (
+    "직원", "종업원", "알바", "사장", "손님", "친구", "선배", "후배", "동급생",
+    "동료", "가족", "남동생", "여동생", "동생", "언니", "누나", "오빠", "형",
+    "아버지", "어머니", "엄마", "아빠", "담당", "관리자", "경호원", "운전기사",
+)
 
 def _cache_key() -> str:
     """현재 Chainlit 세션의 db_path를 캐시 키로 반환한다. 세션 외부면 '__global__'."""
@@ -142,21 +154,32 @@ async def _get_known_chars() -> dict[str, str]:
     return result
 
 
+async def _get_primary_names() -> dict[str, str]:
+    """캐릭터 id -> 대표 이름 맵을 반환한다."""
+    async with async_driver.session() as session:
+        rec = await session.run("""
+            MATCH (c:Character)
+            RETURN c.id AS id, c.name AS name
+        """)
+        rows = await rec.data()
+    return {
+        str(row["id"]): str(row["name"])
+        for row in rows
+        if row.get("id") and row.get("name")
+    }
+
+
 def _invalidate_cache() -> None:
     """현재 세션의 캐릭터 캐시를 무효화한다."""
     _known_chars_cache.pop(_cache_key(), None)
 
 
 def _resolve_identity(name: str, known: dict[str, str]) -> str | None:
-    """이름이 known dict에 있으면 char_id 반환, 없으면 None."""
+    """이름이 known dict에 정확히 있으면 char_id를 반환한다."""
     if name in known:
         return known[name]
     if _KINSHIP_DESCRIPTOR_RE.search(name):
         return None
-    if len(name) >= 2:
-        for k, v in known.items():
-            if name in k or k in name:
-                return v
     return None
 
 
@@ -189,6 +212,8 @@ async def _create_stub(
     main_npc_id: str,
     pc_id:       str,
     world_config: dict,
+    allow_existing_alias_match: bool = True,
+    source_text: str = "",
 ) -> str | None:
     """Transient NPC stub 생성. char_id 반환."""
     original_name_kor = name_kor
@@ -200,26 +225,27 @@ async def _create_stub(
         print(f"[WorldBuilder] transient stub rejected: {name_kor}")
         return None
 
-    # 이름 또는 aliases로 이미 존재하는지 확인
+    # 이름은 중복 생성을 막되, 별칭-only 매칭은 호출자가 허용한 경우에만 기존 인물로 흡수한다.
+    alias_clause = "OR $name IN c.aliases OR $original_name IN c.aliases" if allow_existing_alias_match else ""
     async with async_driver.session() as session:
-        rec = await session.run("""
+        rec = await session.run(f"""
             MATCH (c:Character)
             WHERE c.name = $name OR c.name = $original_name
-               OR $name IN c.aliases OR $original_name IN c.aliases
+               {alias_clause}
             RETURN c.id AS id
         """, name=name_kor, original_name=original_name_kor)
         row = await rec.single()
         if row:
             return row["id"]
 
-    stub = await _build_conservative_stub_profile(name_kor, main_npc_id)
+    stub = await _build_conservative_stub_profile(name_kor, main_npc_id, source_text, world_config)
 
     # 관계 서술어는 고유 이름만 생성하고, 인물 설정은 명시된 정보만 보존한다.
     generated = (stub.get("name_kor") or "").strip()
     if _is_usable_generated_name(generated, name_kor):
         display_name = generated
     else:
-        fallback_stub = await _build_conservative_stub_profile(name_kor, main_npc_id)
+        fallback_stub = await _build_conservative_stub_profile(name_kor, main_npc_id, source_text, world_config)
         display_name = fallback_stub["name_kor"]
         # display_name이 fallback이면 name_roman도 fallback 것을 유지해 id-name 불일치를 방지
         stub = {**fallback_stub, **{k: v for k, v in stub.items() if v and k not in ("name_kor", "name_roman")}}
@@ -595,10 +621,157 @@ def _fallback_given_name(seed_text: str) -> str:
     return _FALLBACK_GIVEN_NAMES[digest % len(_FALLBACK_GIVEN_NAMES)]
 
 
-async def _build_conservative_stub_profile(name_kor: str, main_npc_id: str) -> dict:
-    """Build a minimal stub without inventing biography, appearance, or personality."""
+def _sentence_snippets_for_name(source_text: str, name_kor: str) -> list[str]:
+    """Return short source sentences that explicitly mention the transient character token."""
+    text = re.sub(r"\s+", " ", str(source_text or "")).strip()
+    if not text or not name_kor:
+        return []
+    pieces = re.split(r"(?<=[.!?。！？])\s+|[\r\n]+", text)
+    snippets: list[str] = []
+    for piece in pieces:
+        sentence = piece.strip()
+        if not sentence or name_kor not in sentence:
+            continue
+        snippets.append(sentence[:220])
+        if len(snippets) >= 3:
+            break
+    if snippets:
+        return snippets
+    index = text.find(name_kor)
+    if index < 0:
+        return []
+    start = max(0, index - 80)
+    end = min(len(text), index + len(name_kor) + 140)
+    return [text[start:end].strip()]
+
+
+def _snippet_with_markers(snippets: list[str], markers: tuple[str, ...]) -> str:
+    """Return the first snippet containing any requested marker."""
+    for snippet in snippets:
+        if any(marker in snippet for marker in markers):
+            return snippet
+    return ""
+
+
+def _stub_world_context(world_config: dict | None) -> str:
+    """Return compact world/scenario text for plausible transient NPC defaults."""
+    sections = (world_config or {}).get("prompt", {}).get("sections", {})
+    parts: list[str] = []
+    for key, limit in (("world", 900), ("scenario", 1400)):
+        value = str(sections.get(key) or "").strip()
+        if value:
+            parts.append(value[:limit])
+    return "\n\n".join(parts) if parts else "(none)"
+
+
+async def _fill_plausible_stub_fields(
+    name_kor: str,
+    stub: dict,
+    snippets: list[str],
+    world_config: dict | None,
+) -> dict:
+    """Fill empty transient NPC fields with plausible defaults without overriding evidence."""
+    from src.core.llm.client import extract_json_from_llm, get_model
+
+    observed = " / ".join(snippets) if snippets else "(no direct descriptive sentence)"
+    prompt = f"""Create minimal plausible defaults for a newly mentioned transient NPC.
+
+Rules:
+- Preserve observed evidence exactly. Do not contradict it.
+- Fill only missing fields. Do not overwrite observed fields.
+- If appearance is observed, reuse that. If not observed, invent a generic plausible appearance.
+- If relationship/role is observed, reuse that. If not observed, invent only a low-detail plausible role/status.
+- Do not create secrets, durable biography, trauma, special skills, or strong personality unless evidence says so.
+- Korean is OK. Return concise field values.
+
+Character token: {name_kor}
+Observed evidence: {observed}
+Existing stub:
+{json.dumps(stub, ensure_ascii=False)}
+
+World/scenario context:
+{_stub_world_context(world_config)}
+
+Return ONLY JSON with optional string fields:
+{{
+  "biological_sex": "",
+  "age": "",
+  "height": "",
+  "weight": "",
+  "appearance": "",
+  "family": "",
+  "formative_background": "",
+  "initial_mood": "",
+  "personality": "",
+  "speech_style": "",
+  "relation_type": "",
+  "relation_status": "",
+  "initial_affinity": 0
+}}"""
+
+    try:
+        model = get_model(
+            STUB_MODEL,
+            system_prompt="Generate conservative defaults for transient roleplay NPC records.",
+        )
+        resp = await model.generate_content_async(
+            prompt,
+            generation_config={
+                "temperature": 0.35,
+                "max_output_tokens": 1024,
+                "response_mime_type": "application/json",
+                "log_source": "transient_npc_stub",
+            },
+        )
+        parsed = extract_json_from_llm(resp.text, source="transient_npc_stub")
+    except Exception as exc:
+        print(f"[WorldBuilder] transient stub default generation failed: {exc}")
+        return stub
+
+    if not isinstance(parsed, dict):
+        return stub
+
+    merged = dict(stub)
+    for key in (
+        "biological_sex",
+        "age",
+        "height",
+        "weight",
+        "appearance",
+        "family",
+        "formative_background",
+        "initial_mood",
+        "personality",
+        "speech_style",
+        "relation_type",
+        "relation_status",
+    ):
+        if str(merged.get(key) or "").strip():
+            continue
+        value = str(parsed.get(key) or "").strip()
+        if value:
+            merged[key] = value[:500]
+    if not merged.get("initial_affinity"):
+        try:
+            merged["initial_affinity"] = int(parsed.get("initial_affinity") or 0)
+        except (TypeError, ValueError):
+            merged["initial_affinity"] = 0
+    return merged
+
+
+async def _build_conservative_stub_profile(
+    name_kor: str,
+    main_npc_id: str,
+    source_text: str = "",
+    world_config: dict | None = None,
+) -> dict:
+    """Build a transient NPC stub from observed text, filling unknowns plausibly."""
     parsed = _parse_relation_descriptor(name_kor)
     related_to, role = parsed if parsed else ("", name_kor)
+    snippets = _sentence_snippets_for_name(source_text, name_kor)
+    observed_context = " / ".join(snippets[:2])
+    appearance = _snippet_with_markers(snippets, _APPEARANCE_MARKERS)
+    role_evidence = _snippet_with_markers(snippets, _ROLE_MARKERS)
     if parsed:
         surname = ""
         if role in _SAME_SURNAME_ROLE_SET:
@@ -617,25 +790,28 @@ async def _build_conservative_stub_profile(name_kor: str, main_npc_id: str) -> d
         name_roman = _kor_to_roman_id(name_kor)
         context = f"{name_kor}로 명시적으로 언급되어 처음 인식된 인물."
         relation_type = "acquaintance"
+    if observed_context:
+        context = f"{context} Observed evidence: {observed_context}"
 
-    return {
+    stub = {
         "name_kor":             generated_name,
         "name_roman":           name_roman,
         "biological_sex":       "",
         "age":                  "",
         "height":               "",
         "weight":               "",
-        "appearance":           "",
+        "appearance":           appearance,
         "family":               "",
         "formative_background": "",
-        "initial_mood":         "calm",
-        "personality":          "unknown",
+        "initial_mood":         "",
+        "personality":          "",
         "speech_style":         "",
         "context":              context,
         "relation_type":        relation_type,
-        "relation_status":      f"first known as {name_kor}; not yet personally established with {main_npc_id}",
+        "relation_status":      role_evidence,
         "initial_affinity":     0,
     }
+    return await _fill_plausible_stub_fields(name_kor, stub, snippets, world_config)
 
 
 async def _increment_appearance(char_id: str) -> None:

@@ -82,6 +82,17 @@ header::after {
 #search-input  { width: 170px; }
 #type-filter   { width: 130px; }
 
+.live-badge {
+  display: none; align-items: center; gap: 5px;
+  padding: 0 9px; height: 22px; border-radius: 99px; flex-shrink: 0;
+  background: rgba(52,211,153,.12); border: 1px solid rgba(52,211,153,.3);
+  color: #34d399; font-size: 10px; font-weight: 700; letter-spacing: .06em;
+}
+.live-badge.on { display: inline-flex; }
+.live-dot { width: 6px; height: 6px; border-radius: 50%; background: #34d399;
+  box-shadow: 0 0 5px #34d399; animation: blink 1.6s ease-in-out infinite; }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.35} }
+
 .btn {
   height: 30px; padding: 0 13px; border-radius: 7px; border: 1px solid var(--b2);
   background: var(--s2); color: var(--t1); font-size: 12px; font-weight: 600;
@@ -451,6 +462,7 @@ header::after {
   <div class="toolbar">
     <select class="ctl" id="thread-select"><option value="">Latest thread</option></select>
     <button class="btn btn-v" id="load-btn">Load</button>
+    <span class="live-badge" id="live-badge"><span class="live-dot"></span>LIVE</span>
     <input class="ctl" id="search-input" type="search" placeholder="노드 검색…" autocomplete="off">
     <select class="ctl" id="type-filter"><option value="all">All types</option></select>
   </div>
@@ -612,6 +624,7 @@ const sNodes      = $("s-nodes");
 const sEdges      = $("s-edges");
 const sWorld      = $("s-world");
 const toastsEl    = $("toasts");
+const liveBadge   = $("live-badge");
 
 /* ═══ UTILS ══════════════════════════════════════════════════════════ */
 function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
@@ -915,7 +928,9 @@ function goBack(){
     const prev=centerHistory.pop();panX=0;panY=0;
     centerId=prev;sel="";activeTab="info";activeEventId="";editMode=false;renderAll()
   }else deselect()}
-function renderAll(){drawGraph();renderDetail();renderLog()}
+function isLiveMode(){return!manualTid||(!!liveThreadId&&manualTid===liveThreadId)}
+function updateLiveBadge(){liveBadge.classList.toggle("on",isLiveMode()&&(graph.nodes||[]).length>0)}
+function renderAll(){drawGraph();renderDetail();renderLog();updateLiveBadge()}
 
 /* ═══ DETAIL PANEL ═══════════════════════════════════════════════════ */
 function renderDetail(){
@@ -1243,19 +1258,27 @@ async function syncThreads(){
   const exported=exportedThreads();
   if(exported.length){
     const cur=threadSel.value;
-    threadSel.innerHTML=`<option value="">Latest thread</option>`+
+    threadSel.innerHTML=`<option value="">현재 대화 (Live)</option>`+
       exported.map(t=>`<option value="${esc(t.id)}">${esc(short(`${(t.modifiedAt||t.createdAt||"").slice(0,10)} ${t.name||t.id}`,80))}</option>`).join("");
     threadSel.value=cur||manualTid||"";
     threadSyncErrorShown=false;
     return}
   try{const r=await fetch(apiUrl("/api/threads"),{cache:"no-store"});if(!r.ok)throw new Error(await r.text());
     const list=await r.json();const cur=threadSel.value;
+    const prevLive=liveThreadId;
     // 서버는 현재 live 스레드를 항상 첫 번째에 반환
     if(list.length>0)liveThreadId=list[0].id||"";
-    threadSel.innerHTML=`<option value="">Latest thread</option>`+
-      list.map(t=>`<option value="${esc(t.id)}">${esc(short(`${(t.modifiedAt||t.createdAt||"").slice(0,10)} ${t.name||t.id}`,80))}</option>`).join("");
+    threadSel.innerHTML=`<option value="">현재 대화 (Live)</option>`+
+      list.map(t=>{const isLive=t.id===liveThreadId;
+        return`<option value="${esc(t.id)}">${isLive?"● ":""}${esc(short(`${(t.modifiedAt||t.createdAt||"").slice(0,10)} ${t.name||t.id}`,78))}</option>`})
+      .join("");
     threadSel.value=cur||manualTid||"";
-    threadSyncErrorShown=false}catch(err){
+    threadSyncErrorShown=false;
+    // 새 Chainlit 세션 감지: live 스레드가 바뀌었고 자동 추적 중이면 전환
+    if(prevLive&&liveThreadId&&liveThreadId!==prevLive&&isLiveMode()){
+      lastPayload="";manualTid=liveThreadId;
+      threadSel.value=liveThreadId;
+      await loadThread()}}catch(err){
       if(!threadSyncErrorShown){threadSyncErrorShown=true;toast("Thread 목록 로드 실패: "+err,"e")}}}
 
 async function loadThread(){
@@ -1271,35 +1294,44 @@ async function loadThread(){
     lastPayload=JSON.stringify(next);
     knownEvtIds=new Set((next.nodes||[]).filter(n=>n.type==="event").map(n=>n.id));
     centerId="";centerHistory=[];sel="";activeTab="info";activeEventId="";editMode=false;
-    applyGraph(next);renderAll();toast("Thread 로드 완료","ok")}
+    applyGraph(next);renderAll();updateLiveBadge();toast("Thread 로드 완료","ok")}
   catch(err){toast("로드 실패: "+err,"e")}
   finally{loadBtn.disabled=false}}
 
 /* ═══ POLL ═══════════════════════════════════════════════════════════ */
+async function _fetchLiveCache(){
+  // /graph.json 캐시 폴링 (Chainlit 세션 라이브 캐시)
+  const r=await fetch(apiUrl("/graph.json"),{cache:"no-store"});
+  if(!r.ok)return;
+  const p=await r.text();if(p===lastPayload)return;
+  lastPayload=p;
+  const next=JSON.parse(p);
+  if(next.threadId)liveThreadId=next.threadId;
+  applyGraph(next);renderAll();}
+
 async function refresh(){
-  // 현재 live 스레드를 수동 선택한 경우: DB에서 직접 폴링 (lock 시 캐시 폴백)
   if(manualTid){
+    // 수동 선택된 thread가 live thread와 다르면 추적 안 함
     if(manualTid!==liveThreadId)return;
     try{
       const r=await fetch(apiUrl("/api/load"),{method:"POST",
         headers:{"Content-Type":"application/json"},
         body:JSON.stringify({threadId:manualTid})});
-      if(!r.ok)return;
+      if(!r.ok){
+        // 423: DB가 Chainlit에 의해 lock → /graph.json 캐시로 폴백
+        if(r.status===423)await _fetchLiveCache();
+        return;}
       const p=await r.text();if(p===lastPayload)return;
       lastPayload=p;applyGraph(JSON.parse(p));renderAll();
     }catch(_){}
     return;}
+  // manualTid 없음 = 자동 추적 모드 → /graph.json 폴링
   const first=exportedThreads()[0];
   if(first){
     const next=exportedSnapshot(first.id);
     const p=JSON.stringify(next||{nodes:[],edges:[]});if(p===lastPayload)return;
     lastPayload=p;applyGraph(JSON.parse(p));renderAll();return}
-  try{const r=await fetch(apiUrl("/graph.json"),{cache:"no-store"});
-    const p=await r.text();if(p===lastPayload)return;
-    lastPayload=p;
-    const next=JSON.parse(p);
-    if(next.threadId)liveThreadId=next.threadId;
-    applyGraph(next);renderAll()}catch(_){}}
+  try{await _fetchLiveCache()}catch(_){}}
 
 /* ═══ BINDINGS ═══════════════════════════════════════════════════════ */
 loadBtn.addEventListener("click",loadThread);
@@ -1340,6 +1372,20 @@ document.querySelectorAll(".log-tab").forEach(b=>{
 /* ═══ BOOT ═══════════════════════════════════════════════════════════ */
 async function boot(){
   await syncThreads();
+  // 먼저 /graph.json에서 라이브 세션이 있는지 확인
+  try{
+    const r=await fetch(apiUrl("/graph.json"),{cache:"no-store"});
+    if(r.ok){
+      const data=JSON.parse(await r.text());
+      if((data.nodes||[]).length>0){
+        // 라이브 Chainlit 세션 존재 → 자동 추적 모드 (manualTid 설정 없음)
+        lastPayload=JSON.stringify(data);
+        if(data.threadId){liveThreadId=data.threadId;threadSel.value=data.threadId}
+        knownEvtIds=new Set((data.nodes||[]).filter(n=>n.type==="event").map(n=>n.id));
+        applyGraph(data);renderAll();
+        return}}
+  }catch(_){}
+  // 라이브 세션 없음 → 가장 최근 thread 로드
   const first=threadSel.options[1];
   if(first){threadSel.value=first.value;await loadThread()}
   else await refresh()}

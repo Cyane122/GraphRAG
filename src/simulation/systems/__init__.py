@@ -14,7 +14,7 @@
 #   - tick_all_cycles(days: int) -> None : Advance organic cycles for all relevant characters.
 #   - process_ejaculation(actor_response: str, pc_id: str, npc_id: str, current_time: datetime) -> dict : Apply organic state changes from actor response.
 #   - build_world_context(npc_id: str, pc_id: str, location_id: str, current_time: datetime, enable_sns: bool = True) -> dict : Build nearby activity and optional SNS feed context.
-#   - resolve_and_update(char_names: list[str], main_npc_id: str, pc_id: str, world_config: dict, event_id: str | None = None, event_importance: int = 0) -> list[str] : Resolve characters and update appearance records.
+#   - resolve_and_update(char_names: list[str], main_npc_id: str, pc_id: str, world_config: dict, event_id: str | None = None, event_importance: int = 0, allowed_existing_ids: list[str] | None = None, source_text: str = "") -> list[str] : Resolve characters and update appearance records.
 #   - propagate_gossip(event_summary: str, event_importance: int, relationship_delta: int, source_npc_id: str, pc_id: str, timestamp_iso: str, source_event_id: str | None = None) -> None : Propagate reputation changes.
 #   - check_personality_drift(char_id: str, event_id: str, event_summary: str, importance: int, current_time: datetime) -> None : Apply personality drift when events qualify.
 #   - fetch_goal_hints(owner_id: str, pc_id: str, current_time: datetime, limit: int = 2) -> list[dict] : Fetch active goal hints.

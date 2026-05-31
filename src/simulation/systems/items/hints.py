@@ -74,7 +74,7 @@ async def fetch_object_memory_hints(
 
 
 def format_item_memory_hints(hints: list[ItemHint]) -> str:
-    """Render item-memory hints as a compact XML block for dynamic prompts."""
+    """Render item-memory hints as a compact XML block for dynamic prompt."""
     if not hints:
         return ""
 

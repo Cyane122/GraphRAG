@@ -223,7 +223,7 @@ def _merge_rules(existing_rules: list[dict], extra_rules: list[dict]) -> list[di
 
 
 def _context_importance(context_plan: dict) -> int:
-    """Read planner importance without letting malformed values break prompts."""
+    """Read planner importance without letting malformed values break prompt."""
     try:
         return int(context_plan.get("importance") or 0)
     except (TypeError, ValueError):

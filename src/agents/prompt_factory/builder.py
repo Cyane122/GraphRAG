@@ -9,7 +9,7 @@
 #   - PromptBuilder : Fixed / Genre / Dynamic 3-part 프롬프트 조립기
 #
 # Functions
-#   - _read_optional_prompt(relative_path: str) -> str : prompts/ 하위 Markdown 파일 읽기
+#   - _read_optional_prompt(relative_path: str) -> str : prompt/ 하위 Markdown 파일 읽기
 #   - _format_prompt_vars(text: str, *, char_name: str, user_name: str, for_add: str) -> str : 프롬프트 변수 치환
 #   - _label_mixed_input(user_input: str, user_name: str) -> str : *...* 상황설명과 PC 대사를 원문 순서대로 레이블링
 # ================================
@@ -43,7 +43,7 @@ from src.agents.prompt_factory.renderers import (
 
 logger = logging.getLogger(__name__)
 
-PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
+PROMPT_DIR = Path(__file__).resolve().parent / "prompt"
 
 
 # ----------------
@@ -162,7 +162,7 @@ class PromptBuilder:
     def build_character_focus_prompt(self, char_data: dict) -> str:
         """Render narrator-specific prose focus prompt, if configured.
 
-        Character focus prompts are rendered in the fixed (cached) section by fixed.py.
+        Character focus prompt are rendered in the fixed (cached) section by fixed.py.
         This method returns empty to avoid duplicating in the dynamic section.
         """
         if self.world_config.get("character_focus_prompt"):
@@ -175,7 +175,7 @@ class PromptBuilder:
         return _render_prompt_block("character_focus_prompt", prompt)
 
     def build_scene_specific_prompt(self, scene_types: list[str]) -> str:
-        """Render scene-specific prompts.
+        """Render scene-specific prompt.
 
         Rule:
         - world scene prompt exists -> use it

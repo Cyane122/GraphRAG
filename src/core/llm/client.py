@@ -27,6 +27,14 @@ from src.config import GOOGLE_PROJECT_ID as PROJECT_ID
 
 _LLM_TIMEOUT_SEC = 90  # 비스트리밍 JSON 호출 최대 대기 시간
 
+# sexual_information 등 성인 콘텐츠를 포함하는 업데이터 호출용 safety bypass
+_CONTENT_OFF_SAFETY_SETTINGS = [
+    types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="OFF"),
+    types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="OFF"),
+    types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="OFF"),
+    types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="OFF"),
+]
+
 _client = genai.Client(
     vertexai=True,
     project=PROJECT_ID,
@@ -223,15 +231,21 @@ class _GeminiModel:
         cfg = dict(generation_config or {})
         cfg.pop("log_source", None)
         thinking_raw = cfg.pop("thinking_config", None)
+        bypass_safety = cfg.pop("bypass_safety", False)
         is_json_response = cfg.get("response_mime_type") == "application/json"
 
         # JSON 분류/업데이트 호출은 짧은 구조화 출력이 목적이라 thinking 토큰이
         # max_output_tokens를 잠식하면 빈 JSON 응답으로 끝날 수 있다. 일부 호출자가
         # thinking_level을 넘기더라도 JSON 요청에서는 budget=0으로 정규화한다.
+        # 일부 모델은 thinking_budget=0을 무시하고 최소 ~500 thinking 토큰을 사용하므로
+        # max_output_tokens가 없는 JSON 호출에는 안전 하한을 적용한다.
         if thinking_raw is None:
             thinking_raw = {"thinking_budget": 0} if is_json_response else {"thinking_level": "LOW"}
         elif is_json_response and "thinking_budget" not in thinking_raw:
             thinking_raw = {"thinking_budget": 0}
+
+        if is_json_response and not cfg.get("max_output_tokens"):
+            cfg["max_output_tokens"] = 4096
 
         build: dict = {}
         if self._system:
@@ -247,6 +261,8 @@ class _GeminiModel:
         build["automatic_function_calling"] = types.AutomaticFunctionCallingConfig(
             disable=True
         )
+        if bypass_safety:
+            build["safety_settings"] = _CONTENT_OFF_SAFETY_SETTINGS
         build.update(cfg)
         return types.GenerateContentConfig(**build)
 

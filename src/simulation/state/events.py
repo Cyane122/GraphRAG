@@ -74,7 +74,7 @@ Return ONLY valid JSON with factual Event text only. Do not add speculation, emo
         )
         resp = await model.generate_content_async(
             prompt,
-            generation_config={"temperature": 0.0, "max_output_tokens": 512, "response_mime_type": "application/json"},
+            generation_config={"temperature": 0.0, "max_output_tokens": 1536, "response_mime_type": "application/json", "log_source": "event_compress"},
         )
         result = extract_json_from_llm(resp.text, source="event_compress")
         if isinstance(result, dict):
@@ -219,7 +219,7 @@ Scene:
     model = get_model(model_name=COMPLEX_MODEL, system_prompt=system_instruction)
     response = await model.generate_content_async(
         prompt,
-        generation_config={"temperature": 0.0, "response_mime_type": "application/json"},
+        generation_config={"temperature": 0.0, "max_output_tokens": 4096, "response_mime_type": "application/json", "log_source": "event_plan"},
     )
 
     plan = extract_json_from_llm(response.text, source="event_plan")
@@ -404,7 +404,7 @@ Return ONLY JSON: {{"summary": "..."}}"""
         )
         resp = await model.generate_content_async(
             prompt,
-            generation_config={"temperature": 0.2, "max_output_tokens": 256, "response_mime_type": "application/json"},
+            generation_config={"temperature": 0.2, "max_output_tokens": 1536, "response_mime_type": "application/json", "log_source": "relationship_narrative_summary"},
         )
         result = extract_json_from_llm(resp.text, source="relationship_narrative")
         new_summary = result.get("summary") if isinstance(result, dict) else None
@@ -447,6 +447,7 @@ async def delegate_complex_update(
                 main_npc_id      = npc_id,
                 pc_id            = pc_id,
                 world_config     = world_config,
+                source_text      = actor_response,
             )
             participant_ids = [pc_id, npc_id, *resolved_ids]
         except Exception as e:

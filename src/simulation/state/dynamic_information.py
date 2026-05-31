@@ -147,6 +147,7 @@ Scene:
         "max_output_tokens": 4096,
         "response_mime_type": "application/json",
         "log_source": "dynamic_information_updater",
+        "bypass_safety": True,
     }
 
     raw_text = ""
@@ -258,6 +259,7 @@ Scene:
         "max_output_tokens": 4096,
         "response_mime_type": "application/json",
         "log_source": "dynamic_information_updater_multi",
+        "bypass_safety": True,
     }
 
     raw_text = ""

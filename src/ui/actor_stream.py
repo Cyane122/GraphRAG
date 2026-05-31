@@ -5,6 +5,7 @@
 #
 # Functions
 #   - recover_missing_analyze_prose(raw: str) -> tuple[str, bool] : Recover prose when Actor omits the closing analyze tag
+#   - _extract_scene_chars(raw_thinking: str, visible_text: str = "") -> list[str] : Extract visible secondary character names from Actor thinking
 #   - stream_actor(fixed_prompt: str, genre_prompt: str, dynamic_prompt: str, history: list[dict], genai_client: object, model_name: str, max_token: int, npc_name: str, logs_dir: Path, status_text: str, send_output: bool = True) -> tuple[str, list[str], cl.Message, int | None, str] : Actor 응답 생성
 # ================================
 
@@ -70,9 +71,9 @@ def recover_missing_analyze_prose(raw: str) -> tuple[str, bool]:
     return recovered, bool(recovered)
 
 
-def _extract_scene_chars(raw_thinking: str) -> list[str]:
+def _extract_scene_chars(raw_thinking: str, visible_text: str = "") -> list[str]:
     """thinking 텍스트에서 등장인물 이름/서술어를 추출합니다.
-    순수 이름(2-4자 한글) 또는 'X의 Y' 관계 서술어를 원문 그대로 반환합니다."""
+    순수 이름(2-4자 한글) 또는 'X의 Y' 관계 서술어 중 본문에 보이는 항목만 반환합니다."""
     chars_m = re.search(r"CHARACTERS:\s*(\[.*?\])", raw_thinking, re.DOTALL)
     if not chars_m:
         return []
@@ -85,6 +86,8 @@ def _extract_scene_chars(raw_thinking: str) -> list[str]:
         if not isinstance(char, str):
             continue
         name = char.strip()
+        if visible_text and name not in visible_text:
+            continue
         # 순수 이름: 2-4자 한글
         if re.match(r"^[가-힣]{2,4}$", name):
             result.append(name)
@@ -244,4 +247,4 @@ async def stream_actor(
         f"/ recovered_missing_analyze={recovered_missing_analyze}"
     )
 
-    return prose, _extract_scene_chars(raw_thinking), response_msg, _hour_from_response(prose), raw_thinking
+    return prose, _extract_scene_chars(raw_thinking, prose), response_msg, _hour_from_response(prose), raw_thinking

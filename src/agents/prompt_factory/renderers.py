@@ -8,7 +8,7 @@
 #   - _SafeFormatDict : str.format_map용 dict — 미등록 플레이스홀더를 원형 그대로 보존
 #
 # Functions
-#   - _read_optional_prompt(relative_path: str) -> str : prompts/ 하위 Markdown 파일 읽기
+#   - _read_optional_prompt(relative_path: str) -> str : prompt/ 하위 Markdown 파일 읽기
 #   - _render_prompt_block(tag: str, body: str) -> str : 본문을 XML 블록으로 감싸기
 #   - build_genre_section(genres: list[str], world_config: dict | None) -> str : 장르별 프롬프트 렌더링
 #   - render_state_line(dyn_state: dict, world_config: dict | None) -> str : 상태 한 줄 렌더링
@@ -28,7 +28,7 @@ from datetime import datetime
 from pathlib import Path
 import json
 
-PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
+PROMPT_DIR = Path(__file__).resolve().parent / "prompt"
 
 
 _DEFAULT_STATE_FIELDS: list[tuple[str, str, frozenset]] = [
@@ -82,9 +82,9 @@ def build_genre_section(genres: list[str], world_config: dict | None = None) -> 
     Genre md files are tagless. Tags are added here.
 
     Rules:
-    - This renderer only reads common prompt_factory genre prompts.
-    - World-specific scene prompts are handled by PromptBuilder.build_scene_specific_prompt().
-    - World prompt/scenes/{scene_type}.md overrides prompt_factory default scene prompts.
+    - This renderer only reads common prompt_factory genre prompt.
+    - World-specific scene prompt are handled by PromptBuilder.build_scene_specific_prompt().
+    - World prompt/scenes/{scene_type}.md overrides prompt_factory default scene prompt.
     - No world-specific genre key such as intimate_sses is handled here.
     - Missing genre body is omitted.
     """
@@ -118,7 +118,7 @@ def render_state_line(dyn_state: dict, world_config: dict | None = None) -> str:
 
 
 def clean_prompt_dict(data: dict) -> dict:
-    """Remove internal keys and null values before injecting graph records into prompts."""
+    """Remove internal keys and null values before injecting graph records into prompt."""
     cleaned: dict = {}
     for key, value in data.items():
         if key.startswith("_") or value is None:

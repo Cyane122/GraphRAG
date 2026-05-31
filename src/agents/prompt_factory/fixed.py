@@ -33,7 +33,7 @@ from src.agents.prompt_factory.prompt_sections import (
     _STYLE_3P,
 )
 
-PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
+PROMPT_DIR = Path(__file__).resolve().parent / "prompt"
 
 VALID_POV_MODES = {"1p_user", "1p_char", "3p_user", "3p_char"}
 

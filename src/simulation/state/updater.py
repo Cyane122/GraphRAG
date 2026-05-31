@@ -13,7 +13,7 @@
 #   - commit_time_plan(time_plan: dict, pc_id: str, npc_id: str) -> datetime : Persist a computed time plan.
 #   - apply_time_updates(plan: dict, base_time: datetime, pc_id: str, npc_id: str) -> datetime : Compute and persist time changes.
 #   - delegate_complex_update(actor_response: str, npc_id: str, pc_id: str, initial_changes: dict | None, event_only: bool, world_config: dict | None, scene_chars: list[str] | None) -> str | None : Run complex updates for event-only paths.
-#   - _render_dynamic_state_field_policy(field_types: dict[str, str]) -> str : Render allowed DynamicState fields for extractor prompts.
+#   - _render_dynamic_state_field_policy(field_types: dict[str, str]) -> str : Render allowed DynamicState fields for extractor prompt.
 #   - _write_updater_diff_snapshot(plan: dict, state_candidates: list[dict], rel_candidate: dict | None, event_candidate: dict | None) -> None : LLM 출력과 diff 결과를 logs/updater_diff.json에 저장.
 #   - _select_event_owner_id(npc_id: str, pc_id: str, participant_ids: list[str]) -> str | None : Choose the relationship anchor for Event updates.
 #   - _apply_event_action(plan: dict, event_allowed: bool, active_event: dict | None, actor_response: str, event_owner_id: str, pc_id: str, participant_ids: list[str], state_candidates: list[dict], rel_candidate: dict | None, guard: dict, feasibility_audit: dict) -> dict | None : Apply Event action from an updater plan.
@@ -129,7 +129,7 @@ def _render_state_world_context(world_config: dict | None) -> str:
 
 
 def _render_dynamic_state_field_policy(field_types: dict[str, str]) -> str:
-    """Render allowed DynamicState fields for extractor prompts."""
+    """Render allowed DynamicState fields for extractor prompt."""
     lines = [
         f"- {name}: {field_type}"
         for name, field_type in sorted(field_types.items())
@@ -279,7 +279,7 @@ Scene:
     try:
         response = await model.generate_content_async(
             prompt,
-            generation_config={"temperature": 0.0, "max_output_tokens": 2048,
+            generation_config={"temperature": 0.0, "max_output_tokens": 4096,
                                "response_mime_type": "application/json",
                                "log_source": "primary_state_updater"},
         )
@@ -477,7 +477,20 @@ async def process_actor_response(
     participant_ids = [pc_id, npc_id]
     if world_config and scene_chars:
         try:
-            resolved_ids = await wb_resolve(scene_chars, npc_id, pc_id, world_config)
+            manager_scene_ids = (manager_effects or {}).get("scene_npc_ids") or []
+            allowed_existing_ids = [
+                pc_id,
+                npc_id,
+                *manager_scene_ids,
+            ]
+            resolved_ids = await wb_resolve(
+                scene_chars,
+                npc_id,
+                pc_id,
+                world_config,
+                allowed_existing_ids=allowed_existing_ids,
+                source_text=actor_response,
+            )
             participant_ids = list(dict.fromkeys([pc_id, npc_id, *resolved_ids]))
         except Exception as e:
             print(f"[WorldBuilder] early resolve failed (ignored): {e}")
