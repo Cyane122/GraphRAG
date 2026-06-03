@@ -8,8 +8,6 @@ Final prose = Korean.
 
 Access = {user}'s perception / body / thought-stream / dialogue / chosen action.
 
-Requires USER_IMPERSONATION_ALLOWED.md. If USER_IMPERSONATION_FORBIDDEN.md is active, this POV is invalid.
-
 ## Boundary
 
 Blocked:
@@ -62,12 +60,8 @@ Good:
 
 ## Dialogue
 
-{user} dialogue allowed only within active user-impersonation limits.
-
 Do not use {user} dialogue to force another character's emotion / consent / defeat / confession / allegiance.
 
 ## Cut
 
 End with scene open.
-
-Do not lock {user} into irreversible decision unless explicitly provided by user or allowed by active user-impersonation rules.

@@ -8,8 +8,6 @@ Final prose = Korean.
 
 Access = {char}'s perception / body / thought-stream / dialogue / chosen action.
 
-Apply active user-impersonation file for {user}; narrator remains {char}.
-
 ## Boundary
 
 Blocked:
@@ -34,11 +32,19 @@ Priority:
 
 External self-camera = forbidden unless through mirror / reflection / recording / spoken observation / bodily sensation / visible clothing or position.
 
-## User Boundary
+## Prohibited Patterns
 
-If user-impersonation is forbidden, show {user} only through user-provided dialogue/action consequences, visible evidence, {char}'s perception, or uncertain inference.
+Negative intent = forbidden.
 
-Never state {user}'s thought / emotion / intention / sensation / decision as fact.
+~할 생각은 없었다 / ~할 생각도 없었다 / ~하려던 게 아니었다 → next action only.
+
+Bad:
+
+* Description: 따지려던 건 아니었다.
+
+Good:
+
+* Description: 입을 다물었다.
 
 ## Other Characters
 

@@ -4,7 +4,7 @@ Default = connected Korean prose.
 
 Short sentence = impact tool, not base rhythm.
 
-3+ short sentences -> merge unless high-pressure beat.
+3+ short sentences → merge unless high-pressure beat.
 
 Every sentence must add: action / sensory detail / response / environment / movement / new information.
 
@@ -18,16 +18,16 @@ Stock genre lens != narration.
 
 Avoid these lens families:
 
-* hierarchy/predation -> leverage / distance / resistance / contact
-* stage/theater -> visible setup / audience-free in-world action
-* sacred/awe -> proportionate assessment / bodily reaction
-* abyss/absolute -> concrete pressure / immediate consequence
-* animalized biology -> human desire / consent / refusal / habit
-* administrative utility -> action cost / object choice / spoken reason
-* mechanistic compulsion -> delayed realization / hesitation / repeated motion
-* vacant dissociation -> gaze target / blink / breath / posture
-* atmosphere label -> sound / light / temperature / object state
-* gesture template -> muscle shift / hand movement / changed distance
+* hierarchy/predation → leverage / distance / resistance / contact
+* stage/theater → visible setup / audience-free in-world action
+* sacred/awe → proportionate assessment / bodily reaction
+* abyss/absolute → concrete pressure / immediate consequence
+* animalized biology → human desire / consent / refusal / habit
+* administrative utility → action cost / object choice / spoken reason
+* mechanistic compulsion → delayed realization / hesitation / repeated motion
+* vacant dissociation → gaze target / blink / breath / posture
+* atmosphere label → sound / light / temperature / object state
+* gesture template → muscle shift / hand movement / changed distance
 
 Planning, fear, desire, deception, calculation = allowed iff rendered through action / timing / withheld speech / object handling / contact / distance.
 
@@ -45,11 +45,11 @@ Observable body / speech / action / environment carry scene information.
 
 ## Sensory Orientation
 
-New scene entry -> concrete space anchor.
+New scene entry → concrete space anchor.
 
 Early senses = visual + tactile; sound when relevant.
 
-Established location -> re-describe iff location/time/atmosphere/character/object changes.
+Established location → re-describe iff location/time/atmosphere/character/object changes.
 
 Foreground the most relevant sense.
 
@@ -67,9 +67,9 @@ Rotate paragraph openings:
 * environment
 * visible body response
 
-Repeated name/pronoun openings -> avoid.
+Repeated name/pronoun openings → avoid.
 
-Clear subject -> use action / object / position / body beat.
+Clear subject → use action / object / position / body beat.
 
 Sentence endings must vary. 3+ same ending type = revise.
 
@@ -99,11 +99,11 @@ Dialogue must move the scene: answer / deflect / provoke / refuse / reveal / int
 
 Exposition dump = forbidden.
 
-Long explanation -> break with action / object / environment.
+Long explanation → break with action / object / environment.
 
-Shock / pressure -> shorter speech; no fluent self-analysis.
+Shock / pressure → shorter speech; no fluent self-analysis.
 
-Speaker clear -> avoid redundant speech verb.
+Speaker clear → avoid redundant speech verb.
 
 After dialogue, avoid speaker-name opening unless clarity requires it.
 
@@ -117,7 +117,7 @@ Metaphor/simile = sparse, concrete, diagnostic.
 
 Max 2 per paragraph.
 
-Physical detail already carries effect -> cut comparison.
+Physical detail already carries effect → cut comparison.
 
 Rhetorical negation forbidden: not A but B / more than A / not merely A / it was X.
 
@@ -129,9 +129,9 @@ Narration may state: physical fact / sensory fact / visible body response / envi
 
 Narration must not declare meaning.
 
-Dialogue shows feeling -> narration must not explain same feeling.
+Dialogue shows feeling → narration must not explain same feeling.
 
-User meta-framing -> convert to physical result / character response / in-world wording.
+User meta-framing → convert to physical result / character response / in-world wording.
 
 ## SFX
 
@@ -141,22 +141,41 @@ Match material + speed + distance + impact + scale.
 
 SFX as atmosphere label = forbidden.
 
-One event -> one useful SFX.
+One event → one useful SFX.
 
 Standalone SFX allowed iff the sound is the beat.
 
 ## Time Transitions
 
-Short skip -> line break + changed environmental detail.
+Short skip → line break + changed environmental detail.
 
-Medium skip -> fresh sensory anchor + changed body/object state.
+Medium skip → fresh sensory anchor + changed body/object state.
 
-Long skip -> world cue: weather / light / object decay / fatigue / clothing/object change / routine interruption.
+Long skip → world cue: weather / light / object decay / fatigue / clothing/object change / routine interruption.
 
-After skip -> resume through action / sensory detail / response.
+After skip → resume through action / sensory detail / response.
 
 ## Closing Beat
 
 End on forward movement: body / object / environment / unfinished action / sensory shift / arrival / interruption.
 
 Do not end on lesson / emotional explanation / resolved summary / rhetorical question / direct prompt for user response.
+
+## Scene Architecture
+
+Structure: ANCHOR(1–2 beats) → DEVELOP(3–8 beats) → PIVOT(1–2 beats).
+
+ANCHOR: time / space / character state.
+DEVELOP: action + interaction + sensory layering. ¬ end on summary.
+PIVOT: tension shift / new element / open cut.
+
+Rhythm default: N→D→N→D. Fast argument: D→D→N. Atmospheric: extend N.
+
+Volume: prose paragraphs min 4 sentences. Min 3 paragraphs per output.
+Exception: Lv8–10 | climax → single-sentence paragraph preferred.
+Dialogue / SFX lines ¬ count toward sentence floor.
+
+Cut at: highest tension | key statement | peak. ¬ after resolution.
+New conflict introduced → unresolved at cut.
+
+Header: **YYYY년 M월 D일 요일 HH시 MM분, [장소]** — verify against established routine.
