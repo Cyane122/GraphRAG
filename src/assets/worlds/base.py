@@ -10,13 +10,24 @@
 #   - World : 세계 구현체 베이스 클래스
 #             SCENARIOS: dict[str, Scenario] — 시나리오 ID → Scenario. 비어있으면 단일 세계.
 #             SCENE_TYPES: dict[str, str] — 씬 타입 이름 → 영문 설명 (classifier 프롬프트에 주입)
+#             EXTRA_SLOTS: list — 커스텀 캐릭터 슬롯 [{id, label, sub}]. world_editor 로 관리.
 #             get_scene_types() -> list[str]           : 타입 이름 목록 (내부 키 조회용)
 #             get_scene_descriptions() -> dict[str, str] : 전체 dict (classifier 주입용)
-#             get_default_perspective() -> int         : 세계 기본 시점 반환
+#             resolve_pov() -> tuple[str, bool]        : perspective 설정(int/2·3-튜플) → (pov_mode, impersonation) 정규화
+#             get_default_perspective() -> int         : 세계 기본 인칭(1/3) 반환
 #             get_social_media_config() -> dict          : 카카오톡/SNS 기능 기본값과 월드 강제 비활성화 설정
 #             _build_tables(conn) -> None              : DDL 전용 (노드·관계 테이블, 벡터 인덱스, GlobalState)
 #             build_schema(conn, scenario_id) -> None  : 기본 구현은 _build_tables + build_scenario_data 호출
 #             build_scenario_data(conn, scenario_id) -> None : 시나리오별 초기 데이터 훅 (no-op)
+#
+# Functions
+#   - insert_static(conn: kuzu.Connection, label: str, node_id: str, *, char_id: str | None = None, rel: str | None = None, **props: object) -> None : JSON blob 노드를 생성하고 선택적으로 Character에 연결합니다.
+#   - insert_static_inline(conn: kuzu.Connection, char_id: str, rel: str, label: str, node_id: str, **props: object) -> None : Character → JSON blob 노드 관계를 생성합니다.
+#   - insert_dynamic(conn: kuzu.Connection, char_id: str, node_id: str | None = None, **props: object) -> None : DynamicInformation 노드를 생성하고 Character에 연결합니다.
+#   - insert_state(conn: kuzu.Connection, char_id: str, node_id: str | None = None, **props: object) -> None : DynamicState 노드를 생성하고 Character에 연결합니다.
+#   - insert_rule(conn: kuzu.Connection, rule_id: str, **props) -> None : Rule 노드를 생성합니다.
+#   - insert_schedule(conn: kuzu.Connection, owner_id: str, schedule_id: str, **props) -> None : Schedule 노드를 생성하고 Character에 연결합니다.
+#   - apply_schedule_templates(conn: kuzu.Connection, world_id: str, scenario_id: str | None) -> None : 월드 schedule_templates.json을 적용합니다.
 # ================================
 
 from __future__ import annotations
@@ -24,6 +35,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import kuzu
@@ -32,6 +44,22 @@ from src.core.embedding.encoder import EMBEDDING_DIM
 
 if TYPE_CHECKING:
     from src.assets.worlds.base_character import Character
+
+
+# DynamicState 의 '기본(built-in)' 컬럼 — DDL(_build_tables)에 박혀 있고 UI 가 기본 필드로 노출.
+# 이 목록에 없는 커스텀 state 컬럼은 빌드 시 insert_state 가 ALTER TABLE 로 만들어 함께 빌드한다
+# (즉 이 frozenset 은 '드롭 필터'가 아니라 '기본값 정의'다).
+_DYNAMIC_STATE_COLUMNS: frozenset[str] = frozenset({
+    "physical_condition", "mental_condition", "stress_level", "mood", "cycle_day",
+    "location_id", "workplace_stress_level", "knee_condition", "injury_detail",
+    "energy", "stress", "current_task", "outfit", "injury_marks",
+    "has_menstrual_cycle", "pregnant", "pregnancy_day", "cum_shots_this_cycle",
+    "pregnancy_father_id", "body_perception", "behavioral_facade", "hygiene",
+    "appearance", "physique", "age_presentation", "nervousness", "attitude",
+    "social_skill", "consideration", "stamina", "odor", "emotional_state",
+    "attachment_risk", "expectation_gap", "penis_size", "age", "circle_level",
+    "robe_grade", "led_color",
+})
 
 
 # ── 시나리오 ───────────────────────────────────────────────────────
@@ -58,15 +86,35 @@ class Scenario:
 # DialogueExamples 는 세계별로 속성 구조가 달라 JSON blob으로 저장합니다.
 # 에이전트는 node.props 를 JSON 파싱해 사용합니다.
 
-def insert_static(conn: kuzu.Connection, label: str, node_id: str, **props) -> None:
-    """정적 데이터 노드를 JSON blob으로 삽입합니다."""
-    conn.execute(
-        f"CREATE (:{label} {{id: $id, props: $props}})",
-        {"id": node_id, "props": json.dumps(props, ensure_ascii=False)},
-    )
+def _ensure_cypher_identifier(value: str, kind: str) -> None:
+    """Kuzu label/relationship 이름으로 쓸 수 있는 단순 식별자인지 검사합니다."""
+    if not value.isidentifier():
+        raise ValueError(f"{kind} must be a simple identifier: {value!r}")
 
-def insert_static_inline(conn: kuzu.Connection, char_id: str, rel: str, label: str, node_id: str, **props) -> None:
-    """Character → 정적 노드 관계를 한 번에 생성합니다."""
+
+def insert_static(
+    conn: kuzu.Connection,
+    label: str,
+    node_id: str,
+    *,
+    char_id: str | None = None,
+    rel: str | None = None,
+    **props: object,
+) -> None:
+    """JSON blob 노드를 삽입하고, char_id가 있으면 Character에 연결합니다."""
+    _ensure_cypher_identifier(label, "label")
+    if char_id is None:
+        if rel is not None:
+            raise ValueError("rel requires char_id")
+        conn.execute(
+            f"CREATE (:{label} {{id: $id, props: $props}})",
+            {"id": node_id, "props": json.dumps(props, ensure_ascii=False)},
+        )
+        return
+
+    if rel is None:
+        raise ValueError("char_id requires rel")
+    _ensure_cypher_identifier(rel, "rel")
     conn.execute(
         f"""
         MATCH (c:Character {{id: $char_id}})
@@ -77,6 +125,101 @@ def insert_static_inline(conn: kuzu.Connection, char_id: str, rel: str, label: s
             "node_id": node_id,
             "props": json.dumps(props, ensure_ascii=False),
         },
+    )
+
+
+def insert_static_inline(
+    conn: kuzu.Connection,
+    char_id: str,
+    rel: str,
+    label: str,
+    node_id: str,
+    **props: object,
+) -> None:
+    """Character → 정적 노드 관계를 한 번에 생성합니다."""
+    insert_static(conn, label, node_id, char_id=char_id, rel=rel, **props)
+
+
+def insert_dynamic(
+    conn: kuzu.Connection,
+    char_id: str,
+    node_id: str | None = None,
+    **props: object,
+) -> None:
+    """DynamicInformation JSON blob 노드를 생성하고 Character에 연결합니다."""
+    insert_static(
+        conn,
+        "DynamicInformation",
+        node_id or f"{char_id}_info",
+        char_id=char_id,
+        rel="HAS_INFO",
+        **props,
+    )
+
+
+_KUZU_SCALAR_TYPES: tuple[tuple[type, str], ...] = (
+    (bool, "BOOLEAN"),   # bool 은 int 의 subclass 이므로 반드시 int 보다 먼저 검사.
+    (int, "INT64"),
+    (float, "DOUBLE"),
+    (str, "STRING"),
+)
+
+
+def _kuzu_scalar_type(value: object) -> str | None:
+    """파이썬 스칼라 값에서 Kuzu 컬럼 타입을 추론합니다 (추론 불가 시 None)."""
+    for py_type, kuzu_type in _KUZU_SCALAR_TYPES:
+        if isinstance(value, py_type):
+            return kuzu_type
+    return None
+
+
+def _dynamic_state_columns(conn: kuzu.Connection) -> set[str]:
+    """현재 DynamicState 테이블의 실제 컬럼 이름 집합을 조회합니다 (기본 + 그동안 추가된 커스텀)."""
+    res = conn.execute("CALL TABLE_INFO('DynamicState') RETURN name")
+    names: set[str] = set()
+    while res.has_next():
+        names.add(res.get_next()[0])
+    return names
+
+
+def insert_state(
+    conn: kuzu.Connection,
+    char_id: str,
+    node_id: str | None = None,
+    **props: object,
+) -> None:
+    """DynamicState 노드를 생성하고 Character에 연결합니다.
+
+    기본 컬럼(_DYNAMIC_STATE_COLUMNS, DDL 에 박힌 것)은 그대로 쓰고, props 에 그 외
+    커스텀 키가 있으면 빌드 시 ALTER TABLE 로 컬럼을 만들어 함께 저장합니다
+    (화이트리스트로 드롭하지 않음 — 세계별 커스텀 state 컬럼을 지원).
+    None 값이거나 타입을 추론할 수 없는/식별자가 아닌 키는 건너뜁니다.
+    """
+    state_id = node_id or str(props.get("id") or f"{char_id}_state")
+    # id(PK)·None 값은 기록 대상에서 제외.
+    cols = {key: value for key, value in props.items() if key != "id" and value is not None}
+    if not cols:
+        return  # 빈 state 는 노드를 만들지 않는다(기존 동작 보존).
+
+    # 테이블에 없는 커스텀 컬럼은 타입을 추론해 ALTER TABLE 로 추가한다(빌드 시 같이 빌드).
+    existing = _dynamic_state_columns(conn)
+    for key, value in cols.items():
+        if key in existing or not key.isidentifier():
+            continue
+        kuzu_type = _kuzu_scalar_type(value)
+        if kuzu_type is None:
+            continue
+        conn.execute(f"ALTER TABLE DynamicState ADD {key} {kuzu_type}")
+        existing.add(key)
+
+    # existing 에 든 컬럼만 기록(추가 실패/식별자 아님 키는 자연히 제외).
+    writable = {key: value for key, value in cols.items() if key in existing}
+    payload = {"id": state_id, **writable}
+    columns = ", ".join(f"{key}: ${key}" for key in payload)
+    conn.execute(f"CREATE (:DynamicState {{{columns}}})", payload)
+    conn.execute(
+        "MATCH (c:Character {id: $id}), (d:DynamicState {id: $did}) CREATE (c)-[:HAS_STATE]->(d)",
+        {"id": char_id, "did": state_id},
     )
 
 
@@ -216,6 +359,36 @@ def insert_schedule(conn: kuzu.Connection, owner_id: str, schedule_id: str, **pr
         )
 
 
+def apply_schedule_templates(conn: kuzu.Connection, world_id: str, scenario_id: str | None) -> None:
+    """world_editor 의 schedule_templates.json 을 Schedule 노드로 런타임에 삽입합니다.
+
+    전역('world') 항목 + 현재 시나리오('scenarios'[scenario_id]) 항목을 합쳐, 각 entry 의
+    owner_id 캐릭터에 insert_schedule 로 부착합니다. owner_id/id 가 없거나 해당 Character 가
+    아직 없으면(insert_schedule 의 MATCH 가 비면) 조용히 건너뜁니다.
+    build_schema 가 캐릭터를 모두 만든 직후에 호출해야 합니다.
+    """
+    path = Path(__file__).parent / world_id / "schedule_templates.json"
+    if not path.exists():
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+
+    entries = list(data.get("world") or [])
+    if scenario_id:
+        entries += list((data.get("scenarios") or {}).get(scenario_id) or [])
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        owner_id = entry.get("owner_id")
+        schedule_id = entry.get("id")
+        if not owner_id or not schedule_id:
+            continue  # owner/id 없는 항목은 Schedule 로 부착할 수 없다.
+        props = {k: v for k, v in entry.items() if k not in ("owner_id", "id")}
+        insert_schedule(conn, owner_id=owner_id, schedule_id=schedule_id, **props)
+
+
 def _normalize_weekdays(raw: object) -> list[int]:
     """Normalize one weekday or many weekdays into sorted Python weekday numbers."""
     if raw in (None, "", -1):
@@ -268,6 +441,11 @@ class World:
     # 비어 있으면 이 세계는 단일 ChatProfile로 노출됩니다.
     # 항목이 있으면 각 Scenario가 별도 ChatProfile ('{world_id}/{scenario_id}')로 노출됩니다.
     SCENARIOS: dict[str, Scenario] = {}
+
+    # 세계별 커스텀 캐릭터 슬롯. world_editor 에서 추가/삭제합니다.
+    # 각 항목: {"id": "magic", "label": "Magic", "sub": "마법 능력치"}
+    # label 은 Kuzu 노드 테이블명(identifier). _build_tables 에서 DDL 을 자동 생성합니다.
+    EXTRA_SLOTS: list = []
     SOCIAL_MEDIA: dict[str, bool] = {
         "kakao_enabled": False,
         "instagram_enabled": False,
@@ -280,7 +458,7 @@ class World:
         narrator: Character | None = None,
         pc: Character | None = None,
         chars: list[Character] | None = None,
-        perspective: int | None = None,
+        perspective: object | None = None,
         scenario_id: str | None = None,
     ) -> None:
         """세계 인스턴스를 초기화합니다.
@@ -288,12 +466,14 @@ class World:
         narrator: 서술자 캐릭터 (NPC POV). 미지정 시 get_npc_id 기본값 사용.
         pc: 플레이어 캐릭터. 미지정 시 get_pc_id 기본값 사용.
         chars: 이 세계에 존재하는 캐릭터 목록. build_schema 시 사용.
+        perspective: world_editor perspective 설정. int 또는 (인칭, 중심, 사칭) 튜플을 받습니다.
         scenario_id: 이 인스턴스가 담당하는 시나리오 ID.
         """
         self.narrator = narrator
         self.pc = pc
         self.chars: list[Character] = chars or []
-        self.perspective = perspective if perspective is not None else self.DEFAULT_PERSPECTIVE
+        self.perspective_setting = perspective if perspective is not None else self.DEFAULT_PERSPECTIVE
+        self.perspective = self._perspective_person(self.perspective_setting)
         self.scenario_id = scenario_id
 
     # classifier LLM에 주입할 씬 타입 정의. name → description(English).
@@ -322,9 +502,42 @@ class World:
         """기본 시작 시각을 반환합니다."""
         return datetime.now()
 
+    def _perspective_person(self, perspective: object | None = None) -> int:
+        """perspective 설정에서 런타임 인칭 정수를 반환합니다."""
+        value = self.DEFAULT_PERSPECTIVE if perspective is None else perspective
+        if isinstance(value, (tuple, list)):
+            return int(value[0]) if value else 3
+        return int(value)
+
+    def resolve_pov(self) -> tuple[str, bool]:
+        """perspective 설정을 (pov_mode, impersonation) 으로 정규화합니다 (단일 소스).
+
+        backward-compatible 입력 형식:
+          - int             : 인칭만. anchor='char', impersonation=False.
+          - (person, anchor): impersonation=False.
+          - (person, anchor, impersonation): 그대로.
+        anchor: 'char'(캐릭터 중심) | 'user'(PC 중심). 'pc' 는 'user' 로 본다.
+        제약: 1인칭 + PC 중심(user) 이면 impersonation 을 True 로 강제한다.
+        반환 pov_mode 는 '{person}p_{anchor}' (예: '3p_char', '1p_user').
+        """
+        # 생성자는 self.perspective 를 기존 호출부 호환용 int 로 유지하므로,
+        # anchor/impersonation 정보는 별도 원본 설정에서 읽는다.
+        dp = self.perspective_setting
+        if isinstance(dp, (tuple, list)):
+            person = int(dp[0]) if len(dp) >= 1 else 3
+            anchor = str(dp[1]) if len(dp) >= 2 else "char"
+            impersonation = bool(dp[2]) if len(dp) >= 3 else False
+        else:
+            person, anchor, impersonation = int(dp), "char", False
+        anchor = "user" if str(anchor).lower() in ("user", "pc") else "char"
+        if person == 1 and anchor == "user":
+            impersonation = True
+        return f"{person}p_{anchor}", impersonation
+
     def get_default_perspective(self) -> int:
-        """세계 기본 시점을 반환합니다."""
-        return int(self.perspective or self.DEFAULT_PERSPECTIVE)
+        """세계 기본 인칭(1/3)을 반환합니다."""
+        pov_mode, _ = self.resolve_pov()
+        return int(pov_mode[0])
 
     def get_world_section(self) -> str:
         """세계관 설명 XML 섹션을 반환합니다."""
@@ -356,27 +569,30 @@ class World:
         """블랙리스트 항목 문자열을 반환합니다."""
         return ""
 
-    def get_full_config(self, perspective: int = 3, scenario_id: str | None = None) -> dict:
+    def get_full_config(self, perspective: object | None = None, scenario_id: str | None = None) -> dict:
         """프롬프트 조립에 필요한 전체 설정 딕셔너리를 반환합니다."""
         # 레거시 dict SCENARIOS 지원 (rofan 등)
         _sid = scenario_id or self.scenario_id
         scenario = self.SCENARIOS.get(_sid) if _sid and isinstance(self.SCENARIOS, dict) and self.SCENARIOS else None
         start_time       = (scenario.default_time        if scenario and scenario.default_time        else self.get_default_time())
         default_location = (scenario.default_location_id if scenario and scenario.default_location_id else self.get_default_location_id())
+        perspective_setting = self.perspective_setting if perspective is None else perspective
+        resolved_perspective = self._perspective_person(perspective_setting)
         return {
             "world_section":        self.get_world_section(),
-            "specific_prose_rules": self.get_specific_prose_rules(perspective),
-            "prose_rules":          self.get_specific_prose_rules(perspective),
-            "few_shot_examples":    self.get_few_shot_examples(perspective),
+            "specific_prose_rules": self.get_specific_prose_rules(resolved_perspective),
+            "prose_rules":          self.get_specific_prose_rules(resolved_perspective),
+            "few_shot_examples":    self.get_few_shot_examples(resolved_perspective),
             "additional_blacklist": self.get_blacklist(),
             "start_time":           start_time,
-            "perspective":          perspective,
+            "perspective":          resolved_perspective,
             "pc_id":                self.get_pc_id(),
             "npc_id":               self.get_npc_id(),
             "npc_name_kor":         self.npc_name_kor(),
             "default_location_id":  default_location,
             "scenario_id":          _sid,
             "social_media":         self.get_social_media_config(),
+            "impersonation":        self.resolve_pov()[1],
         }
 
     def get_default_location_id(self) -> str:
@@ -725,6 +941,15 @@ class World:
         ]
         for ddl in rel_tables:
             conn.execute(ddl)
+
+        # 커스텀 슬롯 DDL — EXTRA_SLOTS 에 정의된 blob 테이블과 엣지를 생성한다.
+        for slot in (self.EXTRA_SLOTS or []):
+            lbl = slot.get("label", "") if isinstance(slot, dict) else ""
+            if not lbl or not lbl.isidentifier():
+                continue
+            rel_name = f"HAS_{lbl.upper()}"
+            conn.execute(f"CREATE NODE TABLE IF NOT EXISTS {lbl}(id STRING, props STRING, PRIMARY KEY(id))")
+            conn.execute(f"CREATE REL TABLE IF NOT EXISTS {rel_name}(FROM Character TO {lbl})")
 
         print(f"[{self.WORLD_ID}] 노드/관계 테이블 생성 완료.")
 

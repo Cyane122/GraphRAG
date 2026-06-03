@@ -348,6 +348,9 @@ class KuzuAsyncDriver:
             world = World()
         print(f"[KuzuBootstrap] base schema missing for '{self._world_id}' ({', '.join(sorted(missing))}). Initializing schema.")
         world.build_schema(self._conn, self._scenario_id)
+        # world_editor 의 전역/시나리오 schedule 템플릿을 Schedule 노드로 반영.
+        from src.assets.worlds.base import apply_schedule_templates
+        apply_schedule_templates(self._conn, self._world_id, self._scenario_id)
 
     def _run_migrations(self) -> None:
         """기존 DB에 누락된 테이블과 컬럼을 추가한다."""

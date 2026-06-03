@@ -12,6 +12,7 @@
 # ================================
 
 import json
+import re
 from datetime import datetime
 
 from src.core.database import async_driver
@@ -95,8 +96,7 @@ def _schedule_hint_for_time(row: dict, current_time: datetime, window_minutes: i
     if not _matches_date(row, current_time):
         return None
 
-    start_minute = _coerce_minute(row.get("start_minute"), row.get("start_time"))
-    end_minute = _coerce_minute(row.get("end_minute"), row.get("end_time"))
+    start_minute, end_minute, start_time_s, end_time_s = _resolve_times(row, current_time)
     current_minute = current_time.hour * 60 + current_time.minute
 
     timing = "today"
@@ -131,8 +131,8 @@ def _schedule_hint_for_time(row: dict, current_time: datetime, window_minutes: i
         **realism,
         "timing": timing,
         "minutes_until": minutes_until,
-        "start_time": row.get("start_time") or _format_minute(start_minute),
-        "end_time": row.get("end_time") or _format_minute(end_minute),
+        "start_time": start_time_s or _format_minute(start_minute),
+        "end_time": end_time_s or _format_minute(end_minute),
         "location_id": row.get("location_id") or "",
         "location_name": row.get("location_name") or "",
         "tags": row.get("tags") or [],
@@ -141,8 +141,7 @@ def _schedule_hint_for_time(row: dict, current_time: datetime, window_minutes: i
 
 def _routine_hint(row: dict, current_time: datetime) -> dict:
     """Return minimal always-on routine info: who, when, where, and what."""
-    start_minute = _coerce_minute(row.get("start_minute"), row.get("start_time"))
-    end_minute = _coerce_minute(row.get("end_minute"), row.get("end_time"))
+    start_minute, end_minute, start_time_s, end_time_s = _resolve_times(row, current_time)
     material = row.get("material") or ""
     realism = _schedule_realism_fields(material)
     return {
@@ -155,8 +154,8 @@ def _routine_hint(row: dict, current_time: datetime) -> dict:
         "day_of_week": row.get("day_of_week"),
         "day_of_weeks": sorted(_normalize_weekdays(row.get("day_of_weeks"))),
         "date": row.get("date") or "",
-        "start_time": row.get("start_time") or _format_minute(start_minute),
-        "end_time": row.get("end_time") or _format_minute(end_minute),
+        "start_time": start_time_s or _format_minute(start_minute),
+        "end_time": end_time_s or _format_minute(end_minute),
         "location_id": row.get("location_id") or "",
         "location_name": row.get("location_name") or "",
         **realism,
@@ -198,13 +197,28 @@ def _parse_material(raw_material: object) -> dict:
 
 
 def _matches_date(row: dict, current_time: datetime) -> bool:
-    """Check recurrence/date fields against the current in-game date."""
+    """Check recurrence/date fields against the current in-game date.
+
+    Supported recurrence: daily / weekly(day_of_weeks) / monthly(date=day-of-month) /
+    yearly(date="mm.dd") / once(date="yyyy.mm.dd" or "yyyy-mm-dd") / etc(date=JSON list of
+    {date,start_time,end_time}). Unknown values fall back to weekly-style matching.
+    """
     recurrence = (row.get("recurrence") or "weekly").lower()
-    schedule_date = row.get("date") or ""
+    schedule_date = str(row.get("date") or "").strip()
     if recurrence == "daily":
         return True
+    if recurrence == "monthly":
+        try:
+            return current_time.day == int(schedule_date)
+        except (TypeError, ValueError):
+            return False
+    if recurrence == "yearly":
+        return _month_day(schedule_date) == (current_time.month, current_time.day)
     if recurrence == "once":
-        return schedule_date == current_time.date().isoformat()
+        return _same_calendar_date(schedule_date, current_time)
+    if recurrence == "etc":
+        return _etc_entry_for(row, current_time) is not None
+    # weekly (and unknown/legacy fallback)
     day_of_weeks = _normalize_weekdays(row.get("day_of_weeks"))
     if day_of_weeks:
         return current_time.weekday() in day_of_weeks
@@ -215,6 +229,57 @@ def _matches_date(row: dict, current_time: datetime) -> bool:
         return int(day_of_week) == current_time.weekday()
     except (TypeError, ValueError):
         return True
+
+
+def _same_calendar_date(value: str, current_time: datetime) -> bool:
+    """'yyyy-mm-dd' 또는 'yyyy.mm.dd' 를 현재 in-game 날짜와 비교합니다."""
+    return value.replace(".", "-").strip() == current_time.date().isoformat()
+
+
+def _month_day(value: str) -> tuple[int, int]:
+    """'mm.dd' / 'mm-dd' 를 (month, day) 로 파싱합니다 (실패 시 (-1,-1))."""
+    parts = re.split(r"[.\-/]", value.strip())
+    if len(parts) == 2:
+        try:
+            return int(parts[0]), int(parts[1])
+        except ValueError:
+            return -1, -1
+    return -1, -1
+
+
+def _parse_etc(row: dict) -> list[dict]:
+    """recurrence=='etc' 의 date(JSON 리스트 of {date,start_time,end_time})를 파싱합니다."""
+    raw = row.get("date")
+    if isinstance(raw, list):
+        entries = raw
+    elif isinstance(raw, str) and raw.strip():
+        try:
+            entries = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+    else:
+        return []
+    return [e for e in entries if isinstance(e, dict)]
+
+
+def _etc_entry_for(row: dict, current_time: datetime) -> dict | None:
+    """오늘 in-game 날짜에 해당하는 etc 항목을 반환합니다 (없으면 None)."""
+    today = current_time.date().isoformat()
+    for entry in _parse_etc(row):
+        if str(entry.get("date", "")).replace(".", "-").strip() == today:
+            return entry
+    return None
+
+
+def _resolve_times(row: dict, current_time: datetime) -> tuple[int, int, str, str]:
+    """(start_minute, end_minute, start_time, end_time)을 반환합니다. etc 면 오늘 항목 시간을 씁니다."""
+    if (row.get("recurrence") or "").lower() == "etc":
+        entry = _etc_entry_for(row, current_time) or {}
+        start_t, end_t = str(entry.get("start_time") or ""), str(entry.get("end_time") or "")
+        return _coerce_minute(None, start_t), _coerce_minute(None, end_t), start_t, end_t
+    start_t, end_t = row.get("start_time") or "", row.get("end_time") or ""
+    return (_coerce_minute(row.get("start_minute"), start_t),
+            _coerce_minute(row.get("end_minute"), end_t), start_t, end_t)
 
 
 def _normalize_weekdays(raw: object) -> set[int]:

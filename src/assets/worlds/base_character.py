@@ -5,7 +5,10 @@
 # 관계·이벤트 삽입 공용 헬퍼 함수도 이 파일에 위치한다.
 #
 # Classes
-#   - Character : 캐릭터 베이스. build_schema / build_relationship 인터페이스 정의.
+#   - Character : 캐릭터 베이스. self.cfg(DEFAULT_CFG+SCENARIO_OVERRIDES 병합) 기반
+#                 cfg-driven build_schema 기본 구현 + build_relationship 인터페이스.
+#                 손글씨 캐릭터는 build_schema 를 오버라이드하거나, super() 호출 후
+#                 커스텀 노드/schedule 을 덧붙인다 (world_editor 마이그레이션 타깃).
 #
 # Functions
 #   - _insert_rel(conn: kuzu.Connection, from_id: str, to_id: str, rel_type: str, affinity: int, trust: int, status: str) -> None
@@ -16,6 +19,8 @@
 from __future__ import annotations
 
 import kuzu
+
+from src.assets.worlds.base import insert_state, insert_static_inline
 
 
 def _insert_rel(
@@ -111,14 +116,47 @@ class Character:
     DEFAULT_CFG: dict = {}
     SCENARIO_OVERRIDES: dict[str, dict] = {}
 
+    # cfg 섹션 → (관계, 노드 라벨, node_id 접미사). props 가 비어 있으면 노드를 만들지 않는다.
+    _PROFILE_NODES: tuple[tuple[str, str, str, str], ...] = (
+        ("static", "HAS_PROFILE", "StaticProfile", "static"),
+        ("personality", "HAS_PERSONALITY", "Personality", "personality"),
+        ("info", "HAS_INFO", "DynamicInformation", "info"),
+    )
+
     def __init__(self, scenario_id: str | None = None) -> None:
         """scenario_id에 맞는 DEFAULT_CFG와 SCENARIO_OVERRIDES를 병합합니다."""
         self.scenario_id = scenario_id
         self.cfg = _merge_dict(self.DEFAULT_CFG, self.SCENARIO_OVERRIDES.get(scenario_id or "default", {}))
 
     def build_schema(self, conn: kuzu.Connection) -> None:
-        """캐릭터 노드, StaticProfile, DynamicState를 Kuzu에 삽입합니다."""
-        raise NotImplementedError
+        """self.cfg 기반으로 Character + 4-tier 프로파일 노드를 생성합니다.
+
+        DEFAULT_CFG/SCENARIO_OVERRIDES 패턴 캐릭터는 이 기본 구현으로 충분하다.
+        커스텀 노드·schedule 이 필요한 캐릭터는 오버라이드 후 super().build_schema(conn)
+        를 먼저 호출하고 추가 로직을 덧붙이면 된다.
+        """
+        conn.execute(
+            "CREATE (:Character {id: $id, name: $name, aliases: $aliases, type: $type})",
+            {"id": self.id, "name": self.name, "aliases": self.aliases, "type": self.char_type},
+        )
+        for section, rel, label, suffix in self._PROFILE_NODES:
+            props = self.cfg.get(section) or {}
+            if props:
+                insert_static_inline(
+                    conn, self.id, rel, label, f"{self.id}_{suffix}", **props
+                )
+        self._build_state(conn)
+
+    def _build_state(self, conn: kuzu.Connection) -> None:
+        """cfg['state']로 DynamicState 노드를 생성하고 HAS_STATE 로 연결합니다.
+
+        기본 외 커스텀 컬럼은 insert_state 가 빌드 시 ALTER TABLE 로 함께 생성하므로
+        여기서 화이트리스트로 거르지 않는다.
+        """
+        state = self.cfg.get("state") or {}
+        if not state:
+            return
+        insert_state(conn, self.id, **state)
 
     def build_relationship(self, conn: kuzu.Connection, other: Character) -> None:
         """self → other 방향 RELATIONSHIP 엣지를 생성합니다. 모르는 상대는 no-op."""

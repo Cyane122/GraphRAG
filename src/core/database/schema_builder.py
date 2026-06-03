@@ -45,6 +45,9 @@ if __name__ == "__main__":
     print(f"현재 World: [{world_id}] / Scenario: [{scenario_id or 'default'}]")
     try:
         world.build_schema(conn, scenario_id)
+        # world_editor 의 전역/시나리오 schedule 템플릿을 Schedule 노드로 반영.
+        from src.assets.worlds.base import apply_schedule_templates
+        apply_schedule_templates(conn, world_id, scenario_id)
     finally:
         # Kuzu는 명시적 close 불필요
         pass

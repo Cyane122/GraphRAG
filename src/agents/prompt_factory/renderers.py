@@ -375,6 +375,20 @@ def _normalize_npc_prompt_data(npc: dict) -> dict:
     return normalized
 
 
+def _filter_dynamic_state(state: dict | None) -> dict | None:
+    if not state:
+        return state
+    s = dict(state)
+    s.pop("has_menstrual_cycle", None)
+    s.pop("location_id", None)
+    if s.get("pregnant"):
+        s.pop("cycle_day", None)
+    else:
+        s.pop("pregnancy_day", None)
+        s.pop("pregnant", None)
+    return s
+
+
 def _render_character_markdown(role: str, data: dict, scene_types: list[str]) -> str:
     """Render one character's prompt sections as Markdown."""
     if not data:
@@ -384,11 +398,10 @@ def _render_character_markdown(role: str, data: dict, scene_types: list[str]) ->
     title = f"## {role}: {name}" + (f" ({char_id})" if char_id and char_id != name else "")
     sections: list[str] = [title]
 
-    _append_markdown_section(sections, "Aliases", data.get("aliases"))
     _append_markdown_section(sections, "Static Profile", data.get("static_profile"))
     _append_markdown_section(sections, "Dynamic Information", data.get("dynamic_information"))
     _append_markdown_section(sections, "Personality", data.get("personality"))
-    _append_markdown_section(sections, "Dynamic State", data.get("dynamic_state"))
+    _append_markdown_section(sections, "Dynamic State", _filter_dynamic_state(data.get("dynamic_state")))
     if "intimate" in scene_types:
         _append_markdown_section(sections, "Intimate Profile", data.get("intimate_profile"))
     if "workplace" in scene_types:
