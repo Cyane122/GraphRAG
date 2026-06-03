@@ -6,21 +6,24 @@
 # blacklist / npc_name_map / start_time 및 _build_tables / build_schema 정의.
 #
 # Classes
-#   - Scenario : 한 세계 내의 시작 설정 (시간, 장소, 오프닝 씬 경로).
+#   - Scenario : 한 세계 내의 시작 설정 (시간, 장소, 오프닝 씬 경로, 씬 타입 override).
 #   - World : 세계 구현체 베이스 클래스
 #             SCENARIOS: dict[str, Scenario] — 시나리오 ID → Scenario. 비어있으면 단일 세계.
 #             SCENE_TYPES: dict[str, str] — 씬 타입 이름 → 영문 설명 (classifier 프롬프트에 주입)
 #             EXTRA_SLOTS: list — 커스텀 캐릭터 슬롯 [{id, label, sub}]. world_editor 로 관리.
+#             DYNAMIC_SLOT_UPDATERS: list[dict] — accepted response 후 갱신할 커스텀 슬롯 설정.
 #             get_scene_types() -> list[str]           : 타입 이름 목록 (내부 키 조회용)
 #             get_scene_descriptions() -> dict[str, str] : 전체 dict (classifier 주입용)
 #             resolve_pov() -> tuple[str, bool]        : perspective 설정(int/2·3-튜플) → (pov_mode, impersonation) 정규화
 #             get_default_perspective() -> int         : 세계 기본 인칭(1/3) 반환
+#             get_dynamic_slot_updaters() -> list[dict] : 커스텀 슬롯 후처리 설정 반환
 #             get_social_media_config() -> dict          : 카카오톡/SNS 기능 기본값과 월드 강제 비활성화 설정
 #             _build_tables(conn) -> None              : DDL 전용 (노드·관계 테이블, 벡터 인덱스, GlobalState)
 #             build_schema(conn, scenario_id) -> None  : 기본 구현은 _build_tables + build_scenario_data 호출
 #             build_scenario_data(conn, scenario_id) -> None : 시나리오별 초기 데이터 훅 (no-op)
 #
 # Functions
+#   - apply_scenario_overrides(world: World, scenario: Scenario | object) -> World : Scenario override를 World 인스턴스에 적용합니다.
 #   - insert_static(conn: kuzu.Connection, label: str, node_id: str, *, char_id: str | None = None, rel: str | None = None, **props: object) -> None : JSON blob 노드를 생성하고 선택적으로 Character에 연결합니다.
 #   - insert_static_inline(conn: kuzu.Connection, char_id: str, rel: str, label: str, node_id: str, **props: object) -> None : Character → JSON blob 노드 관계를 생성합니다.
 #   - insert_dynamic(conn: kuzu.Connection, char_id: str, node_id: str | None = None, **props: object) -> None : DynamicInformation 노드를 생성하고 Character에 연결합니다.
@@ -33,6 +36,7 @@
 from __future__ import annotations
 
 import json
+from copy import copy
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -79,6 +83,16 @@ class Scenario:
     default_time: datetime | None = None                  # 레거시: world 없을 때만 사용
     default_location_id: str | None = None                # 레거시: world 없을 때만 사용
     opening_scene_path: str = "opening_scene.md"          # 레거시
+    scene_types: dict[str, str] | None = None             # 신규: 시나리오별 씬 타입 override
+
+
+def apply_scenario_overrides(world: "World", scenario: Scenario | object) -> "World":
+    """Scenario에 정의된 런타임 override를 복사된 World 인스턴스에 적용하고 반환합니다."""
+    resolved = copy(world)
+    scene_types = getattr(scenario, "scene_types", None)
+    if isinstance(scene_types, dict) and scene_types:
+        resolved.SCENE_TYPES = dict(scene_types)
+    return resolved
 
 
 # ── 정적 노드 헬퍼 ─────────────────────────────────────────────────
@@ -446,6 +460,7 @@ class World:
     # 각 항목: {"id": "magic", "label": "Magic", "sub": "마법 능력치"}
     # label 은 Kuzu 노드 테이블명(identifier). _build_tables 에서 DDL 을 자동 생성합니다.
     EXTRA_SLOTS: list = []
+    DYNAMIC_SLOT_UPDATERS: list[dict] = []
     SOCIAL_MEDIA: dict[str, bool] = {
         "kakao_enabled": False,
         "instagram_enabled": False,
@@ -565,6 +580,10 @@ class World:
         """카카오톡/SNS 기능 기본값과 월드 강제 비활성화 설정을 반환합니다."""
         return dict(self.SOCIAL_MEDIA)
 
+    def get_dynamic_slot_updaters(self) -> list[dict]:
+        """accepted response 후 갱신할 커스텀 슬롯 설정을 반환합니다."""
+        return [dict(item) for item in (self.DYNAMIC_SLOT_UPDATERS or []) if isinstance(item, dict)]
+
     def get_blacklist(self) -> str:
         """블랙리스트 항목 문자열을 반환합니다."""
         return ""
@@ -592,6 +611,7 @@ class World:
             "default_location_id":  default_location,
             "scenario_id":          _sid,
             "social_media":         self.get_social_media_config(),
+            "dynamic_slot_updaters": self.get_dynamic_slot_updaters(),
             "impersonation":        self.resolve_pov()[1],
         }
 

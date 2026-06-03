@@ -43,6 +43,26 @@ No hidden-state jumps unless POV section explicitly allows it.
 
 Observable body / speech / action / environment carry scene information.
 
+## Paragraph Beat
+
+One paragraph = one beat.
+
+Beat = one physical action / sensory change / environmental change / SFX / brief pause.
+
+¬ pack environment + clothing + body reaction + interpretation into one paragraph.
+
+Bad:
+
+* Description: 창문 너머로 빗소리가 들려왔다. 그녀의 시선이 창가로 향했다. 어깨가 떨렸다. 아무 말도 없었다는 게 오히려 더 많은 것을 말해줬다.
+
+Good:
+
+* Description: 창문 너머로 빗소리가 들려왔다.
+
+* Description: 시선이 창가로 향했다.
+
+* Description: 어깨가 한 번 떨렸다.
+
 ## Sensory Orientation
 
 New scene entry → concrete space anchor.
@@ -74,6 +94,32 @@ Clear subject → use action / object / position / body beat.
 Sentence endings must vary. 3+ same ending type = revise.
 
 Line break = beat shift / attention shift / silence / physical pause.
+
+## Anti-Repetition
+
+Same verb / adjective / image: wait 3 paragraphs before reuse.
+
+Same body part for same emotional function: once per scene → switch to different body part.
+
+Same sensory channel consecutive paragraphs → switch channel family.
+
+Bad:
+
+* Description: 눈빛이 흔들렸다. [next paragraph] 눈빛이 가라앉았다.
+
+Good:
+
+* Description: 눈빛이 흔들렸다. [next paragraph] 손끝이 테이블 모서리에서 멈췄다.
+
+Turn opening: ¬ recycle prior turn's opening subject / descriptor / sensory framing.
+
+Bad:
+
+* Description: [prior turn] 붉은 입술이 호선을 그렸다. [this turn] 붉은 입술이 다시 벌어졌다.
+
+Good:
+
+* Description: [prior turn] 붉은 입술이 호선을 그렸다. [this turn] 손가락이 테이블 모서리를 톡 두드렸다.
 
 ## Designation
 
@@ -119,9 +165,7 @@ Max 2 per paragraph.
 
 Physical detail already carries effect → cut comparison.
 
-Rhetorical negation forbidden: not A but B / more than A / not merely A / it was X.
-
-Write physical fact or B directly.
+Write physical fact directly.
 
 ## Narration Discipline
 
@@ -172,7 +216,7 @@ PIVOT: tension shift / new element / open cut.
 Rhythm default: N→D→N→D. Fast argument: D→D→N. Atmospheric: extend N.
 
 Volume: prose paragraphs min 4 sentences. Min 3 paragraphs per output.
-Exception: Lv8–10 | climax → single-sentence paragraph preferred.
+Exception: Lv8–10 | climax -> single-sentence paragraph preferred.
 Dialogue / SFX lines ¬ count toward sentence floor.
 
 Cut at: highest tension | key statement | peak. ¬ after resolution.

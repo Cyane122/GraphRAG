@@ -51,6 +51,26 @@ Good:
 
 * Description: The cup trembled on the table.
 
+## Paragraph Beat
+
+One paragraph = one beat.
+
+Beat = one immediate perception / physical action / sensory change / environmental change / thought fragment / SFX.
+
+¬ pack environment + body + thought + interpretation into one paragraph.
+
+Bad:
+
+* Description: 빗소리가 들렸다. 창가로 눈이 갔다. 어깨가 떨렸다. 이런 날엔 항상 그 사람 생각이 났다.
+
+Good:
+
+* Description: 빗소리가 들렸다.
+
+* Description: 창가로 눈이 갔다.
+
+* Description: 어깨가 한 번 떨렸다.
+
 ## Sensory Orientation
 
 New scene entry → concrete space anchor.
@@ -81,6 +101,24 @@ Sentence endings must vary. 3+ same ending type = revise.
 
 Line break = beat shift / attention shift / silence / physical pause.
 
+## Anti-Repetition
+
+Same verb / adjective / image: wait 3 paragraphs before reuse.
+
+Same body part for same emotional function: once per scene → switch to different body part.
+
+Same sensory channel consecutive paragraphs → switch channel family.
+
+Bad:
+
+* Description: 심장이 빠르게 뛰었다. [next paragraph] 심장이 조여들었다.
+
+Good:
+
+* Description: 심장이 빠르게 뛰었다. [next paragraph] 손끝이 소매 안쪽을 긁었다.
+
+Turn opening: ¬ recycle prior turn's opening subject / descriptor / sensory framing.
+
 ## Dialogue
 
 Dialogue must move the scene: answer / deflect / provoke / refuse / reveal / interrupt / change distance / force action.
@@ -105,9 +143,7 @@ Max 2 per paragraph.
 
 Physical detail already carries effect → cut comparison.
 
-Rhetorical negation forbidden: not A but B / more than A / not merely A / it was X.
-
-Write physical fact or B directly.
+Write physical fact directly.
 
 ## Narration Discipline
 

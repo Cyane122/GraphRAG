@@ -41,6 +41,7 @@ from src.simulation.state.audit import (
     _write_state_audit_snapshot,
     guard_actor_response,
 )
+from src.simulation.state.creator_slots import apply_creator_slot_updates
 from src.simulation.state.dynamic_information import (
     apply_multi_character_dynamic_information_updates,
 )
@@ -99,9 +100,14 @@ async def _run_auxiliary_character_updates(
             scene_types=scene_types,
             participant_ids=participant_ids,
         ),
+        apply_creator_slot_updates(
+            actor_response,
+            participant_ids=participant_ids,
+            world_config=world_config,
+        ),
         return_exceptions=True,
     )
-    labels = ("multi-character state", "dynamic information")
+    labels = ("multi-character state", "dynamic information", "creator slots")
     for label, result in zip(labels, results):
         if isinstance(result, Exception):
             print(f"[StateUpdater] auxiliary {label} update failed (ignored): {result}")
@@ -532,7 +538,7 @@ async def process_actor_response(
 
     if scene_types and not _needs_classification(actor_response, scene_types) and not event_allowed:
         print("[StateUpdater] skipped (no state-relevant change)")
-        if should_run_auxiliary_character_updates(actor_response, participant_ids, context_plan):
+        if should_run_auxiliary_character_updates(actor_response, participant_ids, context_plan, world_config):
             await _run_auxiliary_character_updates(
                 actor_response,
                 pc_id,
@@ -553,7 +559,7 @@ async def process_actor_response(
         # NPC=PC self-state path keeps PC state local; Event extraction uses a scene partner when available.
         # multi_character 와 dynamic_info 는 독립적이므로 병렬 실행
         print("[StateUpdater] NPC=PC: DynamicState update only")
-        if should_run_auxiliary_character_updates(actor_response, participant_ids, context_plan):
+        if should_run_auxiliary_character_updates(actor_response, participant_ids, context_plan, world_config):
             await _run_auxiliary_character_updates(
                 actor_response,
                 pc_id,
@@ -651,7 +657,7 @@ async def process_actor_response(
 
     # Auxiliary character extraction is independent, but only useful on multi-character or high-signal turns.
     auxiliary_task = None
-    if should_run_auxiliary_character_updates(actor_response, participant_ids, context_plan):
+    if should_run_auxiliary_character_updates(actor_response, participant_ids, context_plan, world_config):
         auxiliary_task = asyncio.create_task(_run_auxiliary_character_updates(
             actor_response,
             pc_id,

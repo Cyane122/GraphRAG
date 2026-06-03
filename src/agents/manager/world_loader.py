@@ -8,9 +8,11 @@
 # ================================
 from importlib import import_module
 
-from src.assets.worlds.base import World
+from src.assets.worlds.base import World, apply_scenario_overrides
+
 
 def load_world_instance(world_id: str, scenario_id: str | None = None) -> World:
+    """Load a World instance, applying scenario-level overrides when present."""
     try:
         module = import_module(f"src.assets.worlds.{world_id}.schema")
 
@@ -20,10 +22,10 @@ def load_world_instance(world_id: str, scenario_id: str | None = None) -> World:
             if scenario_id:
                 for sc in scenarios:
                     if sc.scenario_id == scenario_id and sc.world is not None:
-                        return sc.world
+                        return apply_scenario_overrides(sc.world, sc)
             # scenario_id 없거나 매칭 실패 → 첫 번째 시나리오
             if scenarios and scenarios[0].world is not None:
-                return scenarios[0].world
+                return apply_scenario_overrides(scenarios[0].world, scenarios[0])
 
         # 레거시: 모듈에 미리 만들어진 world_instance
         if isinstance(getattr(module, "world_instance", None), World):

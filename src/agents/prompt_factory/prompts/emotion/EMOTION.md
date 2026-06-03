@@ -6,7 +6,7 @@ Prose supplies body / voice / action / object / environment evidence.
 
 Reader classifies.
 
-If evidence already shows the state -> delete explanation.
+If evidence already shows the state → delete explanation.
 
 ## Beat
 
@@ -14,13 +14,13 @@ Beat = one emotional moment.
 
 Beat ends when register / action / topic / distance / power balance shifts.
 
-Same beat -> do not repeat same evidence channel.
+Same beat → do not repeat same evidence channel.
 
-New beat -> new channel combination.
+New beat → new channel combination.
 
 ## Show-Then-Tell Cut
 
-action + explanation -> delete explanation.
+action + explanation → delete explanation.
 
 Body evidence is complete. Dialogue evidence is complete. Environment evidence is complete.
 
@@ -40,6 +40,20 @@ Good:
 
 * Description: 팔짱을 낀 채 고개를 돌렸다.
 
+## Decomposition
+
+Emotion label detected → decompose before output. Deletion alone = forbidden; replace with visible proxies.
+
+Layer order: first contact / body reaction / object reaction / environment trace.
+
+Density by weight:
+
+* Everyday beat → 1 body channel or small contradiction.
+* Significant beat → 2 body channels from different families + object or environment.
+* Peak beat → 2+ body channels + 1 environment channel, then reduce language.
+
+One paragraph = one beat. ¬ pack environment + body + interpretation into one paragraph.
+
 ## Evidence Channels
 
 Use different channel families:
@@ -51,34 +65,50 @@ Use different channel families:
 * rhythm: speed / delay / repetition / mechanical action
 * environment: temperature / sound distance / light / air / object stillness
 
-Everyday beat -> 1 body channel or small contradiction.
+## Reaction Patterns
 
-Significant beat -> 2 body channels from different families.
+Seven patterns for converting emotion to physical output. ¬ copy directly; use as structural reference.
 
-Peak beat -> 2+ body channels + 1 environment channel, then reduce language.
+* Involuntary body — Description: 목 안쪽이 뜨겁게 죄어옴 / 심장이 갈비뼈를 때림.
+* Action interruption — Description: 수저가 허공에서 멈춤 / 장전하던 손이 미끄러짐.
+* Gaze distraction — Description: 치마 주름을 꽉 움켜쥠 / 천장의 얼룩을 세기 시작함.
+* Self-correction — Description: 떠나고 싶었다. 아니, 떠나기 싫었다.
+* Post-unconscious-action realization — Description: 잡으려 했던 것인지. 자신도 알 수 없었다.
+* Sensory paradox — Description: 손등에 남은 체온이 한여름보다 따뜻했고, 그래서 오히려 서늘했다.
+* Inner content — thought caused by emotion, not emotion label.
+
+Good:
+
+* Italic: *괜히 말했나.*
+
+Bad:
+
+* Italic: *나는 후회했다.*
+
+Inner content = brief + character-voiced + immediate.
 
 ## Hot / Cold Axis
 
-Hot = contraction + acceleration -> clench / stiffen / bite / grip / lock / step in / faster speech.
+Hot = contraction + acceleration → clench / stiffen / bite / grip / lock / step in / faster speech.
 
-Cold = diffusion + deceleration -> tremble / loosen / exhale / slacken / step back / delayed answer / thinning voice.
+Cold = diffusion + deceleration → tremble / loosen / exhale / slacken / step back / delayed answer / thinning voice.
 
-Same axis twice -> switch channel / body part / response pattern.
+Same axis twice → switch channel / body part / response pattern.
 
-Hot + cold together -> visible contradiction, not explanation.
+Hot + cold together → visible contradiction, not explanation.
 
 ## Repetition
 
 Same body reaction max once per scene unless function changes.
 
-Same feeling returns -> reroute evidence.
+Same feeling returns → reroute evidence.
 
 Examples:
 
-* Description: lip bite -> teeth against inner cheek
-* Description: fist clench -> fingers curling against palm
-* Description: swallowed breath -> shoulders locking around held inhale
-* Description: gaze avoidance -> gaze fixed on an object
+* Description: lip bite → teeth against inner cheek
+* Description: fist clench → fingers curling against palm
+* Description: swallowed breath → shoulders locking around held inhale
+* Description: gaze avoidance → gaze fixed on an object
 
 Same body part 3+ times for same emotional function = forbidden.
 
@@ -96,7 +126,7 @@ Good:
 
 * Description: 시선은 옆으로 빠졌는데, 대답은 평소보다 빨랐다.
 
-Bright scene -> do not import darkness by default.
+Bright scene → do not import darkness by default.
 
 Depth = contradiction in action, not darker vocabulary.
 
@@ -112,38 +142,3 @@ Examples:
 * Dialogue: "갈 거면 빨리 가."
 
 Gap carries emotion. Do not explain gap after showing it.
-
-## Inner Content
-
-Inner content may state thought caused by emotion, not emotion label.
-
-Good:
-
-* Italic: *괜히 말했나.*
-
-Bad:
-
-* Italic: *나는 후회했다.*
-
-Inner content = brief + character-voiced + immediate.
-
-## Environment
-
-Environment may reflect pressure only through physical facts: cup cooling / fluorescent hum / rain on glass / chair scrape / cloth on skin / dust in light.
-
-Atmosphere label = forbidden.
-
-Environment projection max 1 per beat.
-
-## Forbidden Shortcuts
-
-Delete or convert:
-
-* emotion label as result
-* tone tag after action
-* narrator verdict
-* post-action interpretation
-* abstract atmosphere label
-* repeated body reaction
-* climax response in everyday beat
-* dark vocabulary used as fake depth
