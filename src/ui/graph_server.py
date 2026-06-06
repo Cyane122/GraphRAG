@@ -17,8 +17,7 @@
 #   PATCH /api/edge           : {"threadId","source","target","updates"} → 엣지 속성 수정
 #
 # Static files
-#   /  /index.html  /ppt_viewer.html : 프로젝트 루트 ppt_viewer.html
-#   /export/graph_export.js 등       : public/graph/ 하위 정적 파일
+#   /  /index.html  /ppt_viewer.html : frontend/ppt_viewer.html
 # ================================
 
 from __future__ import annotations
@@ -34,10 +33,9 @@ from urllib.parse import unquote, urlparse
 from src.ui.graph_models import GraphSnapshot
 
 _HOST = "127.0.0.1"
-_PORT = 8765
-_PUBLIC_DIR = Path(__file__).resolve().parents[2] / "public" / "graph"
+_PORT = 8766
 _DEFAULT_VIEWER = "ppt_viewer.html"
-_ROOT_VIEWER = Path(__file__).resolve().parents[2] / "ppt_viewer.html"
+_ROOT_VIEWER = Path(__file__).resolve().parents[2] / "frontend" / "ppt_viewer.html"
 _SERVER: ThreadingHTTPServer | None = None
 _LOCK = threading.Lock()
 _LATEST_GRAPH: dict[str, Any] = GraphSnapshot().model_dump(by_alias=True)
@@ -56,23 +54,11 @@ def get_cached_graph_snapshot() -> dict[str, Any]:
 
 
 def _safe_static_path(request_path: str) -> Path | None:
-    """요청 경로를 정적 파일 경로로 변환합니다.
-
-    기본 뷰어(/  /index.html  /ppt_viewer.html)는 프로젝트 루트의 ppt_viewer.html을,
-    나머지 경로는 public/graph/ 하위 파일을 반환합니다.
-    """
+    """요청 경로를 정적 파일 경로로 변환합니다."""
     parsed_path = unquote(urlparse(request_path).path)
     if parsed_path in {"/", "/index.html", f"/{_DEFAULT_VIEWER}"}:
         return _ROOT_VIEWER if _ROOT_VIEWER.is_file() else None
-    relative = parsed_path.lstrip("/")
-    candidate = (_PUBLIC_DIR / relative).resolve()
-    try:
-        candidate.relative_to(_PUBLIC_DIR.resolve())
-    except ValueError:
-        return None
-    if not candidate.is_file():
-        return None
-    return candidate
+    return None
 
 
 class _GraphHandler(BaseHTTPRequestHandler):

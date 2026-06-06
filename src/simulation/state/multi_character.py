@@ -467,12 +467,22 @@ async def apply_multi_character_state_updates(
     targets = await _fetch_state_update_targets(pc_id, participant_ids=participant_ids)
     allowed_ids = {target.id for target in targets}
     if not allowed_ids:
+        print(
+            "[MultiStateUpdater] skipped: no state update targets "
+            f"(participants={participant_ids or []}, pc_id={pc_id})"
+        )
         return []
 
     try:
         plan = await _run_multi_character_state_update(actor_response, targets, world_config)
     except Exception as exc:
         print(f"[MultiStateUpdater] failed and ignored: {exc}")
+        return []
+    if not plan.character_updates:
+        print(
+            "[MultiStateUpdater] no candidate updates "
+            f"(targets={[target.id for target in targets]})"
+        )
         return []
 
     known_locations = await _fetch_known_locations()
@@ -522,4 +532,9 @@ async def apply_multi_character_state_updates(
 
     if change_lines:
         print("[MultiStateDiff]\n" + "\n".join(change_lines))
+    elif plan.character_updates:
+        print(
+            "[MultiStateUpdater] no applied updates after audit "
+            f"(candidates={len(plan.character_updates)})"
+        )
     return applied

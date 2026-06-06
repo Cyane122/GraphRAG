@@ -209,12 +209,12 @@ Emotional weight lives entirely in sensation: what the body does, what the room 
 The tone is gentle and unhurried. Friction exists — a sour mood, a clumsy moment, a wrong word — but it passes. Nothing festers.
 Feeling is never named. The reader finds it in the gap between action and silence.
 When intensity rises, the same restraint applies — more happens, fewer words explain it.
-Inner psychology surfaces only through {char}'s physical experience and IM. Never through narration.
+Inner psychology surfaces only through {char}'s physical experience and third-person limited prose.
 
 # POV
 3rd-person limited, anchored to {char}.
 {char}'s physical sensations = narrate directly.
-{char}'s thoughts / reasoning / decisions = IM format (*italics*) only.
+{char}'s thoughts / reasoning / decisions = third-person limited prose only.
 Other characters' inner states = their body and speech only.
 
 # NARRATION — what the camera records
@@ -290,12 +290,10 @@ Simile over metaphor. Vehicles from natural/elemental world. Max 2 per paragraph
 Before ~같았다: confirm surrounding sentences haven't already shown same quality. If yes → cut, trust the detail.
 Body parts = physical objects only. They move, ache, still. They don't warn or protest.
 
-## Interior Monologue
-Format: *italics*, standalone — line break before/after. Register: {char}'s colloquial voice, compressed.
-Max 1 IM per scene (= one ANCHOR-to-ANCHOR span).
-FID: impulse immediately betrayed by next action/dialogue → plain narration permitted.
-  Test: body alone carry the betrayal? Yes → body only. No → use FID.
-  Max 1 FID per scene. IM+FID combined ≤ 2.
+## Interior Access
+Render immediate thoughts as third-person limited prose.
+Keep them brief, scene-bound, and grounded in current pressure.
+Prefer body/action when it can carry the beat without explanation.
 
 ## Anti-Repetition
 Same verb/adj/image: wait 3 paragraphs. Same mannerism: once per scene → diff body part.

@@ -8,12 +8,19 @@
 # Classes
 #   - KuzuAsyncDriver : session() 팩토리 및 동기 execute_sync() 제공
 #
+# Functions
+#   - set_active_driver(driver: KuzuAsyncDriver | None) : 현재 async 컨텍스트의 Kuzu 드라이버 설정
+#   - reset_active_driver(token: object) -> None : 이전 Kuzu 드라이버 컨텍스트 복원
+#   - _get_default_driver() -> KuzuAsyncDriver : 기본 Kuzu 드라이버 지연 생성
+#   - _close_default_driver() -> None : 기본 Kuzu 드라이버 종료
+#
 # (module-level)
 #   - async_driver : ProxyDriver 인스턴스 — 세션 드라이버가 있으면 위임, 없으면 기본 드라이버
 # ================================
 
 import asyncio
 import atexit
+from contextvars import ContextVar
 from importlib import import_module
 from pathlib import Path
 
@@ -25,6 +32,8 @@ from src.config import WORLD_ID
 from src.core.database.proxy import ProxyDriver
 from src.core.database.records import KuzuRecord, KuzuResult
 from src.core.database.session import KuzuSession
+
+_active_driver: ContextVar["KuzuAsyncDriver | None"] = ContextVar("active_kuzu_driver", default=None)
 
 # 스키마 업데이트로 추가된 테이블/컬럼이 기존 DB에 없을 수 있으므로 시작 시 마이그레이션 시도
 # Kuzu ALTER 문법은 "ADD COLUMN"이 아니라 "ADD"를 사용한다.
@@ -541,7 +550,10 @@ class KuzuAsyncDriver:
         return self._conn.execute(query, params or {})
 
 def _resolve_driver() -> KuzuAsyncDriver:
-    """현재 Chainlit 세션의 드라이버를 반환합니다. 세션이 없으면 기본 드라이버를 반환합니다."""
+    """현재 런타임 컨텍스트 또는 Chainlit 세션의 드라이버를 반환합니다."""
+    active_driver = _active_driver.get()
+    if isinstance(active_driver, KuzuAsyncDriver):
+        return active_driver
     try:
         import chainlit as cl
         driver = cl.user_session.get("db_driver")
@@ -549,11 +561,36 @@ def _resolve_driver() -> KuzuAsyncDriver:
             return driver
     except Exception:
         pass
-    return _default_driver
+    return _get_default_driver()
+
+
+def set_active_driver(driver: KuzuAsyncDriver | None):
+    """현재 async 컨텍스트에서 사용할 Kuzu 드라이버를 설정하고 reset token을 반환합니다."""
+    return _active_driver.set(driver)
+
+
+def reset_active_driver(token: object) -> None:
+    """set_active_driver에서 받은 token으로 이전 드라이버 컨텍스트를 복원합니다."""
+    _active_driver.reset(token)
 
 
 _db_path        = str(Path("graph") / WORLD_ID)
-_default_driver = KuzuAsyncDriver(_db_path)
+_default_driver: KuzuAsyncDriver | None = None
 async_driver    = ProxyDriver(_resolve_driver)
 
-atexit.register(_default_driver.close)
+
+def _get_default_driver() -> KuzuAsyncDriver:
+    """Lazily open the process default Kuzu driver."""
+    global _default_driver
+    if _default_driver is None:
+        _default_driver = KuzuAsyncDriver(_db_path)
+    return _default_driver
+
+
+def _close_default_driver() -> None:
+    """Close the lazily opened default Kuzu driver at shutdown."""
+    if _default_driver is not None:
+        _default_driver.close()
+
+
+atexit.register(_close_default_driver)

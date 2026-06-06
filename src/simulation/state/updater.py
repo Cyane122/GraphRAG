@@ -13,6 +13,7 @@
 #   - commit_time_plan(time_plan: dict, pc_id: str, npc_id: str) -> datetime : Persist a computed time plan.
 #   - apply_time_updates(plan: dict, base_time: datetime, pc_id: str, npc_id: str) -> datetime : Compute and persist time changes.
 #   - delegate_complex_update(actor_response: str, npc_id: str, pc_id: str, initial_changes: dict | None, event_only: bool, world_config: dict | None, scene_chars: list[str] | None) -> str | None : Run complex updates for event-only paths.
+#   - _should_run_auxiliary_character_updates_with_log(actor_response: str, participant_ids: list[str], context_plan: dict | None, world_config: dict | None, scene_chars: list[str] | None) -> bool : Gate auxiliary extractors and print skip context.
 #   - _render_dynamic_state_field_policy(field_types: dict[str, str]) -> str : Render allowed DynamicState fields for extractor prompt.
 #   - _write_updater_diff_snapshot(plan: dict, state_candidates: list[dict], rel_candidate: dict | None, event_candidate: dict | None) -> None : LLM 출력과 diff 결과를 logs/updater_diff.json에 저장.
 #   - _select_event_owner_id(npc_id: str, pc_id: str, participant_ids: list[str]) -> str | None : Choose the relationship anchor for Event updates.
@@ -111,6 +112,32 @@ async def _run_auxiliary_character_updates(
     for label, result in zip(labels, results):
         if isinstance(result, Exception):
             print(f"[StateUpdater] auxiliary {label} update failed (ignored): {result}")
+
+
+def _should_run_auxiliary_character_updates_with_log(
+    actor_response: str,
+    participant_ids: list[str],
+    context_plan: dict | None,
+    world_config: dict | None,
+    scene_chars: list[str] | None,
+) -> bool:
+    """Gate auxiliary state extractors and print skip context for debugging."""
+    should_run = should_run_auxiliary_character_updates(
+        actor_response,
+        participant_ids,
+        context_plan,
+        world_config,
+    )
+    if should_run or not actor_response.strip():
+        return should_run
+    required_systems = (context_plan or {}).get("required_systems") or []
+    importance = (context_plan or {}).get("importance")
+    print(
+        "[MultiStateUpdater] skipped by policy: "
+        f"participants={participant_ids}, scene_chars={scene_chars or []}, "
+        f"required_systems={required_systems}, importance={importance}"
+    )
+    return False
 
 
 def _compact_world_context_text(text: object, limit: int) -> str:
@@ -538,7 +565,13 @@ async def process_actor_response(
 
     if scene_types and not _needs_classification(actor_response, scene_types) and not event_allowed:
         print("[StateUpdater] skipped (no state-relevant change)")
-        if should_run_auxiliary_character_updates(actor_response, participant_ids, context_plan, world_config):
+        if _should_run_auxiliary_character_updates_with_log(
+            actor_response,
+            participant_ids,
+            context_plan,
+            world_config,
+            scene_chars,
+        ):
             await _run_auxiliary_character_updates(
                 actor_response,
                 pc_id,
@@ -559,7 +592,13 @@ async def process_actor_response(
         # NPC=PC self-state path keeps PC state local; Event extraction uses a scene partner when available.
         # multi_character 와 dynamic_info 는 독립적이므로 병렬 실행
         print("[StateUpdater] NPC=PC: DynamicState update only")
-        if should_run_auxiliary_character_updates(actor_response, participant_ids, context_plan, world_config):
+        if _should_run_auxiliary_character_updates_with_log(
+            actor_response,
+            participant_ids,
+            context_plan,
+            world_config,
+            scene_chars,
+        ):
             await _run_auxiliary_character_updates(
                 actor_response,
                 pc_id,
@@ -657,7 +696,13 @@ async def process_actor_response(
 
     # Auxiliary character extraction is independent, but only useful on multi-character or high-signal turns.
     auxiliary_task = None
-    if should_run_auxiliary_character_updates(actor_response, participant_ids, context_plan, world_config):
+    if _should_run_auxiliary_character_updates_with_log(
+        actor_response,
+        participant_ids,
+        context_plan,
+        world_config,
+        scene_chars,
+    ):
         auxiliary_task = asyncio.create_task(_run_auxiliary_character_updates(
             actor_response,
             pc_id,

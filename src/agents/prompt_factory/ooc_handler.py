@@ -558,6 +558,50 @@ async def _resolve_location_from_ooc_text(text: str, plan: dict, context: dict) 
     return destination, default_meta
 
 
+async def _fetch_dynamic_state_values(char_id: str, fields: list[str]) -> dict[str, object]:
+    """OOC 적용 전 캐릭터 DynamicState 필드값을 반환합니다."""
+    allowed = {
+        "mood",
+        "mental_condition",
+        "stress_level",
+        "physical_condition",
+        "injury_detail",
+        "emotional_state",
+    }
+    selected = [field for field in fields if field in allowed]
+    if not selected:
+        return {}
+    projection = ", ".join(f"d.{field} AS {field}" for field in selected)
+    async with async_driver.session() as session:
+        result = await session.run(
+            f"""
+            MATCH (c:Character {{id: $char_id}})-[:HAS_STATE]->(d:DynamicState)
+            RETURN {projection}
+            """,
+            char_id=char_id,
+        )
+        row = await result.single()
+    return {field: row.get(field) for field in selected} if row else {}
+
+
+async def _fetch_character_location_id(char_id: str) -> str:
+    """캐릭터의 현재 위치 ID를 LOCATED_AT 우선으로 반환합니다."""
+    async with async_driver.session() as session:
+        result = await session.run(
+            """
+            MATCH (c:Character {id: $char_id})
+            OPTIONAL MATCH (c)-[:LOCATED_AT]->(l:Location)
+            OPTIONAL MATCH (c)-[:HAS_STATE]->(d:DynamicState)
+            RETURN l.id AS location_id, d.location_id AS state_location_id
+            """,
+            char_id=char_id,
+        )
+        row = await result.single()
+    if not row:
+        return ""
+    return str(row.get("location_id") or row.get("state_location_id") or "")
+
+
 async def _get_character_location_parent(char_id: str) -> str | None:
     """캐릭터의 현재 Location이 하위 장소면 부모 Location ID를 반환합니다."""
     async with async_driver.session() as session:
@@ -858,6 +902,7 @@ async def parse_ooc(
         raw_state_changes = {}
 
     applied_state_changes: dict[str, dict] = {}
+    state_change_diffs: dict[str, dict[str, dict[str, object]]] = {}
     for char_name, char_state in raw_state_changes.items():
         if not isinstance(char_state, dict) or not char_state:
             continue
@@ -865,8 +910,16 @@ async def parse_ooc(
         if not char_id:
             print(f"[OOC] 캐릭터 '{char_name}' ID 미매칭 — 건너뜀")
             continue
+        before_state = await _fetch_dynamic_state_values(char_id, list(char_state.keys()))
         await update_dynamic_state(char_id, char_state)
         applied_state_changes[char_name] = char_state
+        state_change_diffs[char_id] = {
+            field: {
+                "before": before_state.get(field),
+                "after": value,
+            }
+            for field, value in char_state.items()
+        }
 
     inferred_location, inferred_location_meta = await _resolve_location_from_ooc_text(text, plan, location_context)
     inferred_move_targets: list[str] | None = None
@@ -896,12 +949,20 @@ async def parse_ooc(
             new_location = None
     if new_location and await _location_exists(new_location):
         moved_character_ids = inferred_move_targets or await _resolve_ooc_move_targets(text, characters, npc_id, pc_id)
+        location_changes = {
+            char_id: {
+                "before": await _fetch_character_location_id(char_id),
+                "after": new_location,
+            }
+            for char_id in moved_character_ids
+        }
         for char_id in moved_character_ids:
             await move_location(char_id, new_location)
         await _set_global_location(new_location)
     else:
         new_location = None
         moved_character_ids = []
+        location_changes = {}
 
     time_result = await _apply_time_change(
         plan.get("time_delta_minutes"),
@@ -918,7 +979,9 @@ async def parse_ooc(
 
     return {
         "state_changes": applied_state_changes,
+        "state_change_diffs": state_change_diffs,
         "location_id": new_location,
+        "location_changes": location_changes,
         "moved_character_ids": moved_character_ids,
         "time_changed": time_changed,
         "time_before": time_result["time_before"],

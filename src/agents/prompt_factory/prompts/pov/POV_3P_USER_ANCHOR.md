@@ -29,7 +29,7 @@ Brief {user} inner access is allowed when it is immediate, scene-bound, and grou
 
 Use {user}'s name/pronoun only for clarity.
 
-Narration and italic thought must stay third-person anchored. Do not use "나는", "내가", "나를", "내 몸", "저는", or "제가" outside quoted dialogue.
+Narration must stay third-person anchored. Do not use "나는", "내가", "나를", "내 몸", "저는", or "제가" outside quoted dialogue.
 
 Clear subject -> use sensory result / object movement / body beat / environment / another character reaction.
 
