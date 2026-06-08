@@ -10,6 +10,7 @@
 #
 # Functions
 #   - _read_optional_prompt(relative_path: str) -> str : prompt/ 하위 Markdown 파일 읽기
+#   - _render_direction_block(beats: list[dict]) -> str : Director beat 배열을 <direction> 블록으로 렌더링
 #   - _format_prompt_vars(text: str, *, char_name: str, user_name: str, for_add: str) -> str : 프롬프트 변수 치환
 #   - _label_mixed_input(user_input: str, user_name: str) -> str : *...* 상황설명과 PC 대사를 원문 순서대로 레이블링
 # ================================
@@ -31,6 +32,7 @@ from src.agents.prompt_factory.renderers import (
     build_genre_section,
     join_rendered_context,
     render_active_characters_section,
+    render_expressive_characters_section,
     render_character_section,
     render_events_section,
     render_header,
@@ -43,7 +45,7 @@ from src.agents.prompt_factory.renderers import (
 
 logger = logging.getLogger(__name__)
 
-PROMPT_DIR = Path(__file__).resolve().parent / "prompt"
+PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
 
 
 # ----------------
@@ -51,7 +53,7 @@ PROMPT_DIR = Path(__file__).resolve().parent / "prompt"
 # ----------------
 
 def _read_optional_prompt(relative_path: str) -> str:
-    """Read a tagless Markdown prompt file from prompt_factory/prompt/."""
+    """Read a tagless Markdown prompt file from prompt_factory/prompts/."""
     path = PROMPT_DIR / relative_path
     return path.read_text(encoding="utf-8") if path.exists() else ""
 
@@ -66,12 +68,18 @@ def _render_scene_need_hints(hints: dict[str, str]) -> str:
 
 def _read_default_scene_prompt(scene_type: str) -> str:
     """Read default scene prompt. World scene prompt overrides this later."""
-    return _read_optional_prompt(f"genre_specific/scenes/{scene_type}.md")
+    return (
+        _read_optional_prompt(f"genre_specific/scenes/{scene_type}.md")
+        or _read_optional_prompt(f"genre_specific/{scene_type}.md")
+    )
 
 
 def _read_default_scene_blacklist(scene_type: str) -> str:
     """Read default scene blacklist. World scene blacklist overrides this later."""
-    return _read_optional_prompt(f"genre_specific/scenes/{scene_type}.cot_append.md")
+    return (
+        _read_optional_prompt(f"genre_specific/scenes/{scene_type}.cot_append.md")
+        or _read_optional_prompt(f"genre_specific/{scene_type}.cot_append.md")
+    )
 
 
 def _read_global_blacklist_template() -> str:
@@ -275,6 +283,7 @@ class PromptBuilder:
         current_pov: Optional[dict] = None,
         location_nodes: Optional[list[dict]] = None,
         scene_need_hints: Optional[dict[str, str]] = None,
+        direction: Optional[list[dict]] = None,
     ) -> tuple[str, str, str]:
         """Return fixed, genre, and dynamic prompt sections for the current turn."""
         fixed_prompt = self.build_fixed_section()
@@ -302,14 +311,21 @@ class PromptBuilder:
             rendered_context,
         )
         need_hints_block = _render_scene_need_hints(scene_need_hints or {})
+        # direction이 있으면 Actor 캐릭터 블록을 외형/표현 필드만으로 축소
+        field_types = self.world_config.get("field_types") or None
+        characters_block = (
+            render_expressive_characters_section(char_data, user_data or {}, npcs or [], scene_types, field_types)
+            if direction is not None
+            else render_active_characters_section(char_data, user_data or {}, npcs or [], scene_types)
+        )
         dynamic_prompt = "\n\n".join(
             part
             for part in [
-                _render_prompt_block("alteration", self.world_config.get("alteration_section", "")),
                 self.build_header(location, dt),
                 render_location_context(location_nodes or []),
                 self.build_unified_blacklist(char_data, scene_types),
-                render_active_characters_section(char_data, user_data or {}, npcs or [], scene_types),
+                characters_block,
+                _render_direction_block(direction or []),
                 need_hints_block,
                 self.build_character_focus_prompt(char_data),
                 self.build_scene_specific_prompt(scene_types),
@@ -364,6 +380,31 @@ class PromptBuilder:
             )
             if part
         )
+
+
+def _render_direction_block(beats: list[dict]) -> str:
+    """Director beat 배열을 Actor 입력용 <direction> 블록으로 렌더링한다.
+
+    rationale은 show-then-tell 위반 방지를 위해 제외한다.
+    """
+    if not beats:
+        return ""
+    lines = [
+        "Director beat plan for this turn.",
+        "Use it as scene-flow guidance: preserve sequence, active characters, physical actions, emotional trajectory, and focus details.",
+        "Fixed/world/scenario rules, current user input, and current scene context override this plan if they conflict.",
+        "Do not explain or mention this plan in prose.",
+        "",
+        "[beats]",
+    ]
+    for beat in beats:
+        char = beat.get("char", "?")
+        action = beat.get("action", "")
+        emotion = beat.get("emotion", "")
+        expression = beat.get("expression", "")
+        focus = beat.get("focus", "")
+        lines.append(f"- {char}: action={action} | emotion={emotion} | expression={expression} | focus={focus}")
+    return _render_prompt_block('direction type="director_beat_plan"', "\n".join(lines))
 
 
 def _format_prompt_vars(text: str, *, char_name: str, user_name: str, for_add: str = "") -> str:

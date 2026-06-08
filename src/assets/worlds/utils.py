@@ -8,6 +8,7 @@
 #   - read_md(prompt_dir: Path, path: str) -> str : prompt/ 하위 .md 파일을 문자열로 반환
 #   - read_optional_md(path: Path) -> str : 파일이 있으면 Markdown 문자열을 반환
 #   - read_md_map(directory: Path, keys: list[str], suffix: str = ".md") -> dict[str, str] : key별 Markdown 파일 로드
+#   - read_inherited_md_map(prompt_dir: Path, keys: list[str], scenario_id: str | None, directory: str = "scenes", suffix: str = ".md") -> dict[str, str] : 시나리오 파일을 월드 파일 위에 덮어 읽기
 #   - read_few_shot_map(directory: Path, keys: list[str]) -> dict : key별 few-shot 파일 로드
 #   - parse_few_shot(path: Path) -> dict : # GOOD / # BAD 섹션을 파싱
 # ================================
@@ -33,6 +34,21 @@ def read_md_map(directory: Path, keys: list[str], suffix: str = ".md") -> dict[s
         text = read_optional_md(directory / f"{key}{suffix}")
         if text:
             result[key] = text
+    return result
+
+
+def read_inherited_md_map(
+    prompt_dir: Path,
+    keys: list[str],
+    scenario_id: str | None,
+    directory: str = "scenes",
+    suffix: str = ".md",
+) -> dict[str, str]:
+    """월드 공통 파일을 읽고, 같은 키의 시나리오 파일이 있으면 덮어씁니다."""
+    result = read_md_map(prompt_dir / directory, keys, suffix=suffix)
+    scenario_key = scenario_id or "default"
+    scenario_dir = prompt_dir / "scenarios" / scenario_key / directory
+    result.update(read_md_map(scenario_dir, keys, suffix=suffix))
     return result
 
 

@@ -5,6 +5,7 @@
 #
 # Functions
 #   - build_rendered_dynamic_context(scene_state: dict, context_plan: dict, relationship: dict, events: list[dict], recall_events: list[dict], personal_facts: list[dict], npcs: list[dict], world_context: dict, dynamic_state: dict | None = None) -> dict[str, str] : render dynamic context blocks
+#   - _join_complete_lines(lines: list[str], budget: int) -> str : 줄 단위로만 예산 생략
 # ================================
 
 import json
@@ -15,9 +16,9 @@ from src.simulation.systems.personal_facts import render_personal_facts
 DEFAULT_CONTEXT_BUDGET: dict[str, int] = {
     "scene": 300,
     "state": 350,
-    "characters": 500,
+    "characters": 900,
     "location": 250,
-    "rules": 250,
+    "rules": 900,
     "memories": 700,
     "personal_facts": 600,
     "relationships": 400,
@@ -85,7 +86,7 @@ def _render_scene_block(scene_state: dict, context_plan: dict, budget: int) -> s
         f"- Skipped systems: {skipped}",
         "- Use active hints only; do not mention skipped systems unless the user brings them into the scene.",
     ])
-    return _clamp_block("\n".join(lines), budget)
+    return _join_complete_lines(lines, budget)
 
 
 def _render_relationship_block(relationship: dict, budget: int) -> str:
@@ -130,7 +131,7 @@ def _render_npc_block(npcs: list[dict], budget: int) -> str:
         elif rel_hint:
             line += f" Relationship to main NPC: {rel_hint}"
         lines.append(line)
-    return _clamp_block("\n".join(lines), budget)
+    return _join_complete_lines(lines, budget)
 
 
 def _render_events_block(events: list[dict], budget: int) -> str:
@@ -229,7 +230,7 @@ def _render_world_block(world_context: dict, budget: dict[str, int], relationshi
             if hint:
                 lines.append(f"- {name}: {hint}")
         if len(lines) > 1:
-            parts.append(_clamp_block("\n".join(lines), budget["rules"]))
+            parts.append(_join_complete_lines(lines, budget["rules"]))
 
     if world_context.get("speech_profiles"):
         lines = ["[Speech Profile]"]
@@ -629,6 +630,28 @@ def _clamp_block(text: str, limit: int) -> str:
     return _clamp_text(text.strip(), max(80, int(limit)))
 
 
+def _join_complete_lines(lines: list[str], budget: int) -> str:
+    """Join lines without truncating an individual line mid-sentence."""
+    limit = max(80, int(budget))
+    kept: list[str] = []
+    omitted = 0
+    current_len = 0
+    content_lines_kept = 0
+    for line in lines:
+        addition = len(line) + (1 if kept else 0)
+        is_content_line = line.startswith("- ")
+        if kept and current_len + addition > limit and content_lines_kept > 0:
+            omitted += 1
+            continue
+        kept.append(line)
+        current_len += addition
+        if is_content_line:
+            content_lines_kept += 1
+    if omitted:
+        kept.append(f"- [{omitted} additional entries omitted by context budget]")
+    return "\n".join(kept).strip()
+
+
 def _clamp_text(text: str, limit: int) -> str:
     """Trim text at a line boundary when possible."""
     if len(text) <= limit:
@@ -637,4 +660,4 @@ def _clamp_text(text: str, limit: int) -> str:
     boundary = clipped.rfind("\n")
     if boundary > limit * 0.5:
         clipped = clipped[:boundary]
-    return clipped.rstrip() + "\n- ..."
+    return clipped.rstrip() + "\n- [truncated by context budget]"

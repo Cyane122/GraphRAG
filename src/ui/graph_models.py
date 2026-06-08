@@ -6,7 +6,7 @@
 # Classes
 #   - GraphNode : 그래프 노드 표시 데이터
 #   - GraphEdge : 그래프 엣지 표시 데이터
-#   - GraphSnapshot : 그래프 관찰 창에 전달되는 전체 스냅샷
+#   - GraphSnapshot : 그래프 관찰 창에 전달되는 전체 스냅샷과 테이블 스키마
 # ================================
 
 from __future__ import annotations
@@ -47,5 +47,6 @@ class GraphSnapshot(BaseModel):
     committed_time: str | None = Field(default=None, alias="committedTime")
     pending_time: str | None = Field(default=None, alias="pendingTime")
     time_source: str = Field(default="none", alias="timeSource")
+    schema_: list[dict[str, Any]] = Field(default_factory=list, alias="schema")
     nodes: list[GraphNode] = Field(default_factory=list)
     edges: list[GraphEdge] = Field(default_factory=list)

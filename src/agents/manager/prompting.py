@@ -5,7 +5,7 @@
 #
 # Functions
 #   - resolve_prompt_world_config(world: World, world_config: dict, npc_id: str, pc_id: str, perspective: int) -> dict : Resolve prompt world config
-#   - build_prompt_parts(user_input: str, recent_story: str, perspective: int, world_config: dict, scene_plan: SceneTimePlan, context: CoreContext, world_context: dict) -> PromptParts : Render manager prompt parts
+#   - build_prompt_parts(user_input: str, recent_story: str, perspective: int, world_config: dict, scene_plan: SceneTimePlan, context: CoreContext, world_context: dict, scene_need_hints: dict[str, str] | None, director_output: list[dict] | None) -> PromptParts : Render manager prompt parts
 # ================================
 
 from src.agents.context.renderer import build_rendered_dynamic_context
@@ -38,6 +38,7 @@ def build_prompt_parts(
     context: CoreContext,
     world_context: dict,
     scene_need_hints: dict[str, str] | None = None,
+    director_output: list[dict] | None = None,
 ) -> PromptParts:
     """Render Fixed, Genre, and Dynamic prompt segments from prepared context."""
     rendered_world_context = dict(world_context)
@@ -65,12 +66,13 @@ def build_prompt_parts(
         user_input=user_input,
         location=context.location_name,
         location_nodes=context.location_nodes,
-        npcs=context.npcs,
+        npcs=context.active_npcs,
         dt=scene_plan.current_dt,
         memory_conflicts=context.memory_conflicts,
         world_context=rendered_world_context,
         current_pov=current_pov,
         scene_need_hints=scene_need_hints or {},
+        direction=director_output,
         rendered_context=build_rendered_dynamic_context(
             scene_state=context.scene_state,
             context_plan=context.context_plan,
@@ -78,7 +80,7 @@ def build_prompt_parts(
             events=context.recent_events,
             recall_events=recall_events,
             personal_facts=context.personal_facts,
-            npcs=context.npcs,
+            npcs=context.active_npcs,
             world_context=world_context,
             dynamic_state=context.char_data.get("dynamic_state", {}),
         ),

@@ -6,7 +6,7 @@
 # Functions
 #   - recover_missing_analyze_prose(raw: str) -> tuple[str, bool] : Recover prose when Actor omits the closing analyze tag
 #   - _extract_scene_chars(raw_thinking: str, visible_text: str = "") -> list[str] : Extract visible secondary character names from Actor thinking
-#   - stream_actor(fixed_prompt: str, genre_prompt: str, dynamic_prompt: str, history: list[dict], genai_client: object, model_name: str, max_token: int, npc_name: str, logs_dir: Path, status_text: str, send_output: bool = True) -> tuple[str, list[str], cl.Message, int | None, str] : Actor 응답 생성
+#   - stream_actor(fixed_prompt: str, genre_prompt: str, dynamic_prompt: str, history: list[dict], genai_client: object, model_name: str, max_token: int, npc_name: str, logs_dir: Path, status_text: str, send_output: bool = True, director_beats: list[dict] | None = None) -> tuple[str, list[str], cl.Message, int | None, str] : Actor 응답 생성
 # ================================
 
 import asyncio
@@ -129,6 +129,7 @@ async def stream_actor(
     logs_dir: Path,
     status_text: str,
     send_output: bool = True,
+    director_beats: list[dict] | None = None,
 ) -> tuple[str, list[str], cl.Message, int | None, str]:
     """Gemini 스트림으로 Actor 응답을 생성하고 필요하면 UI에 표시합니다."""
     system_text = f"{fixed_prompt}\n\n{genre_prompt}" if genre_prompt else fixed_prompt
@@ -151,6 +152,7 @@ async def stream_actor(
     thinking_done = False
     first_text = True
     recovered_missing_analyze = False
+    prose = ""
 
     try:
         try:
@@ -228,23 +230,31 @@ async def stream_actor(
         except Exception:
             pass
 
-    prose = _extract_prose(raw)
-    logs_dir.mkdir(exist_ok=True)
-    (logs_dir / "raw_full.txt").write_text(raw, encoding="utf-8")
-    (logs_dir / "raw_output.txt").write_text(prose, encoding="utf-8")
-    (logs_dir / "raw_thinking.txt").write_text(raw_thinking, encoding="utf-8")
-    (logs_dir / "actor_recovery.json").write_text(
-        json.dumps(
-            {"missing_analyze_recovered": recovered_missing_analyze},
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-    print(f"\n{'=' * 60}\n[Actor Prose]\n{prose[:800]}\n{'=' * 60}")
-    print(
-        f"[Actor Thinking ({len(raw_thinking)}chars)] / prose={len(prose)}chars "
-        f"/ recovered_missing_analyze={recovered_missing_analyze}"
-    )
+        # 파일 쓰기는 finally 내부에서 수행해 CancelledError 전파 시에도 보장
+        try:
+            prose = _extract_prose(raw)
+            logs_dir.mkdir(exist_ok=True)
+            (logs_dir / "raw_full.txt").write_text(raw, encoding="utf-8")
+            (logs_dir / "raw_output.txt").write_text(prose, encoding="utf-8")
+            (logs_dir / "raw_thinking.txt").write_text(raw_thinking, encoding="utf-8")
+            (logs_dir / "director_output.json").write_text(
+                json.dumps(director_beats or [], ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            (logs_dir / "actor_recovery.json").write_text(
+                json.dumps(
+                    {"missing_analyze_recovered": recovered_missing_analyze},
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            print(f"\n{'=' * 60}\n[Actor Prose]\n{prose[:800]}\n{'=' * 60}")
+            print(
+                f"[Actor Thinking ({len(raw_thinking)}chars)] / prose={len(prose)}chars "
+                f"/ recovered_missing_analyze={recovered_missing_analyze}"
+            )
+        except Exception as e:
+            print(f"[Actor] 로그 파일 쓰기 실패: {e}")
 
     return prose, _extract_scene_chars(raw_thinking, prose), response_msg, _hour_from_response(prose), raw_thinking

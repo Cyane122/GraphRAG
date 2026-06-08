@@ -53,6 +53,12 @@ def get_cached_graph_snapshot() -> dict[str, Any]:
         return dict(_LATEST_GRAPH)
 
 
+def _cached_snapshot_matches_thread(snapshot: dict[str, Any], thread_id: str) -> bool:
+    """캐시 스냅샷이 요청 스레드의 live 데이터인지 반환합니다."""
+    cached_thread_id = str(snapshot.get("threadId") or "")
+    return bool(cached_thread_id and cached_thread_id == thread_id and snapshot.get("nodes"))
+
+
 def _safe_static_path(request_path: str) -> Path | None:
     """요청 경로를 정적 파일 경로로 변환합니다."""
     parsed_path = unquote(urlparse(request_path).path)
@@ -159,9 +165,9 @@ class _GraphHandler(BaseHTTPRequestHandler):
             except RuntimeError as e:
                 if "Could not set lock" not in str(e):
                     raise
-                # DB가 Chainlit 세션에 의해 lock 중 — live 캐시로 폴백
+                # DB가 Chainlit 세션에 의해 lock 중이면 같은 스레드의 live 캐시만 반환한다.
                 live = get_cached_graph_snapshot()
-                if live.get("nodes"):
+                if _cached_snapshot_matches_thread(live, thread_id):
                     payload = json.dumps(live, ensure_ascii=False).encode("utf-8")
                     self._send(200, "application/json; charset=utf-8", payload)
                     return
@@ -184,6 +190,12 @@ class _GraphHandler(BaseHTTPRequestHandler):
                 return
             from src.ui.graph_loader import get_thread_schema
             tables = get_thread_schema(thread_id)
+            if not tables:
+                cached = get_cached_graph_snapshot()
+                if _cached_snapshot_matches_thread(cached, thread_id):
+                    cached_schema = cached.get("schema") or []
+                    if isinstance(cached_schema, list):
+                        tables = cached_schema
             payload = json.dumps(tables, ensure_ascii=False).encode("utf-8")
             self._send(200, "application/json; charset=utf-8", payload)
         except Exception as exc:

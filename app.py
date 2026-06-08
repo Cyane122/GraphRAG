@@ -681,6 +681,7 @@ async def _run_generation(
         logs_dir       = _LOGS_DIR,
         status_text    = random.choice(GENERATING_MSGS).format(char=npc_name_kor),
         send_output    = False,
+        director_beats = manager_effects.get("director_beats") or None,
     )
     blocked_terms = find_forbidden_terms(full_response) + find_pov_violations(full_response, _current_perspective())
     if blocked_terms:

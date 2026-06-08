@@ -17,6 +17,8 @@
 #             resolve_pov() -> tuple[str, bool]        : perspective 설정(int/2·3-튜플) → (pov_mode, impersonation) 정규화
 #             get_default_perspective() -> int         : 세계 기본 인칭(1/3) 반환
 #             get_dynamic_slot_updaters() -> list[dict] : 커스텀 슬롯 후처리 설정 반환
+#             FIELD_TYPES: dict[str, dict[str, str]]     — 필드 타입 분류 (appearance/personality/other). world_editor가 field_types.json에 저장.
+#             get_field_types() -> dict[str, dict[str, str]] : field_types.json + FIELD_TYPES 병합 반환
 #             get_social_media_config() -> dict          : 카카오톡/SNS 기능 기본값과 월드 강제 비활성화 설정
 #             _build_tables(conn) -> None              : DDL 전용 (노드·관계 테이블, 벡터 인덱스, GlobalState)
 #             build_schema(conn, scenario_id) -> None  : 기본 구현은 _build_tables + build_scenario_data 호출
@@ -461,6 +463,11 @@ class World:
     # label 은 Kuzu 노드 테이블명(identifier). _build_tables 에서 DDL 을 자동 생성합니다.
     EXTRA_SLOTS: list = []
     DYNAMIC_SLOT_UPDATERS: list[dict] = []
+
+    # 필드 타입 분류: section → {field_key → "appearance"|"personality"|"other"}
+    # world_editor 가 field_types.json 에 저장하는 값이 우선 적용됩니다.
+    # 서브클래스에서 직접 하드코딩할 수도 있습니다.
+    FIELD_TYPES: dict[str, dict[str, str]] = {}
     SOCIAL_MEDIA: dict[str, bool] = {
         "kakao_enabled": False,
         "instagram_enabled": False,
@@ -588,6 +595,30 @@ class World:
         """블랙리스트 항목 문자열을 반환합니다."""
         return ""
 
+    def get_field_types(self) -> dict[str, dict[str, str]]:
+        """필드 타입 분류 dict를 반환합니다.
+
+        우선순위: field_types.json (world_editor 저장) > FIELD_TYPES 클래스 속성
+        반환 형식: {section: {field_key: "appearance"|"personality"|"other"}}
+        """
+        # 클래스 속성을 기본값으로 사용
+        merged: dict[str, dict[str, str]] = {
+            section: dict(fields) for section, fields in self.FIELD_TYPES.items()
+        }
+        # JSON 파일이 있으면 덮어씁니다
+        json_path = Path(__file__).parent / self.WORLD_ID / "field_types.json"
+        if json_path.exists():
+            try:
+                with open(json_path, encoding="utf-8") as f:
+                    stored = json.load(f)
+                if isinstance(stored, dict):
+                    for section, fields in stored.items():
+                        if isinstance(fields, dict):
+                            merged.setdefault(section, {}).update(fields)
+            except Exception:
+                pass
+        return merged
+
     def get_full_config(self, perspective: object | None = None, scenario_id: str | None = None) -> dict:
         """프롬프트 조립에 필요한 전체 설정 딕셔너리를 반환합니다."""
         # 레거시 dict SCENARIOS 지원 (rofan 등)
@@ -610,9 +641,11 @@ class World:
             "npc_name_kor":         self.npc_name_kor(),
             "default_location_id":  default_location,
             "scenario_id":          _sid,
+            "scene_descriptions":   self.get_scene_descriptions(),
             "social_media":         self.get_social_media_config(),
             "dynamic_slot_updaters": self.get_dynamic_slot_updaters(),
             "impersonation":        self.resolve_pov()[1],
+            "field_types":          self.get_field_types(),
         }
 
     def get_default_location_id(self) -> str:

@@ -2,15 +2,15 @@
 # src/agents/prompt_factory/fixed.py
 #
 # Cacheable fixed Actor prompt section builder.
-# Loads modular Markdown prompt files from prompt_factory/prompt/.
+# Loads modular Markdown prompt files from prompt_factory/prompts/.
 # Falls back to legacy prompt_sections.py constants when prompt files are missing.
 # _render_prompt_block, _SafeFormatDict는 renderers.py에서 import.
 #
 # Functions
 #   - build_fixed_section(...) -> str : 고정 프롬프트 세그먼트 조립
 #   - build_pre_output_checklist(...) -> str : 출력 직전 체크리스트 조립
-#   - _user_impersonation_allowed(pov_mode, world_config) -> bool : 사칭 허용 여부 판단
-#   - _format_prompt_vars(text, *, char_name, user_name, world_config) -> str : 프롬프트 변수 치환
+#   - _user_impersonation_allowed(pov_mode: str, world_config: dict | None = None) -> bool : 사칭 허용 여부 판단
+#   - _format_prompt_vars(text: str, *, char_name: str, user_name: str, world_config: dict) -> str : 프롬프트 변수 치환
 # ================================
 
 from pathlib import Path
@@ -33,7 +33,7 @@ from src.agents.prompt_factory.prompt_sections import (
     _STYLE_3P,
 )
 
-PROMPT_DIR = Path(__file__).resolve().parent / "prompt"
+PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
 
 VALID_POV_MODES = {"1p_user", "1p_char", "3p_user", "3p_char"}
 
@@ -82,6 +82,7 @@ def build_fixed_section(
         _render_prompt_block("style", _select_style_section(resolved_perspective)),
         _render_prompt_block("world_lore", prompt_sections.get("world")),
         _render_prompt_block("scenario_lore", prompt_sections.get("scenario")),
+        _render_prompt_block("alteration_lore", world_config.get("alteration_section", "")),
         _render_prompt_block("world_specific_prose_prompt", prompt_sections.get("prose") or world_config.get("prose_rules", "")),
         _render_prompt_block("character_focus_prompt", _resolve_char_focus(world_config, char_name)),
         _render_prompt_block("blacklist", _select_blacklist_section(world_config, char_name, user_name, additional_blacklist)),
@@ -253,7 +254,7 @@ def _select_operator(rating: str) -> str:
 # ----------------
 
 def _load_prompt(relative_path: str) -> str:
-    """Load one Markdown prompt section from prompt_factory/prompt/."""
+    """Load one Markdown prompt section from prompt_factory/prompts/."""
     path = PROMPT_DIR / relative_path
     return path.read_text(encoding="utf-8")
 

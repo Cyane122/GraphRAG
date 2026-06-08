@@ -45,7 +45,7 @@ async def run_actor(
     Args:
         fixed_prompt:          고정 섹션 (operator_policy / rules / world / ...)
         genre_prompt:          씬별 묘사 규정
-        dynamic_prompt:        매 턴 동적 섹션 (헤더 + character + context + user_input)
+        dynamic_prompt:        매 턴 동적 섹션 (헤더 + character + direction + context + user_input)
         conversation_history:  이전 대화 [{role, content}, ...] — Chainlit에서 관리
     Returns:
         응답 텍스트

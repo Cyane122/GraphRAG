@@ -54,6 +54,8 @@ class CoreContext:
     location_name: str
     location_nodes: list[dict]
     npcs: list[dict]
+    active_npcs: list[dict]
+    ambient_npcs: list[dict]
     scene_state: dict
     context_plan: dict
 

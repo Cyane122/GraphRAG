@@ -4,7 +4,7 @@
 # Write prompt and turn-debug snapshots during Actor execution.
 #
 # Functions
-#   - write_turn_debug_snapshot(user_input: str, fixed_prompt: str, genre_prompt: str, dynamic_prompt: str, scene_types: list[str], manager_effects: dict, history: list[dict], world_id: str, pc_id: str, npc_id: str, npc_name: str, logs_dir: Path, turn_debug_dir: Path) -> str | None : Save a turn debug snapshot
+#   - write_turn_debug_snapshot(user_input: str, fixed_prompt: str, genre_prompt: str, dynamic_prompt: str, scene_types: list[str], manager_effects: dict, history: list[dict], world_id: str, pc_id: str, npc_id: str, npc_name: str, logs_dir: Path, turn_debug_dir: Path) -> str | None : Save a turn debug snapshot (director_prompt.txt 포함)
 # ================================
 import json
 from datetime import datetime
@@ -68,6 +68,7 @@ def write_turn_debug_snapshot(
             "genre_prompt.txt": genre_prompt or "",
             "dynamic_prompt.txt": dynamic_prompt,
             "final_prompt-2.txt": final_prompt,
+            "director_prompt.txt": manager_effects.get("director_prompt") or "",
             "history.json": json.dumps(history, ensure_ascii=False, indent=2),
             "metadata.json": json.dumps({
                 "timestamp": stamp,

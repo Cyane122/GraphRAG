@@ -4,7 +4,7 @@
 # Chainlit 개발용 그래프 스냅샷을 수집하고 별도 로컬 그래프 서버에 반영합니다.
 #
 # Functions
-#   - build_debug_graph(pc_id: str, npc_id: str, world_id: str) -> GraphSnapshot : 현재 장면 중심 그래프 데이터를 생성
+#   - build_debug_graph(pc_id: str, npc_id: str, world_id: str) -> GraphSnapshot : 현재 장면 중심 그래프와 스키마 데이터를 생성
 #   - send_debug_graph(pc_id: str, npc_id: str, world_id: str) -> None : 그래프 서버 URL을 안내
 #   - upsert_debug_graph(pc_id: str, npc_id: str, world_id: str) -> None : 그래프 서버 스냅샷 갱신
 # ================================
@@ -91,6 +91,32 @@ async def _fetch_global_state() -> dict[str, Any]:
         )
         row = await result.single()
     return dict(row) if row else {}
+
+
+async def _fetch_table_schema() -> list[dict[str, Any]]:
+    """현재 활성 Kuzu DB의 테이블 스키마 정보를 조회합니다."""
+    async with async_driver.session() as session:
+        tables_result = await session.run("CALL show_tables() RETURN name, type, comment")
+        tables = [dict(row) for row in await tables_result.fetch_all()]
+
+        schema: list[dict[str, Any]] = []
+        for table in tables:
+            name = str(table.get("name") or "")
+            if not name:
+                continue
+            columns_result = await session.run(f"CALL table_info('{name}') RETURN *")
+            columns = [dict(row) for row in await columns_result.fetch_all()]
+            schema.append({
+                "name": name,
+                "type": str(table.get("type", "")),
+                "comment": str(table.get("comment", "") or ""),
+                "columns": [
+                    {"name": column.get("name", ""), "type": str(column.get("type", ""))}
+                    for column in columns
+                    if column.get("name")
+                ],
+            })
+    return sorted(schema, key=lambda item: (item.get("type", ""), item.get("name", "")))
 
 
 async def _fetch_character_rows() -> list[dict[str, Any]]:
@@ -385,8 +411,9 @@ def _profile_node(
 
 
 async def build_debug_graph(pc_id: str, npc_id: str, world_id: str) -> GraphSnapshot:
-    """현재 장면 중심 그래프 데이터를 생성합니다."""
+    """현재 장면 중심 그래프와 테이블 스키마 데이터를 생성합니다."""
     global_state = await _fetch_global_state()
+    table_schema = await _fetch_table_schema()
     time_state = _pending_time_state()
     committed_time = global_state.get("currentTime")
     effective_time = time_state["pendingTime"] or committed_time
@@ -612,6 +639,7 @@ async def build_debug_graph(pc_id: str, npc_id: str, world_id: str) -> GraphSnap
         committed_time=committed_time,
         pending_time=time_state["pendingTime"],
         time_source=time_state["timeSource"] or "none",
+        schema=table_schema,
         nodes=nodes,
         edges=edges,
     )

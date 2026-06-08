@@ -60,7 +60,7 @@ async def assemble_core_context(
     if "dynamic_state" in char_data:
         char_data["dynamic_state"]["location_id"] = location_name
 
-    npcs = await _fetch_present_npc_context(
+    active_npcs, ambient_npcs = await _fetch_present_npc_context(
         user_input,
         recent_story,
         location_id,
@@ -77,7 +77,7 @@ async def assemble_core_context(
         location_name,
         scene_plan.scene_types,
         recent_story,
-        npcs,
+        active_npcs,
     )
     context_plan_dict, requires_memory = _build_context_plan_dict(
         scene_plan.scene_types,
@@ -118,7 +118,9 @@ async def assemble_core_context(
         location_id=location_id,
         location_name=location_name,
         location_nodes=location_nodes,
-        npcs=npcs,
+        npcs=active_npcs,
+        active_npcs=active_npcs,
+        ambient_npcs=ambient_npcs,
         scene_state=scene_state_dict,
         context_plan=context_plan_dict,
     )
@@ -174,13 +176,18 @@ async def _fetch_present_npc_context(
     pc_id: str,
     deps: ManagerDependencies,
     schedule_context: dict | None = None,
-) -> list[dict]:
-    """Fetch secondary NPC profiles present by mention or current location."""
-    mentioned_ids = deps.detect_present_npcs(user_input, recent_story, world.get_npc_name_map())
+) -> tuple[list[dict], list[dict]]:
+    """Fetch active and ambient secondary NPC profiles for the current location."""
+    npc_name_map = world.get_npc_name_map()
     located_ids = await deps.fetch_location_character_ids(location_id)
     scheduled_ids = _active_schedule_character_ids(schedule_context or {}, location_id)
-    present_npc_ids = sorted({*mentioned_ids, *located_ids, *scheduled_ids} - {npc_id, pc_id})
-    return await deps.fetch_npc_profiles(present_npc_ids, npc_id, pc_id) if present_npc_ids else []
+    ambient_seed_ids = sorted({*located_ids, *scheduled_ids} - {npc_id, pc_id})
+    mentioned_ids = set(deps.detect_present_npcs(user_input, recent_story, npc_name_map))
+    active_ids = sorted(set(ambient_seed_ids) & mentioned_ids)
+    ambient_ids = sorted(set(located_ids) - set(active_ids) - {npc_id, pc_id})
+    active_npcs = await deps.fetch_npc_profiles(active_ids, npc_id, pc_id) if active_ids else []
+    ambient_npcs = [{"char_id": char_id} for char_id in ambient_ids]
+    return active_npcs, ambient_npcs
 
 
 def _active_schedule_character_ids(schedule_context: dict, location_id: str | None) -> list[str]:

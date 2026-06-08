@@ -235,13 +235,16 @@ class _GeminiModel:
         is_json_response = cfg.get("response_mime_type") == "application/json"
 
         # JSON 분류/업데이트 호출은 짧은 구조화 출력이 목적이라 thinking 토큰이
-        # max_output_tokens를 잠식하면 빈 JSON 응답으로 끝날 수 있다. 일부 호출자가
-        # thinking_level을 넘기더라도 JSON 요청에서는 budget=0으로 정규화한다.
+        # max_output_tokens를 잠식하면 빈 JSON 응답으로 끝날 수 있다.
         # 일부 모델은 thinking_budget=0을 무시하고 최소 ~500 thinking 토큰을 사용하므로
         # max_output_tokens가 없는 JSON 호출에는 안전 하한을 적용한다.
+        # 호출자가 thinking_level 또는 thinking_budget을 명시한 경우 해당 값을 존중한다.
+        caller_set_thinking = thinking_raw is not None and (
+            "thinking_level" in thinking_raw or "thinking_budget" in thinking_raw
+        )
         if thinking_raw is None:
             thinking_raw = {"thinking_budget": 0} if is_json_response else {"thinking_level": "LOW"}
-        elif is_json_response and "thinking_budget" not in thinking_raw:
+        elif is_json_response and not caller_set_thinking:
             thinking_raw = {"thinking_budget": 0}
 
         if is_json_response and not cfg.get("max_output_tokens"):
