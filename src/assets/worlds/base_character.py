@@ -7,6 +7,7 @@
 # Classes
 #   - Character : 캐릭터 베이스. self.cfg(DEFAULT_CFG+SCENARIO_OVERRIDES 병합) 기반
 #                 cfg-driven build_schema 기본 구현 + build_relationship 인터페이스.
+#                 aliases/name/id 기반 getAlias() 감지 맵 기본 구현을 제공한다.
 #                 손글씨 캐릭터는 build_schema 를 오버라이드하거나, super() 호출 후
 #                 커스텀 노드/schedule 을 덧붙인다 (world_editor 마이그레이션 타깃).
 #
@@ -127,6 +128,15 @@ class Character:
         """scenario_id에 맞는 DEFAULT_CFG와 SCENARIO_OVERRIDES를 병합합니다."""
         self.scenario_id = scenario_id
         self.cfg = _merge_dict(self.DEFAULT_CFG, self.SCENARIO_OVERRIDES.get(scenario_id or "default", {}))
+
+    def getAlias(self) -> dict[str, str]:
+        """캐릭터 이름/별칭/ID를 현재 캐릭터 ID로 매핑해 NPC 감지용 dict를 반환합니다."""
+        aliases = [self.name, self.id, *list(self.aliases or [])]
+        return {
+            str(alias): self.id
+            for alias in aliases
+            if str(alias).strip()
+        }
 
     def build_schema(self, conn: kuzu.Connection) -> None:
         """self.cfg 기반으로 Character + 4-tier 프로파일 노드를 생성합니다.
