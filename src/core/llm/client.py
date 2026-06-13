@@ -23,7 +23,7 @@ from types import SimpleNamespace
 from google import genai
 from google.genai import types
 
-from src.config import GOOGLE_PROJECT_ID as PROJECT_ID
+from src.config import GOOGLE_CLOUD_LOCATION, GOOGLE_PROJECT_ID as PROJECT_ID
 
 _LLM_TIMEOUT_SEC = 90  # 비스트리밍 JSON 호출 최대 대기 시간
 
@@ -38,7 +38,7 @@ _CONTENT_OFF_SAFETY_SETTINGS = [
 _client = genai.Client(
     vertexai=True,
     project=PROJECT_ID,
-    location="global",
+    location=GOOGLE_CLOUD_LOCATION,
 )
 
 

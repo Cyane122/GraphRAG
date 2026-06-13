@@ -9,7 +9,7 @@
 #   - update_dynamic_state(char_id: str, updates: dict) -> None : DynamicState 노드 속성 공통 업데이트
 #   - update_relationship_affinity(char_a: str, char_b: str, delta: int) -> None : 호감도 공통 업데이트 (양방향, ±100 상한)
 #   - _compact_relationship_status(value: object) -> str | None : Remove scene-action detail from RELATIONSHIP current_status.
-#   - move_location(char_id: str, new_loc_id: str) -> None : 캐릭터 장소 이동 공통 로직
+#   - move_location(char_id: str, new_loc_id: str) -> bool : 캐릭터 장소 이동 (성공 True / 대상 위치 없음 False)
 #   - advance_cycle_day(char_id: str, days: int) -> None : 생리/바이오리듬 일자 공통 업데이트
 #   - get_in_universe_time() -> str : GlobalState에서 현재 인게임 시간을 YYYYMMDD_HHMM 형식으로 반환
 #   - load_graph_info() -> dict : 그래프 현재 상태(전역·캐릭터·장소·관계)를 dict로 반환
@@ -456,8 +456,11 @@ async def update_relationship_fields(char_a: str, char_b: str, updates: dict) ->
         )
 
 
-async def move_location(char_id: str, new_loc_id: str) -> None:
-    """캐릭터 장소 이동 공통 로직. LOCATED_AT 관계 + DynamicState.location_id 양쪽을 동기화한다."""
+async def move_location(char_id: str, new_loc_id: str) -> bool:
+    """캐릭터 장소 이동 공통 로직. LOCATED_AT 관계 + DynamicState.location_id 양쪽을 동기화한다.
+
+    대상 Location이 없으면 아무 변경 없이 False를 반환해 호출처가 실패를 인지하게 한다. 성공 시 True.
+    """
     async with async_driver.session() as session:
         check_rec = await session.run(
             "MATCH (l:Location {id: $new_loc_id}) RETURN l.id AS id",
@@ -465,7 +468,7 @@ async def move_location(char_id: str, new_loc_id: str) -> None:
         )
         if not await check_rec.single():
             print(f"[move_location] invalid location ignored: {new_loc_id}")
-            return
+            return False
 
         await session.run("""
             MATCH (c:Character {id: $char_id})-[old:LOCATED_AT]->(:Location)
@@ -484,6 +487,8 @@ async def move_location(char_id: str, new_loc_id: str) -> None:
             """, char_id=char_id, new_loc_id=new_loc_id)
         except Exception as _loc_sync_err:
             print(f"[move_location] DynamicState.location_id sync skipped: {_loc_sync_err}")
+
+    return True
 
 
 async def advance_cycle_day(char_id: str, days: int) -> None:

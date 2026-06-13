@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Graph 기반 롤플레이 시뮬레이션 엔진. Chainlit UI + Kuzu 그래프 DB + Gemini LLM.
+Graph 기반 롤플레이 시뮬레이션 엔진. 웹 UI(정적 `frontend/app/` + FastAPI) + Kuzu 그래프 DB + Gemini/Claude LLM.
 
 ---
 
@@ -22,10 +22,9 @@ Graph 기반 롤플레이 시뮬레이션 엔진. Chainlit UI + Kuzu 그래프 D
 ## Run
 
 ```bash
-chainlit run app.py                              # 메인 앱 실행
+python -m src.ui.web_app                         # 메인 웹 UI (FastAPI, 포트 8000)
 python -m src.core.database.schema_builder --world_id <world_id>  # 월드 Kuzu 스키마 초기화
 python -m src.tools.world_editor                 # world_editor FastAPI 서버 (포트 8001)
-python -m src.ui.web_app                         # standalone web UI (포트 8000)
 ```
 
 `cp example.env .env` → 크리덴셜 채우기. 테스트·린트 없음.
@@ -47,17 +46,20 @@ python -m src.ui.web_app                         # standalone web UI (포트 800
 | `MODEL_COMPLEX_UPDATER` | 다중 노드 갱신 (temp=0) |
 | `MODEL_EVENT_CREATOR` | 이벤트 생성 + 소문 전파 |
 | `MODEL_PRO_UPDATER` | 판단 기반 업데이트 |
-| `MODEL_DIRECTOR` | Director beat 생성 (Pro) |
 | `MODEL_MANAGER_PLANNER` | integrated 플래너용 |
 | `MODEL_TURN_EXTRACTOR` | 턴 추출기용 |
 | `MODEL_OUTPUT_REPAIR` | 출력 금지어 수정 (Flash) |
 | `MODEL_EMBEDDER` | HF 임베딩 모델 (KURE-v1, 1024-dim) |
 | `EMBEDDING_DIM` | 임베딩 차원 |
 | `GOOGLE_PROJECT_ID` | Vertex AI 프로젝트 ID |
+| `GOOGLE_CLOUD_LOCATION` | Google GenAI Vertex 기본 리전 (기본 `global`) |
 | `GOOGLE_APPLICATION_CREDENTIALS` | 서비스 계정 JSON 경로 |
+| `ANTHROPIC_API_KEY` | Claude Actor 모델용 Anthropic direct API key |
+| `ANTHROPIC_CLAUDE_SONNET_MODEL` | Sonnet UI 옵션에 매핑할 Anthropic 모델 ID |
+| `ANTHROPIC_CLAUDE_OPUS_4_6_MODEL` | Opus 4.6 UI 옵션에 매핑할 Anthropic 모델 ID |
+| `ANTHROPIC_CLAUDE_OPUS_4_7_MODEL` | Opus 4.7 UI 옵션에 매핑할 Anthropic 모델 ID |
+| `ANTHROPIC_CLAUDE_OPUS_4_8_MODEL` | Opus 4.8 UI 옵션에 매핑할 Anthropic 모델 ID |
 | `HF_TOKEN` | HuggingFace 토큰 |
-| `OPENROUTER_API_KEY` | OpenRouter 폴백 키 |
-| `CHAINLIT_AUTH_SECRET` | Chainlit 인증 시크릿 |
 
 ---
 
@@ -68,14 +70,14 @@ python -m src.ui.web_app                         # standalone web UI (포트 800
 - 월드별 스키마를 `schema_builder`로 초기화 (1회)
 - 스레드(채팅방)별 독립 DB: `data/<world_id>/<thread_id>/`
 - 드라이버: `src/core/database/driver.py` (KuzuAsyncDriver + ProxyDriver)
-- 스레드 메타: JSON → `data/threads/<id>.json` (`src/core/data_layer/json_data_layer.py`)
+- 스레드 메타: JSON → `data/threads/<id>.json` (`src/ui/web_app/storage.py`)
 
 ### 턴 파이프라인
 
 ```
 사용자 입력
 → InputRouter    /help /debug, 빈 입력, OOC 전용, 리롤/수정/삭제 분기
-→ DeferredCommit 이전 턴 pending DB write 적용 (src/ui/deferred_commit.py)
+→ DeferredCommit 이전 턴 pending DB write 적용 (src/ui/web_app/commit.py)
 → OOCHandler     *...* → 즉시 DB 반영 후 조기 종료 (OOC 전용 입력)
 → Manager Pipeline (src/agents/manager/pipeline.py)
     ├ world bootstrap + global state (planning.py)
@@ -83,8 +85,7 @@ python -m src.ui.web_app                         # standalone web UI (포트 800
     ├ personal fact extract          (simulation/systems/personal_facts.py)
     ├ integrated/legacy context plan (integrated_planner.py, context/planner.py)
     ├ core ctx: char/memory/event/relation  (core_context.py)
-    ├ dynamic ctx: goal/item/secret/social  (world_context.py)
-    └ Director (병렬): beat sequence LLM    (src/agents/director.py)
+    └ dynamic ctx: goal/item/secret/social  (world_context.py)
 → PromptBuilder   Fixed+Genre+Dynamic 조합 (prompt_factory/builder.py)
 → Actor           스트리밍 응답 (src/agents/actor.py)
 → OutputGuard     금지어 검사 (src/ui/output_guard.py)
@@ -120,13 +121,12 @@ reroll 시 pending 폐기, DB 무변경.
 
 ```
 GraphRAG/
-├── app.py                          # Chainlit 진입점: 세션 초기화/재개/라우팅
+├── frontend/                       # 정적 웹 클라이언트 (app/ chat UI, world_editor.html, ppt_viewer.html)
 ├── src/
 │   ├── config.py                   # 환경변수 중앙화 (모든 모듈이 여기서 import)
 │   │
 │   ├── agents/                     # LLM 에이전트 + 프롬프트 조립
-│   │   ├── actor.py                # Gemini Actor 호출 + 스트리밍
-│   │   ├── director.py             # Director LLM — 씬 beat sequence 생성
+│   │   ├── actor.py                # Actor 호출 + 스트리밍
 │   │   ├── resolver.py             # 욕구 초과 시 NPC 자율 행동 결정
 │   │   │
 │   │   ├── context/                # 컨텍스트 플래닝 (DB → 프롬프트 변환 전)
@@ -158,7 +158,6 @@ GraphRAG/
 │   │       ├── prompt_sections.py  # 섹션 단위 렌더러
 │   │       ├── ooc_handler.py      # *...* OOC 파싱 + DB 반영
 │   │       ├── checklist.py        # 체크리스트 프롬프트 섹션
-│   │       ├── director_prompt.py  # Director system/dynamic 프롬프트 조립
 │   │       ├── usernote.py         # 유저 노트 블록 생성/로드
 │   │       └── prompts/            # Markdown 프롬프트 파일
 │   │           ├── core/           # 핵심 정책 프롬프트
@@ -182,8 +181,6 @@ GraphRAG/
 │   ├── core/                       # 인프라 레이어
 │   │   ├── commit_artifacts.py     # 커밋 단위 아티팩트 저장
 │   │   ├── state_normalization.py  # 상태 정규화 유틸
-│   │   ├── data_layer/
-│   │   │   └── json_data_layer.py  # JSON 기반 Chainlit DataLayer (threads/ 저장)
 │   │   ├── database/
 │   │   │   ├── driver.py           # KuzuAsyncDriver + ProxyDriver 싱글톤
 │   │   │   ├── helpers.py          # CRUD helpers (update_dynamic_state 등)
@@ -194,7 +191,7 @@ GraphRAG/
 │   │   ├── embedding/
 │   │   │   └── encoder.py          # HF KURE-v1 임베딩 (embed_async)
 │   │   ├── llm/
-│   │   │   └── client.py           # Gemini Vertex AI 래퍼 (get_model, extract_json_from_llm)
+│   │   │   └── client.py           # Vertex AI LLM 래퍼 (get_model, extract_json_from_llm)
 │   │   └── logging/
 │   │       ├── conversation_logger.py # 턴별 대화 로그 (append_turn)
 │   │       └── prompt_debug.py     # 프롬프트 fingerprint / 디버그 출력
@@ -261,26 +258,19 @@ GraphRAG/
 │   │       ├── source_edit.py      # 소스 파일 편집 (AST 안전 쓰기)
 │   │       └── worlds.py           # 세계관 목록 / 로드
 │   │
-│   └── ui/                         # Chainlit UI 레이어
-│       ├── actor_stream.py         # Actor 응답 스트리밍 처리
+│   └── ui/                         # 웹 UI 지원 레이어 (FastAPI web_app + 그래프 뷰어 + 공유 유틸)
 │       ├── debug_graph.py          # 디버그 그래프 표시
-│       ├── deferred_commit.py      # Pending → DB 확정 (commit_pending_if_any)
 │       ├── graph_loader.py         # 그래프 데이터 로드
 │       ├── graph_models.py         # 그래프 UI 모델
 │       ├── graph_server.py         # 그래프 서버 연동
 │       ├── graph_writer.py         # 그래프 데이터 쓰기
 │       ├── history.py              # 대화 history 구성
 │       ├── input_routing.py        # 사용자 입력 → TurnInputType 분기
-│       ├── kakao_panel.py          # 카카오톡 패널 UI
 │       ├── output_guard.py         # Actor 출력 금지어 검사
 │       ├── output_repair.py        # 금지어 위반 응답 수정
 │       ├── pending_store.py        # PendingCommit 임시 저장소
-│       ├── response_editing.py     # 응답 수정/삭제 처리
 │       ├── session_models.py       # 세션 Pydantic 모델
-│       ├── session_world.py        # 세션 월드 상태 관리
 │       ├── social_media_settings.py # SNS 설정 UI
-│       ├── status.py               # 상태 표시 UI
-│       ├── time_state.py           # 인게임 시간 상태
 │       ├── turn_debug.py           # 턴 디버그 출력
 │       └── web_app/                # Standalone FastAPI web UI (포트 8000)
 │           ├── app.py              # FastAPI 라우트
@@ -315,3 +305,22 @@ GraphRAG/
 - **Thread 격리**: 스레드 간 DB 쿼리 금지. `session.py`로 드라이버 범위 관리.
 - **기억 왜곡은 의도된 동작**: NPC 성격 방향으로 기억이 왜곡됨. 버그 아님.
 - **config.py 경유**: 환경변수는 `src/config.py`에서만 읽는다. 다른 파일에서 `os.getenv` 직접 호출 금지.
+
+---
+
+## Codex Review Workflow
+
+After implementing non-trivial changes, especially multi-file edits, refactors, backend logic, auth, database code, or streaming behavior:
+
+1. Run `/codex:review --background`.
+2. Continue with local validation while Codex reviews.
+3. Before finalizing, run `/codex:status` and `/codex:result`.
+4. Address any serious Codex findings before claiming the task is complete.
+
+For risky design decisions, run:
+
+`/codex:adversarial-review --background challenge the implementation and look for simpler or safer alternatives`
+
+For failing tests or unclear bugs, delegate investigation with:
+
+`/codex:rescue --background investigate the issue and propose the smallest safe fix`

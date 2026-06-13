@@ -14,11 +14,7 @@
 #   - render_state_line(dyn_state: dict, world_config: dict | None) -> str : 상태 한 줄 렌더링
 #   - clean_prompt_dict(data: dict) -> dict : 내부 키·null 값 제거
 #   - join_rendered_context(rendered_context: dict[str, str]) -> str : 동적 컨텍스트 블록 결합
-#   - get_field_type(section: str, key: str, field_types: dict | None) -> str : 필드의 분류 타입 반환 (appearance/personality/other)
-#   - filter_blob_for_actor(blob: dict, section: str, field_types: dict | None) -> dict : Actor용 필드만 반환 (appearance + other)
-#   - filter_blob_for_director(blob: dict, section: str, field_types: dict | None) -> dict : Director용 필드만 반환 (personality + other)
 #   - render_active_characters_section(char_data: dict, user_data: dict, npcs: list[dict], scene_types: list[str]) -> str : 현재 등장 캐릭터 프로필 렌더링 (전체 필드)
-#   - render_expressive_characters_section(char_data: dict, user_data: dict, npcs: list[dict], scene_types: list[str], field_types: dict | None) -> str : Director 사용 시 Actor용 외형/표현 필드만 렌더링
 #   - render_character_section(char_data: dict, scene_types: list[str]) -> str : 캐릭터 프로필 렌더링
 #   - render_npc_section(npcs: list[dict], char_name: str) -> str : 보조 NPC 렌더링
 #   - render_relationship_section(relationship: dict) -> str : 관계 레코드 렌더링
@@ -43,49 +39,6 @@ _DEFAULT_STATE_FIELDS: list[tuple[str, str, frozenset]] = [
     ("outfit", "outfit", frozenset({"", None})),
     ("injury_marks", "injury", frozenset({"없음", "", None})),
 ]
-
-# ── 필드 타입 분류 헬퍼 ────────────────────────────────────────────────
-
-# 섹션 기본 타입: 명시적 분류가 없을 때 적용
-_SECTION_DEFAULT_TYPE: dict[str, str] = {
-    "static": "appearance",
-    "personality": "personality",
-    "info": "other",
-    "state": "appearance",    # state는 대부분 가시적 외형 → appearance default
-}
-
-# state 필드 중 하드코딩된 personality 분류 (world field_types 미설정 시 폴백)
-_HARDCODED_STATE_PERSONALITY: frozenset[str] = frozenset({
-    "mood", "mental_condition", "stress_level", "libido", "arousal_level",
-})
-
-
-def get_field_type(section: str, key: str, field_types: dict | None) -> str:
-    """필드의 분류 타입을 반환한다: 'appearance' | 'personality' | 'other'.
-
-    우선순위: world field_types 설정 → state 하드코딩 폴백 → 섹션 기본값
-    """
-    custom = (field_types or {}).get(section, {}).get(key)
-    if custom in ("appearance", "personality", "other"):
-        return custom
-    if section == "state" and key in _HARDCODED_STATE_PERSONALITY:
-        return "personality"
-    return _SECTION_DEFAULT_TYPE.get(section, "other")
-
-
-def filter_blob_for_actor(blob: dict, section: str, field_types: dict | None) -> dict:
-    """Actor용: appearance + other 필드만 반환한다 (personality 제외)."""
-    if not blob:
-        return {}
-    return {k: v for k, v in blob.items() if get_field_type(section, k, field_types) != "personality"}
-
-
-def filter_blob_for_director(blob: dict, section: str, field_types: dict | None) -> dict:
-    """Director용: personality + other 필드만 반환한다 (appearance 제외)."""
-    if not blob:
-        return {}
-    return {k: v for k, v in blob.items() if get_field_type(section, k, field_types) != "appearance"}
-
 
 # ----------------
 # Prompt file helpers
@@ -236,96 +189,6 @@ def render_active_characters_section(
     if not character_blocks:
         return ""
     return "<active_characters>\n" + "\n\n---\n\n".join(character_blocks) + "\n</active_characters>"
-
-
-def render_expressive_characters_section(
-    char_data: dict,
-    user_data: dict,
-    npcs: list[dict],
-    scene_types: list[str],
-    field_types: dict | None = None,
-) -> str:
-    """Director 사용 시 Actor용 외형/표현 필드만 렌더링한다.
-
-    personality·behavioral dynamic_state(mood/mental/stress)는 제외하고
-    static_profile·dynamic_information·outfit 등 외형 필드만 포함한다.
-    field_types가 있으면 세밀한 per-field 분류를 적용한다.
-    """
-    character_blocks: list[str] = []
-    seen_ids: set[str] = set()
-
-    for role, data in (
-        ("PC / POV candidate", user_data),
-        ("Primary NPC", char_data),
-    ):
-        block = _render_expressive_character_markdown(role, data, scene_types, field_types)
-        char_id = str(data.get("id") or data.get("name") or "").strip()
-        if block and char_id not in seen_ids:
-            character_blocks.append(block)
-            seen_ids.add(char_id)
-
-    for npc in npcs:
-        char_id = str(npc.get("id") or npc.get("name") or "").strip()
-        if char_id in seen_ids:
-            continue
-        block = _render_expressive_character_markdown(
-            "Present NPC", _normalize_npc_prompt_data(npc), scene_types, field_types
-        )
-        if block:
-            character_blocks.append(block)
-            seen_ids.add(char_id)
-
-    if not character_blocks:
-        return ""
-    return "<active_characters>\n" + "\n\n---\n\n".join(character_blocks) + "\n</active_characters>"
-
-
-def _expressive_dynamic_state(state: dict | None, field_types: dict | None = None) -> dict | None:
-    """DynamicState에서 Actor용 외형/표현 필드만 추출한다 (Director 사용 시).
-
-    _filter_dynamic_state로 admin 필드를 제거한 뒤, field_types 기반으로
-    appearance+other 필드만 남긴다.
-    """
-    filtered = _filter_dynamic_state(state)
-    if not filtered:
-        return filtered
-    result = filter_blob_for_actor(filtered, "state", field_types)
-    return result or None
-
-
-def _render_expressive_character_markdown(
-    role: str,
-    data: dict,
-    scene_types: list[str],
-    field_types: dict | None = None,
-) -> str:
-    """Render one character's expressive (Actor-only) fields as Markdown.
-
-    각 섹션을 field_types 기준으로 필터링해 appearance+other 필드만 포함한다.
-    """
-    if not data:
-        return ""
-    name = str(data.get("name") or data.get("id") or "?")
-    char_id = str(data.get("id") or "")
-    title = f"## {role}: {name}" + (f" ({char_id})" if char_id and char_id != name else "")
-    sections: list[str] = [title]
-
-    raw_static = data.get("static_profile")
-    filtered_static = filter_blob_for_actor(raw_static, "static", field_types) if raw_static else raw_static
-    _append_markdown_section(sections, "Static Profile", filtered_static)
-
-    raw_info = data.get("dynamic_information")
-    filtered_info = filter_blob_for_actor(raw_info, "info", field_types) if raw_info else raw_info
-    _append_markdown_section(sections, "Dynamic Information", filtered_info)
-
-    _append_markdown_section(sections, "Dynamic State", _expressive_dynamic_state(data.get("dynamic_state"), field_types))
-    if "intimate" in scene_types:
-        _append_markdown_section(sections, "Intimate Profile", data.get("intimate_profile"))
-    if "workplace" in scene_types:
-        _append_markdown_section(sections, "Workplace Profile", data.get("workplace_profile"))
-    _append_markdown_section(sections, "Speech Profiles", data.get("speech_profiles"))
-
-    return "\n\n".join(sections)
 
 
 def render_character_section(char_data: dict, scene_types: list[str]) -> str:

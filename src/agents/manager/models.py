@@ -58,6 +58,7 @@ class CoreContext:
     ambient_npcs: list[dict]
     scene_state: dict
     context_plan: dict
+    pc_in_scene: bool = False
 
 
 @dataclass

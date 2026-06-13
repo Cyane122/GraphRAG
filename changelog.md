@@ -574,3 +574,64 @@
   - 혼합 입력 레이블링이 원문 순서를 보존하도록 수정.
   - world별 CoT append hook과 통합 blacklist 조립 경로를 보강.
 
+## 2026-06-13
+전체 감사(프론트/백엔드/3-에이전트) 기반 개선. Chainlit deprecated → 지원 스택은 정적 `frontend/app/` + `src/ui/web_app/`.
+
+- [정리] **DeepSeek Actor 모델 전면 제거** (API 키 미보유로 미사용)
+  - `src/ui/web_app/actor.py`: DeepSeek 스트리밍 경로·`_is_deepseek_model`·`_openai_messages`·`httpx` import 제거.
+  - `src/ui/web_app/models.py`: `SUPPORTED_ACTOR_MODELS`/별칭에서 DeepSeek 제거 (Gemini 3종 + Claude 4종만 유지).
+  - `frontend/app/app.js`, `src/config.py`, `.env`/`example.env`, `CLAUDE.md`/`AGENTS.md` Env 표 동기화.
+
+- [정리] **미사용 환경변수·레거시 정리**
+  - `.env`: 미사용 `OPENROUTER_API_KEY`, `MODEL_CLASSIFIER_FALLBACK` 제거.
+  - `example.env`: 위 항목 + 레거시 `NEO4J_*`(현재 Kuzu 사용) + DeepSeek 제거.
+  - `readme.md`: `client.py` 설명을 `Gemini / Vertex AI`로 정정(OpenRouter 미사용).
+
+- [버그] **web_app 상태 정합성·예외 처리 보강 (Phase 0)**
+  - `service.py:activate_variant`: variant 활성화 시 미커밋 `pending_commit.ai_response` 동기화 — 다음 턴 Updater가 표시된 내용 기준으로 그래프를 갱신하도록.
+  - `web_app/app.py`: reroll/tool/edit 엔드포인트의 `RuntimeError`를 HTTP 500 `{detail}`로 표준화.
+  - 프론트 미호출 라우트 `POST /conversations/{id}/world` + `WorldSelectionRequest` 제거.
+
+- [프론트] **정적 클라이언트 dead code·UX 정리 (Phase 0)**
+  - `app.js`: 존재하지 않는 DOM 참조(`activeConversationTitle/Preview`)와 연쇄 고아(`makePreview`/`stripMarkdownForPreview`), 로드 시 빈 결과를 도는 죽은 `.conversation-item` 리스너 제거.
+  - 차단형 `alert()` 6곳을 비차단 `showToast()`로 대체(+`.app-toast` CSS). 삭제 확인용 `confirm()`은 유지.
+
+- [버그] **그래프 위치 정합성 (Phase 1)**
+  - B1 동행 NPC 이동: `commit_time_plan(companion_ids=...)` + `effects.py`가 scene NPC 전달. 단 `_present_companion_ids()`로 현재 PC와 실제 동석 중인 NPC만 이동(언급만 된 NPC 텔레포트 방지).
+  - B2 NPC 퇴장 추적: `multi_character.py`가 `exited_character_ids` 추출 → 퇴장 NPC를 상위 위치(`PART_OF` parent)로 이동 → 다음 턴 presence에서 제외.
+  - B3 위치 정합화: `time_plan.reconcile_location_with_prose` + `web_app/commit.py` `location_reconcile` 단계 신설. Actor 산문 헤더 장소가 알려진 위치와 정확 매칭되고 현재와 다를 때만 산문 우선 보정(모호하면 Manager 값 유지).
+  - B6 `move_location`이 성공/실패(`bool`)를 반환 → `move_character_location`이 무효 위치에 `ValueError` → 엔드포인트 400.
+
+- [버그] **Updater 충실도 (Phase 2)**
+  - B4 `updater.process_actor_response`가 상태 추출 전에 `<analyze>` CoT 블록을 제거하도록 수정 — 이전에는 `[:N]` 절단이 긴 CoT에 잠식되어 정작 산문의 상태 변화를 놓칠 수 있었음. 주 updater 입력 캡 2000→4000(이제 순수 산문 기준).
+  - B12 `multi_character._personal_space_is_grounded` 강화 — `{char_id}_house` 자동생성을 목적지격(에/으로/로, 출발격 '에서' 제외) + 이동 동사 조합일 때만 인정. 소유격('~의 방')·출발격('방에서')·단순 위치('방에 있다') 언급으로는 phantom 위치를 만들지 않음.
+
+- [기능] **Chainlit 전용 기능 web_app 이식 (Phase 3, B7)**
+  - 임신/유기 시스템이 만든 OOC를 `commit_pending_web`가 `ConversationState.pending_ooc`에 저장 → 다음 턴 `service.append_user_and_stream`가 입력 앞에 주입(표시 메시지는 원본 유지, 파싱·생성 입력에만 반영).
+  - N(10)턴마다 대화를 타임라인으로 압축하는 narrative 압축을 `commit_pending_web`의 `narrative` 단계로 이식(`narrative_turns` 누적 → `compress_to_narrative_log`). Chainlit은 세션+백그라운드였으나, web_app은 상태 영속 + `ActiveConversation` 내 동기 실행(드라이버 컨텍스트 수명 안전).
+  - `ConversationState`에 `pending_ooc`, `narrative_turns` 필드 추가(JSON 영속 — 재시작에도 유지).
+
+- [결정] 호감도 trust 게이트(trust<90이면 양의 affinity 증가 차단)는 의도된 설계로 확정(수정하지 않음).
+
+## 2026-06-14
+Chainlit 제거(Phase 4) + Codex 리뷰 지적 반영.
+
+- [삭제] **Chainlit UI 제거 (Phase 4)**
+  - 루트 `app.py`(Chainlit 진입점), Chainlit 전용 `src/ui/{actor_stream, deferred_commit, response_editing, kakao_panel, status, session_world, time_state}.py`, `src/core/data_layer/`(JsonDataLayer), `.chainlit/`, `chainlit.md` 삭제.
+  - `.env`·CLAUDE.md·AGENTS.md에서 `CHAINLIT_AUTH_SECRET` 제거. 두 문서의 Run/Env/턴 파이프라인/디렉토리 맵·프로젝트 맵을 web_app(정적 `frontend/app/` + `src/ui/web_app/`) 기준으로 갱신.
+  - 공유 모듈(graph_loader/graph_models/graph_writer/graph_server/debug_graph/pending_store/input_routing/output_guard/output_repair/session_models/social_media_settings/turn_debug/history)은 보존. 삭제 전 import 참조 전수 검사 + 전체 `compileall` + 공유 모듈 import로 web_app 무결성 확인.
+  - 삭제로 깨진 smoke 스크립트 정리: `scripts/smoke_arch_stabilization.py`는 `recover_missing_analyze_prose` import를 `src.ui.web_app.actor`로 repoint하고 제거된 `_extract_prose` 검사를 삭제(실행 통과 확인). Chainlit 전용 `tests/smoke_refactor_pending.py`(app/deferred_commit/response_editing/session_world 테스트)는 obsolete로 삭제.
+  - 잔여 과제: 일부 공유 인프라(driver.py/pending_store.py/debug_graph.py/social/graph.py/needs/traits.py)가 여전히 `import chainlit`을 하므로 chainlit 패키지 의존성 자체는 유지 — 완전 decoupling은 후속.
+
+- [버그] **Codex 리뷰 지적 수정 (Phase 0–3 회귀)**
+  - `web_app/service.py:append_user_and_stream`: 직전 pending 커밋→OOC 주입/파싱→생성 전체를 try/finally(store.save)로 감싸 어느 단계 실패에도 상태가 영속화(커밋 후 `pending_commit=None` 미저장 → 재실행 방지). `pending_ooc`는 `parse_ooc`가 DB에 즉시 반영하므로 **파싱 성공 직후** 소비 — 이중 반영·유실 모두 방지.
+  - `multi_character.py`: `exited_character_ids`만 있고 `character_updates`가 비면 조기 return으로 퇴장 처리가 누락되던 버그 수정. `_personal_space_is_grounded`가 "A는 B의 방에 들어갔다"를 A 자택으로 오인하던 것 수정(중간 소유격 '의' 차단).
+  - `web_app/commit.py:_maybe_compress_narrative`: 압축 성공 시에만 narrative 버퍼를 비우도록 변경(실패 시 다음 턴 재시도, 버퍼 유실 방지).
+
+- [정리] **백로그 정리 (Phase 5)**
+  - B10 reroll 중복 저장 창 제거: `_collect_generation(persist=False)` 추가 — reroll이 새 응답을 원본에 합치고 중복 메시지를 제거한 뒤 한 번만 저장하도록 해, 중간 저장이 디스크에 중복 메시지를 남기던 창을 제거.
+  - B6 잔여: `move_character_location`이 무효 *캐릭터 id*도 ValueError→400으로 표면화(`_character_exists` 추가). 기존엔 위치만 검증해 무효 캐릭터는 silent no-op였음.
+  - B15: `app.js:loadWorldProfiles`를 try/catch로 감싸 `/api/worlds` 실패 시 토스트로 알림(하드코딩 폴백 유지, 앱 초기화 중단 방지).
+  - Chainlit 삭제 후속: `pipeline.py`의 orphan `manager_effects["kakao_panel_refresh"]` write 제거(리더였던 루트 app.py가 삭제되어 죽은 write).
+  - 보류(후속): world_editor 모바일 레이아웃, 무예외 스트림 조기종료 감지, 공유 인프라 5파일의 chainlit 완전 decoupling. B20(claude opus fallback 분기)은 미래 버전 방어용이라 유지.
+

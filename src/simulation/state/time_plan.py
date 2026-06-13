@@ -5,9 +5,11 @@
 #
 # Functions
 #   - build_time_plan(plan: dict, base_time: datetime) -> dict : Build a DB-write-ready time plan
-#   - commit_time_plan(time_plan: dict, pc_id: str, npc_id: str) -> datetime : Commit a prepared time plan to the DB
+#   - commit_time_plan(time_plan: dict, pc_id: str, npc_id: str, companion_ids: list[str] | None = None) -> datetime : Commit a prepared time plan to the DB
 #   - apply_time_updates(plan: dict, base_time: datetime, pc_id: str, npc_id: str) -> datetime : Build and commit a time plan
+#   - reconcile_location_with_prose(actor_response: str, pc_id: str, npc_id: str, companion_ids: list[str] | None = None) -> str | None : Override committed location when Actor prose header disagrees
 # ================================
+import re
 from datetime import datetime, timedelta
 
 from src.core.database import async_driver, ensure_location, move_location
@@ -112,7 +114,111 @@ def _esc(value: str) -> str:
     return value.replace("\\", "\\\\").replace("'", "\\'")
 
 
-async def commit_time_plan(time_plan: dict, pc_id: str, npc_id: str) -> datetime:
+_PROSE_HEADER_LOCATION_RE = re.compile(r"\*\*[^*\n]*?\d{1,2}\s*분\s*,\s*([^*\n]+?)\s*\*\*")
+
+
+def _parse_prose_header_location(actor_response: str) -> str | None:
+    """Actor 산문 첫머리 헤더(**...분, 장소**)에서 장소명을 추출한다. 없으면 None."""
+    match = _PROSE_HEADER_LOCATION_RE.search(actor_response or "")
+    if not match:
+        return None
+    return match.group(1).strip()
+
+
+async def _fetch_location_name_index() -> tuple[dict[str, str], str | None]:
+    """(이름·id 소문자 → location_id) 매핑과 현재 GlobalState.currentLocationId를 반환한다."""
+    name_to_id: dict[str, str] = {}
+    async with async_driver.session() as session:
+        loc_result = await session.run("MATCH (l:Location) RETURN l.id AS id, l.name AS name")
+        for row in await loc_result.fetch_all():
+            data = dict(row)
+            loc_id = data.get("id")
+            if not loc_id:
+                continue
+            name_to_id.setdefault(str(loc_id).lower(), str(loc_id))
+            name = str(data.get("name") or "").strip().lower()
+            if name:
+                name_to_id.setdefault(name, str(loc_id))
+        gs_rec = await session.run(
+            "MATCH (gs:GlobalState {id: 'singleton'}) RETURN gs.currentLocationId AS loc"
+        )
+        gs_row = await gs_rec.single()
+    current_id = dict(gs_row).get("loc") if gs_row else None
+    return name_to_id, (str(current_id) if current_id else None)
+
+
+async def reconcile_location_with_prose(
+    actor_response: str,
+    pc_id: str,
+    npc_id: str,
+    companion_ids: list[str] | None = None,
+) -> str | None:
+    """Actor 산문 헤더의 장소가 Manager 사전판정과 다르면 산문 우선으로 위치를 보정한다.
+
+    헤더 장소명이 알려진 Location과 정확히 매칭되고 현재 currentLocationId와 다를 때만
+    GlobalState와 등장 캐릭터(PC·주NPC·동행) 위치를 보정한다. 모호/미상이면 Manager 값 유지(보수적).
+    반환: 보정된 location_id (보정 없으면 None).
+    """
+    header_name = _parse_prose_header_location(actor_response)
+    if not header_name:
+        return None
+
+    name_to_id, current_id = await _fetch_location_name_index()
+    if not name_to_id:
+        return None
+
+    # 헤더 전체 이름 또는 첫 콤마 이전 토큰을 알려진 Location 이름과 정확 매칭한다.
+    resolved_id: str | None = None
+    for candidate in (header_name, header_name.split(",")[0].strip()):
+        resolved_id = name_to_id.get(candidate.lower())
+        if resolved_id:
+            break
+
+    if not resolved_id or resolved_id == current_id:
+        return None
+
+    async with async_driver.session() as session:
+        await session.run(
+            f"MATCH (gs:GlobalState {{id: 'singleton'}}) SET gs.currentLocationId = '{_esc(resolved_id)}'"
+        )
+    present_companions = await _present_companion_ids(pc_id, companion_ids or [])
+    move_targets: list[str] = []
+    for char_id in (pc_id, npc_id, *present_companions):
+        if char_id and char_id not in move_targets:
+            move_targets.append(char_id)
+    for char_id in move_targets:
+        await move_location(char_id, resolved_id)
+    print(f"[LocationReconcile] prose overrides plan: {current_id} -> {resolved_id} ('{header_name}')")
+    return resolved_id
+
+
+async def _present_companion_ids(reference_char_id: str, companion_ids: list[str]) -> list[str]:
+    """동행 후보 중 reference 캐릭터와 현재 같은 위치에 있는(=실제 동석 중인) NPC만 남긴다.
+
+    scene NPC 집합에는 '언급되었지만 다른 장소에 있는' 인물도 포함될 수 있어, 그런 NPC가
+    그룹 이동에 끌려가지 않도록 현재 위치 기준으로 필터링한다. 순서는 입력 순서를 유지한다.
+    """
+    if not reference_char_id or not companion_ids:
+        return []
+    async with async_driver.session() as session:
+        rec = await session.run(
+            "MATCH (c:Character {id: $cid})-[:LOCATED_AT]->(l:Location) RETURN l.id AS id",
+            cid=reference_char_id,
+        )
+        row = await rec.single()
+        reference_loc = dict(row).get("id") if row else None
+        if not reference_loc:
+            return []
+        result = await session.run(
+            "MATCH (c:Character)-[:LOCATED_AT]->(l:Location {id: $loc}) RETURN c.id AS id",
+            loc=reference_loc,
+        )
+        rows = await result.fetch_all()
+    present_at_loc = {dict(r).get("id") for r in rows if dict(r).get("id")}
+    return [cid for cid in companion_ids if cid in present_at_loc]
+
+
+async def commit_time_plan(time_plan: dict, pc_id: str, npc_id: str, companion_ids: list[str] | None = None) -> datetime:
     """계산된 시간 계획을 GlobalState와 위치 관계에 확정 반영합니다."""
     new_time = datetime.fromisoformat(time_plan["new_time"])
 
@@ -135,7 +241,15 @@ async def commit_time_plan(time_plan: dict, pc_id: str, npc_id: str) -> datetime
             )
 
         if new_loc_id:
-            for char_id in (pc_id, npc_id):
+            # 장면이 이동하면 PC·주 NPC뿐 아니라 현재 PC와 같은 장소에 있던 동행 NPC도 함께 옮긴다.
+            # 그러지 않으면 동행자의 LOCATED_AT가 이전 장소에 남아 다음 턴 presence에서 유령처럼 잔존한다.
+            # 단지 '언급'만 된(실제로는 다른 장소에 있는) NPC는 _present_companion_ids로 걸러낸다.
+            present_companions = await _present_companion_ids(pc_id, companion_ids or [])
+            move_targets: list[str] = []
+            for char_id in (pc_id, npc_id, *present_companions):
+                if char_id and char_id not in move_targets:
+                    move_targets.append(char_id)
+            for char_id in move_targets:
                 await move_location(char_id, new_loc_id)
 
         print(f"[TimeManager] {new_time.strftime('%Y-%m-%d %H:%M')} | {time_plan.get('reason', '')}")

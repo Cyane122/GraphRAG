@@ -25,13 +25,21 @@ MODEL_COMPLEX_UPDATER = os.getenv("MODEL_COMPLEX_UPDATER", "gemini-3-flash-previ
 # 이벤트 생성, 보조 관계 업데이트 등 판단·서술이 필요한 Pro 전용 작업
 MODEL_EVENT_CREATOR   = os.getenv("MODEL_EVENT_CREATOR",   "gemini-3.1-pro-preview")
 MODEL_PRO_UPDATER     = os.getenv("MODEL_PRO_UPDATER",     "gemini-3.1-pro-preview")
-MODEL_DIRECTOR        = os.getenv("MODEL_DIRECTOR",        "gemini-3.1-pro-preview")
 MODEL_MANAGER_PLANNER = os.getenv("MODEL_MANAGER_PLANNER", MODEL_PRO_UPDATER)
 MODEL_TURN_EXTRACTOR  = os.getenv("MODEL_TURN_EXTRACTOR",  MODEL_PRO_UPDATER)
 MODEL_OUTPUT_REPAIR   = os.getenv("MODEL_OUTPUT_REPAIR",   "gemini-3-flash-preview")
 
 # ── Google Cloud ────────────────────────────────────────────
 GOOGLE_PROJECT_ID = os.getenv("GOOGLE_PROJECT_ID")
+GOOGLE_CLOUD_LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", os.getenv("CLOUD_ML_REGION", "global"))
+
+# ── Direct partner model APIs ───────────────────────────────
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+ANTHROPIC_CLAUDE_SONNET_MODEL = os.getenv("ANTHROPIC_CLAUDE_SONNET_MODEL", "claude-sonnet-4-6")
+ANTHROPIC_CLAUDE_OPUS_4_6_MODEL = os.getenv("ANTHROPIC_CLAUDE_OPUS_4_6_MODEL", "claude-opus-4-6")
+ANTHROPIC_CLAUDE_OPUS_4_7_MODEL = os.getenv("ANTHROPIC_CLAUDE_OPUS_4_7_MODEL", "claude-opus-4-7")
+ANTHROPIC_CLAUDE_OPUS_4_8_MODEL = os.getenv("ANTHROPIC_CLAUDE_OPUS_4_8_MODEL", "claude-opus-4-8")
+ANTHROPIC_CLAUDE_OPUS_MODEL = os.getenv("ANTHROPIC_CLAUDE_OPUS_MODEL", ANTHROPIC_CLAUDE_OPUS_4_8_MODEL)
 
 # ── 임베딩 ──────────────────────────────────────────────────
 MODEL_EMBEDDER = os.getenv("MODEL_EMBEDDER")

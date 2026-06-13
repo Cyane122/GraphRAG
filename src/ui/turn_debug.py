@@ -4,7 +4,7 @@
 # Write prompt and turn-debug snapshots during Actor execution.
 #
 # Functions
-#   - write_turn_debug_snapshot(user_input: str, fixed_prompt: str, genre_prompt: str, dynamic_prompt: str, scene_types: list[str], manager_effects: dict, history: list[dict], world_id: str, pc_id: str, npc_id: str, npc_name: str, logs_dir: Path, turn_debug_dir: Path) -> str | None : Save a turn debug snapshot (director_prompt.txt 포함)
+#   - write_turn_debug_snapshot(user_input: str, fixed_prompt: str, genre_prompt: str, dynamic_prompt: str, scene_types: list[str], manager_effects: dict, history: list[dict], world_id: str, pc_id: str, npc_id: str, npc_name: str, logs_dir: Path, turn_debug_dir: Path, actor_model: str | None = None) -> str | None : Save a turn debug snapshot
 # ================================
 import json
 from datetime import datetime
@@ -31,6 +31,7 @@ def write_turn_debug_snapshot(
     npc_name: str,
     logs_dir: Path,
     turn_debug_dir: Path,
+    actor_model: str | None = None,
 ) -> str | None:
     """Actor 호출 직전의 프롬프트와 manager 산출물을 디버그 파일로 저장합니다."""
     try:
@@ -68,7 +69,6 @@ def write_turn_debug_snapshot(
             "genre_prompt.txt": genre_prompt or "",
             "dynamic_prompt.txt": dynamic_prompt,
             "final_prompt-2.txt": final_prompt,
-            "director_prompt.txt": manager_effects.get("director_prompt") or "",
             "history.json": json.dumps(history, ensure_ascii=False, indent=2),
             "metadata.json": json.dumps({
                 "timestamp": stamp,
@@ -76,6 +76,7 @@ def write_turn_debug_snapshot(
                 "pc_id": pc_id,
                 "npc_id": npc_id,
                 "npc_name": npc_name,
+                "actor_model": actor_model,
                 "scene_types": scene_types,
                 "user_input": user_input,
                 "manager_effects": manager_effects,
@@ -97,6 +98,7 @@ def write_turn_debug_snapshot(
             f"- world: `{world_id}`",
             f"- pc: `{pc_id}`",
             f"- npc: `{npc_name}` (`{npc_id}`)",
+            f"- actor_model: `{actor_model or ''}`",
             f"- scene_types: `{scene_types}`",
             f"- fixed chars: `{len(fixed_prompt)}`",
             f"- genre chars: `{len(genre_prompt or '')}`",

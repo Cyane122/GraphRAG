@@ -10,7 +10,7 @@
 #   - process_actor_response(actor_response: str, npc_id: str, pc_id: str, scene_types: list[str] | None, scene_chars: list[str] | None, world_config: dict | None, manager_effects: dict | None, history_snapshot: list[dict] | None, recent_snapshot: list[str] | None, thread_id: str | None = None, commit_id: str | None = None, user_input: str = "") -> str | None : Apply accepted actor response side effects.
 #   - guard_actor_response(actor_response: str, npc_id: str, pc_id: str, world_config: dict | None) -> dict : Validate actor response before DB writes.
 #   - build_time_plan(plan: dict, base_time: datetime) -> dict : Compute time changes without DB writes.
-#   - commit_time_plan(time_plan: dict, pc_id: str, npc_id: str) -> datetime : Persist a computed time plan.
+#   - commit_time_plan(time_plan: dict, pc_id: str, npc_id: str, companion_ids: list[str] | None = None) -> datetime : Persist a computed time plan.
 #   - apply_time_updates(plan: dict, base_time: datetime, pc_id: str, npc_id: str) -> datetime : Compute and persist time changes.
 #   - delegate_complex_update(actor_response: str, npc_id: str, pc_id: str, initial_changes: dict | None, event_only: bool, world_config: dict | None, scene_chars: list[str] | None) -> str | None : Run complex updates for event-only paths.
 #   - _should_run_auxiliary_character_updates_with_log(actor_response: str, participant_ids: list[str], context_plan: dict | None, world_config: dict | None, scene_chars: list[str] | None) -> bool : Gate auxiliary extractors and print skip context.
@@ -21,6 +21,7 @@
 # ================================
 import asyncio
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -306,7 +307,7 @@ Return ONLY valid JSON:
 }}
 
 Scene:
-{actor_response[:2000]}"""
+{actor_response[:4000]}"""
 
     model = get_model(model_name=COMPLEX_MODEL, system_prompt=system_instruction)
     try:
@@ -468,6 +469,14 @@ async def _apply_event_action(
     return new_event
 
 
+_ANALYZE_BLOCK_RE = re.compile(r"<analyze>[\s\S]*?</analyze>", re.IGNORECASE)
+
+
+def _strip_analyze_block(text: str) -> str:
+    """Actor 응답에서 <analyze>…</analyze> CoT 블록을 제거하고 가시 산문만 남긴다."""
+    return _ANALYZE_BLOCK_RE.sub("", text or "").strip()
+
+
 async def process_actor_response(
     actor_response: str,
     npc_id:         str,
@@ -487,6 +496,11 @@ async def process_actor_response(
     Returns an OOC pregnancy/organic system message if one is generated, otherwise None.
     """
     from src.simulation.systems.social import ensure_scene_relationships, resolve_and_update as wb_resolve
+
+    # Actor 응답은 <analyze> CoT 블록 + 가시 산문으로 구성된다. 상태 추출과 가드는 모델의
+    # 사적 사고가 아니라 실제 산문을 대상으로 해야 하므로 분석 블록을 먼저 제거한다.
+    # (제거 전에는 [:N] 절단이 긴 CoT에 잠식되어 후반 산문의 상태 변화를 놓칠 수 있었다.)
+    actor_response = _strip_analyze_block(actor_response)
 
     guard = guard_actor_response(actor_response, npc_id, pc_id, world_config)
     feasibility_audit = _audit_time_location_schedule(manager_effects)

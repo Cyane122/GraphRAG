@@ -49,7 +49,9 @@ async def commit_manager_core_effects(
     time_plan = effects.get("time_plan")
     current_dt: datetime | None = None
     if time_plan:
-        current_dt = await commit_time_plan(time_plan, pc_id, npc_id)
+        # 동행 NPC(현재 장면 활성)도 함께 이동시켜 그룹 이동 시 위치 정합성을 유지한다.
+        companion_ids = effects.get("scene_npc_ids") or []
+        current_dt = await commit_time_plan(time_plan, pc_id, npc_id, companion_ids=companion_ids)
     elif effects.get("ooc_time_after"):
         current_dt = _parse_effect_datetime(effects.get("ooc_time_after"))
 

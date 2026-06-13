@@ -58,6 +58,8 @@ class MultiCharacterStatePlan(BaseModel):
     """한 장면에서 감지된 여러 캐릭터의 DynamicState 변경 계획입니다."""
 
     character_updates: list[CharacterStateUpdate] = Field(default_factory=list)
+    # 목적지 없이 현재 장면을 떠난 캐릭터 id 목록 (예: "B는 교실을 나갔다").
+    exited_character_ids: list[str] = Field(default_factory=list)
 
 
 async def _fetch_state_update_targets(
@@ -143,21 +145,34 @@ def _text_contains_location_token(text: str, token: object) -> bool:
     return value.lower() in text.lower()
 
 
+# 자택 이동 근거 판정용: 집/방류 공간어가 목적지 격조사(에/으로/로, 출발격 '에서'는 제외)를
+# 동반하고 직후에 이동/귀가 동사가 와야 자택 이동으로 본다. 소유격('~의 방')·출발격('방에서')·
+# 단순 위치('방에 있다')만으로는 phantom 위치를 만들지 않는다.
+_HOME_SPACE_DEST_RE = r"(?:집|방|아파트|자취방|원룸|기숙사)(?:에|으로|로)(?!서)"
+_HOME_MOVE_VERB_RE = r"(?:갔|왔|돌아|들어|향했|향한|향하|도착|올라|귀가)"
+
+
 def _personal_space_is_grounded(
     location_id: str,
     char_id: str,
     actor_response: str,
     targets: list[StateUpdateTarget],
 ) -> bool:
-    """Allow generated personal-space ids only when the scene says whose space it is."""
+    """Allow generated personal-space ids only when the scene shows the character moving home."""
     if location_id != f"{char_id}_house":
         return False
     target = next((item for item in targets if item.id == char_id), None)
     if not target:
         return False
     aliases = _target_aliases(target)
+    # alias 직후의 선택적 소유격(alias의)만 허용하고, alias와 공간어 사이에 다른 소유격 '의'가
+    # 끼면 매칭하지 않는다. 그래야 "A는 B의 방에 들어갔다"가 A의 자택으로 오인되지 않는다.
     return any(
-        alias in actor_response and re.search(rf"{re.escape(alias)}.{{0,12}}(집|방|아파트)", actor_response)
+        alias in actor_response
+        and re.search(
+            rf"{re.escape(alias)}(?:\s*의)?[^의\n]{{0,18}}{_HOME_SPACE_DEST_RE}.{{0,10}}{_HOME_MOVE_VERB_RE}",
+            actor_response,
+        )
         for alias in aliases
     )
 
@@ -409,6 +424,8 @@ location_id: update when a character explicitly moves, leaves, arrives, follows 
 - Character's OWN personal space (own home / room / apt) → generate "{{char_id}}_house" (e.g. if char_id is "ko_haram" → "ko_haram_house"). These are auto-created.
 - Unknown public/third-party location → omit.
 
+Scene exits (no destination): if a character explicitly LEAVES the current scene with NO named/known destination (e.g. "B는 교실을 나갔다", "자리를 떴다", "먼저 나갔다", "사라졌다"), do NOT set location_id; instead put their char_id in "exited_character_ids". Only when the scene explicitly states they left; never infer from looking away, standing, or turning.
+
 DynamicState fields:
 {_state_field_lines(field_types)}
 
@@ -418,7 +435,8 @@ Return ONLY valid JSON. Use real char_id values:
 {{
   "character_updates": [
     {{"char_id": "<character_id>", "dynamic_state": {{"mood": "tired"}}}}
-  ]
+  ],
+  "exited_character_ids": []
 }}
 
 Scene:
@@ -457,6 +475,24 @@ def _sanitize_state_update(state: dict[str, Any]) -> dict[str, Any]:
     return sanitized_state
 
 
+async def _resolve_exit_parent_location(char_id: str) -> str | None:
+    """퇴장한 캐릭터를 옮길 상위 위치(PART_OF parent) id. 부모가 없으면 None(이동 미적용)."""
+    async with async_driver.session() as session:
+        rec = await session.run(
+            """
+            MATCH (c:Character {id: $cid})-[:LOCATED_AT]->(l:Location)
+            OPTIONAL MATCH (l)-[:PART_OF]->(p:Location)
+            RETURN p.id AS parent_id
+            """,
+            cid=char_id,
+        )
+        row = await rec.single()
+    if not row:
+        return None
+    parent_id = dict(row).get("parent_id")
+    return str(parent_id) if parent_id else None
+
+
 async def apply_multi_character_state_updates(
     actor_response: str,
     pc_id: str,
@@ -478,7 +514,7 @@ async def apply_multi_character_state_updates(
     except Exception as exc:
         print(f"[MultiStateUpdater] failed and ignored: {exc}")
         return []
-    if not plan.character_updates:
+    if not plan.character_updates and not plan.exited_character_ids:
         print(
             "[MultiStateUpdater] no candidate updates "
             f"(targets={[target.id for target in targets]})"
@@ -529,6 +565,21 @@ async def apply_multi_character_state_updates(
             evidence_by_field,
         ))
         applied.append({"char_id": item.char_id, "dynamic_state": applied_state})
+
+    # 목적지 없이 장면을 떠난 NPC는 현재 위치의 상위(PART_OF parent)로 옮겨 다음 턴
+    # presence 조회에서 제외되게 한다. 상위 위치가 없으면 안전하게 건너뛴다(잔존).
+    for exited_id in dict.fromkeys(plan.exited_character_ids or []):
+        if exited_id not in allowed_ids or exited_id == pc_id:
+            continue
+        parent_location_id = await _resolve_exit_parent_location(exited_id)
+        if not parent_location_id:
+            print(f"[MultiStateUpdater] exit skipped (no parent location): {exited_id}")
+            continue
+        if await move_location(exited_id, parent_location_id):
+            change_lines.append(
+                f"{_display_character_name(exited_id, targets)} exited scene -> {parent_location_id}"
+            )
+            applied.append({"char_id": exited_id, "exited_to": parent_location_id})
 
     if change_lines:
         print("[MultiStateDiff]\n" + "\n".join(change_lines))

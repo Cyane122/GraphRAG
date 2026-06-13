@@ -66,7 +66,7 @@ project-root/
     │   ├── embedding/
     │   │   └── encoder.py              # HuggingFace 임베딩 래퍼 (1024-dim)
     │   ├── llm/
-    │   │   └── client.py               # LLM 클라이언트 래퍼 (Gemini / OpenRouter).
+    │   │   └── client.py               # LLM 클라이언트 래퍼 (Gemini / Vertex AI).
     │   │                               # get_model() · get_response_text() · extract_json_from_llm() 제공
     │   └── logging/
     │       └── conversation_logger.py  # 대화 턴을 날짜별 Markdown 파일로 저장 (logs/YYYY-MM-DD.md)
