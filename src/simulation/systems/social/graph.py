@@ -120,12 +120,10 @@ _ROLE_MARKERS: tuple[str, ...] = (
 )
 
 def _cache_key() -> str:
-    """현재 Chainlit 세션의 db_path를 캐시 키로 반환한다. 세션 외부면 '__global__'."""
-    try:
-        import chainlit as cl
-        return cl.user_session.get("db_path") or "__global__"
-    except Exception:
-        return "__global__"
+    """캐릭터 이름 캐시 키 = 현재 활성 Kuzu DB 경로(스레드/대화별 격리). 활성 드라이버 없으면 '__global__'."""
+    from src.core.database.driver import current_db_path
+
+    return current_db_path() or "__global__"
 
 
 async def _get_known_chars() -> dict[str, str]:

@@ -11,6 +11,7 @@
 # Functions
 #   - set_active_driver(driver: KuzuAsyncDriver | None) : 현재 async 컨텍스트의 Kuzu 드라이버 설정
 #   - reset_active_driver(token: object) -> None : 이전 Kuzu 드라이버 컨텍스트 복원
+#   - current_db_path() -> str | None : 활성 Kuzu 드라이버의 DB 경로(없으면 None)
 #   - _get_default_driver() -> KuzuAsyncDriver : 기본 Kuzu 드라이버 지연 생성
 #   - _close_default_driver() -> None : 기본 Kuzu 드라이버 종료
 #
@@ -287,12 +288,18 @@ class KuzuAsyncDriver:
     def __init__(self, db_path: str, world_id: str | None = None, scenario_id: str | None = None) -> None:
         self._world_id   = world_id or WORLD_ID
         self._scenario_id = scenario_id
+        self._db_path    = db_path
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._db   = kuzu.Database(db_path)
         self._conn = kuzu.Connection(self._db)
         self._lock = asyncio.Lock()
         self._bootstrap_schema_if_needed()
         self._run_migrations()
+
+    @property
+    def db_path(self) -> str:
+        """이 드라이버가 연 Kuzu DB 경로(스레드/대화별 고유 — 캐시 격리 키 등에 사용)."""
+        return self._db_path
 
     def close(self) -> None:
         """연결과 DB를 명시적으로 닫아 파일 락을 해제합니다."""
@@ -550,18 +557,22 @@ class KuzuAsyncDriver:
         return self._conn.execute(query, params or {})
 
 def _resolve_driver() -> KuzuAsyncDriver:
-    """현재 런타임 컨텍스트 또는 Chainlit 세션의 드라이버를 반환합니다."""
+    """현재 async 컨텍스트의 활성 드라이버를 반환합니다. 설정돼 있지 않으면 기본 드라이버를 쓴다."""
     active_driver = _active_driver.get()
     if isinstance(active_driver, KuzuAsyncDriver):
         return active_driver
-    try:
-        import chainlit as cl
-        driver = cl.user_session.get("db_driver")
-        if isinstance(driver, KuzuAsyncDriver):
-            return driver
-    except Exception:
-        pass
     return _get_default_driver()
+
+
+def current_db_path() -> str | None:
+    """현재 async 컨텍스트에 설정된 활성 Kuzu 드라이버의 DB 경로. 활성 드라이버가 없으면 None.
+
+    기본 드라이버를 강제 생성하지 않도록 ContextVar만 확인한다(스레드별 캐시 격리 키 용도).
+    """
+    driver = _active_driver.get()
+    if isinstance(driver, KuzuAsyncDriver):
+        return driver.db_path
+    return None
 
 
 def set_active_driver(driver: KuzuAsyncDriver | None):

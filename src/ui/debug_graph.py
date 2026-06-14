@@ -5,15 +5,12 @@
 #
 # Functions
 #   - build_debug_graph(pc_id: str, npc_id: str, world_id: str) -> GraphSnapshot : 현재 장면 중심 그래프와 스키마 데이터를 생성
-#   - send_debug_graph(pc_id: str, npc_id: str, world_id: str) -> None : 그래프 서버 URL을 안내
 #   - upsert_debug_graph(pc_id: str, npc_id: str, world_id: str) -> None : 그래프 서버 스냅샷 갱신
 # ================================
 
 import json
 from datetime import datetime
 from typing import Any
-
-import chainlit as cl
 
 from src.core.database import async_driver
 from src.ui.graph_models import GraphEdge, GraphNode, GraphSnapshot
@@ -375,10 +372,8 @@ async def _ensure_event_node(
 
 def _pending_time_state() -> dict[str, str | None]:
     """아직 DB에 커밋되지 않은 현재 턴 시간 계획을 읽습니다."""
-    try:
-        pending = cl.user_session.get("pending_commit") or {}
-    except Exception:
-        pending = {}
+    # web UI에는 이 컨텍스트에서 미커밋 pending에 접근할 경로가 없어 빈 계획을 사용한다(커밋된 시간만 표시).
+    pending: dict = {}
     manager_effects = pending.get("manager_effects") or {}
     time_plan = manager_effects.get("time_plan") or {}
     pending_time = time_plan.get("new_time")
@@ -626,10 +621,8 @@ async def build_debug_graph(pc_id: str, npc_id: str, world_id: str) -> GraphSnap
         if subject_id in included_char_ids:
             edges.append(_edge(fact_node_id, f"character:{subject_id}", "ABOUT"))
 
-    try:
-        _thread_id = cl.context.session.thread_id
-    except Exception:
-        _thread_id = ""
+    # thread_id는 web UI 호출부(refresh_graph_snapshot_best_effort)에서 스냅샷에 다시 채워 넣는다.
+    _thread_id = ""
 
     return GraphSnapshot(
         thread_id=_thread_id,
@@ -643,23 +636,6 @@ async def build_debug_graph(pc_id: str, npc_id: str, world_id: str) -> GraphSnap
         nodes=nodes,
         edges=edges,
     )
-
-
-async def send_debug_graph(pc_id: str, npc_id: str, world_id: str) -> None:
-    """그래프 서버 URL과 현재 스냅샷 상태를 보냅니다."""
-    graph = await build_debug_graph(pc_id=pc_id, npc_id=npc_id, world_id=world_id)
-    url = ensure_graph_server()
-    update_graph_snapshot(graph)
-    await cl.Message(
-        content=(
-            f"그래프 관찰 창: {url}\n"
-            f"- nodes: `{len(graph.nodes)}` / edges: `{len(graph.edges)}`\n"
-            f"- visible time: `{graph.visible_time or 'unknown'}` "
-            f"({graph.time_source})\n"
-            f"- snapshot: `{graph.generated_at}`"
-        ),
-        author="그래프",
-    ).send()
 
 
 async def upsert_debug_graph(pc_id: str, npc_id: str, world_id: str) -> None:

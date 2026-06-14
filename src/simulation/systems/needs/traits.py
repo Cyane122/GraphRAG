@@ -311,21 +311,8 @@ async def _write_traits_to_db(char_id: str, source_label: str, traits: dict) -> 
 
 
 def _trait_cache_context() -> tuple[str, str]:
-    """현재 Chainlit 세션의 world/scenario 캐시 컨텍스트를 반환합니다."""
-    world_id = WORLD_ID
-    scenario_id = _DEFAULT_SCENARIO_ID
-    try:
-        import chainlit as cl
-
-        session_world_id = cl.user_session.get("world_id")
-        session_scenario_id = cl.user_session.get("scenario_id")
-        if session_world_id:
-            world_id = str(session_world_id)
-        if session_scenario_id:
-            scenario_id = str(session_scenario_id)
-    except Exception:
-        pass
-    return _safe_cache_name(world_id), _safe_cache_name(scenario_id)
+    """trait 캐시 컨텍스트(world/scenario)를 반환합니다. web UI에서는 기본 world/scenario를 사용한다."""
+    return _safe_cache_name(WORLD_ID), _safe_cache_name(_DEFAULT_SCENARIO_ID)
 
 
 def _safe_cache_name(value: str | None) -> str:
