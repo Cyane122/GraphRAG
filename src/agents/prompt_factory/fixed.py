@@ -10,6 +10,7 @@
 #   - build_fixed_section(...) -> str : 고정 프롬프트 세그먼트 조립
 #   - build_pre_output_checklist(...) -> str : 출력 직전 체크리스트 조립
 #   - _user_impersonation_allowed(pov_mode: str, world_config: dict | None = None) -> bool : 사칭 허용 여부 판단
+#   - _build_checklist_slot_values(pov_mode: str, world_config: dict | None = None) -> dict[str, str] : 체크리스트 정적 슬롯 구성
 #   - _format_prompt_vars(text: str, *, char_name: str, user_name: str, world_config: dict) -> str : 프롬프트 변수 치환
 # ================================
 
@@ -56,6 +57,7 @@ def build_pre_output_checklist(
         char_name=char_name,
         user_name=user_name,
         world_config=world_config,
+        extra_vars=_build_checklist_slot_values(pov_mode, world_config),
     )
 
 
@@ -161,15 +163,13 @@ def _user_impersonation_allowed(pov_mode: str, world_config: dict | None = None)
 # ----------------
 
 def _select_core_section(perspective: int) -> str:
-    if perspective == 1:
-        return _load_prompt_or_legacy("core/CORE_1P.md", _CORE_1P)
-    return _load_prompt_or_legacy("core/CORE_3P.md", _CORE_3P)
+    legacy = _CORE_1P if perspective == 1 else _CORE_3P
+    return _load_prompt_or_legacy("core/CORE.md", legacy)
 
 
 def _select_style_section(perspective: int) -> str:
-    if perspective == 1:
-        return _load_prompt_or_legacy("style/STYLE_1P.md", _STYLE_1P)
-    return _load_prompt_or_legacy("style/STYLE_3P.md", _STYLE_3P)
+    legacy = _STYLE_1P if perspective == 1 else _STYLE_3P
+    return _load_prompt_or_legacy("style/STYLE.md", legacy)
 
 
 def _select_emotion_section() -> str:
@@ -208,25 +208,70 @@ def _select_user_impersonation_section(pov_mode: str, world_config: dict | None 
 
 def _select_pov_section(pov_mode: str, world_config: dict) -> str:
     """Select the POV section without exposing file names to the prompt."""
-    paths = {
-        "1p_user": "pov/POV_1P_USER_NARRATOR.md",
-        "1p_char": "pov/POV_1P_CHAR_NARRATOR.md",
-        "3p_user": "pov/POV_3P_USER_ANCHOR.md",
-        "3p_char": "pov/POV_3P_CHAR_ANCHOR.md",
-    }
-    return _load_prompt_or_legacy(paths[pov_mode], _legacy_impersonation_section(world_config))
+    path = "pov/POV_1P.md" if pov_mode.startswith("1p_") else "pov/POV_3P.md"
+    return _load_prompt_or_legacy(path, _legacy_impersonation_section(world_config))
 
 
 def _select_checklist_template(pov_mode: str) -> str:
-    """Select the checklist template for the 4-way POV mode."""
-    paths = {
-        "1p_user": "checklist/CHECKLIST_1P_USER_NARRATOR.md",
-        "1p_char": "checklist/CHECKLIST_1P_CHAR_NARRATOR.md",
-        "3p_user": "checklist/CHECKLIST_3P_USER_ANCHOR.md",
-        "3p_char": "checklist/CHECKLIST_3P_CHAR_ANCHOR.md",
-    }
+    """Select the unified checklist template for the active POV family."""
     legacy = _CHECKLIST_1P if pov_mode.startswith("1p_") else _CHECKLIST_3P
-    return _load_prompt_or_legacy(paths[pov_mode], legacy)
+    return _load_prompt_or_legacy("checklist/CHECKLIST.md", legacy)
+
+
+def _build_checklist_slot_values(pov_mode: str, world_config: dict | None = None) -> dict[str, str]:
+    """Build checklist slots determined by selected POV and user control mode."""
+    allowed = _user_impersonation_allowed(pov_mode, world_config)
+    if pov_mode.startswith("1p_"):
+        pov_line = (
+            "POV: 1P | narrator={char} | access={char} perception/body/thought/dialogue/action "
+            "| blocked={user}/NPC hidden state"
+        )
+        pov_leak_line = (
+            "POV LEAK: self-camera=[quote/none] | NPC-inner=[quote/none] | offscreen-truth=[quote/none]"
+        )
+        pre_draft_instruction = (
+            "{char} perception/action first; {user} action within allowed scope"
+            if allowed
+            else "{char} perception/action only; no {user} action/speech/feeling"
+        )
+    else:
+        anchor = "{user}" if pov_mode.endswith("_user") else "{char}"
+        pov_line = (
+            f"POV: 3P | anchor={anchor} | access=anchor perception/observable behavior "
+            "| blocked=non-anchor hidden state"
+        )
+        pov_leak_line = "POV LEAK: non-anchor-inner=[quote/none] | offscreen-truth=[quote/none]"
+        pre_draft_instruction = (
+            "anchor perception/observable first; {user} action within allowed scope"
+            if allowed
+            else "anchor perception/observable only; no {user} action/speech/feeling"
+        )
+
+    if allowed:
+        user_control_line = (
+            "USER CONTROL: allowed | first beat={char} perception/reaction? [yes/no] "
+            "| {user} action-scale=[proportional/boosted]"
+        )
+        user_impersonation_line = (
+            "USER IMPERSONATION: generated-action=[quote/none] | generated-dialogue=[quote/none] "
+            "| inner/sensation/decision=[quote/none] | scale-boost=[quote/none]"
+        )
+    else:
+        user_control_line = (
+            "USER CONTROL: forbidden | first beat={char} perception/reaction/action/env consequence? [yes/no]"
+        )
+        user_impersonation_line = (
+            "USER IMPERSONATION: generated-action=[quote/none] | generated-dialogue=[quote/none] "
+            "| inner/sensation/decision=[quote/none]"
+        )
+
+    return {
+        "pov_line": pov_line,
+        "user_control_line": user_control_line,
+        "user_impersonation_line": user_impersonation_line,
+        "pov_leak_line": pov_leak_line,
+        "pre_draft_instruction": pre_draft_instruction,
+    }
 
 
 # ----------------
@@ -277,13 +322,16 @@ def _format_prompt_vars(
     char_name: str,
     user_name: str,
     world_config: dict,
+    extra_vars: dict[str, str] | None = None,
 ) -> str:
     """Apply common prompt variables while preserving unresolved checklist placeholders."""
     if not text:
         return ""
-    return text.format_map(
-        _SafeFormatDict(
-            char=char_name,
-            user=user_name,
-        )
-    )
+    values = {
+        "char": char_name,
+        "user": user_name,
+    }
+    if extra_vars:
+        values.update(extra_vars)
+    rendered = text.format_map(_SafeFormatDict(values))
+    return rendered.format_map(_SafeFormatDict(values))

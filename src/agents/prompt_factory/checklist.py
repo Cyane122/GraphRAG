@@ -28,10 +28,9 @@ def build_turn_checklist(
     user_name: str = "",
 ) -> str:
     """Render checklist placeholders that depend on current scene and DynamicState."""
-    checklist = template.replace(
-        "{intimate_scan}",
-        _build_intimate_scan(scene_types, world_config, char_data, char_name, user_name),
-    )
+    scene_scan = _build_intimate_scan(scene_types, world_config, char_data, char_name, user_name)
+    checklist = template.replace("{scene_specific_scan}", scene_scan)
+    checklist = checklist.replace("{intimate_scan}", scene_scan)
     dyn_state = char_data.get("dynamic_state", {})
     checklist = checklist.replace(_CYCLE_PLACEHOLDER, _build_all_cycle_lines(char_data, npc_data_list or []))
     checklist = checklist.replace("{state_line}", render_state_line(dyn_state, world_config))

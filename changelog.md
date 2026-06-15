@@ -618,5 +618,7 @@ Chainlit 제거 + Codex 리뷰 지적 반영 + 백로그 정리.
 - `src/ui/web_app/actor.py`: Gemini `finish_reason`·Claude `stop_reason`를 캡처해 토큰 한도 절단 시 경고 로그(silent truncation 방지).
 - `frontend/world_editor.html`: `@media (max-width:760px)` 추가 — nav/`prompt-layout`/`editor-split`/`rel-layout`/tree를 모바일에서 단일 컬럼으로 스택.
 - `tests/smoke_web_app_state.py`: web_app 상태 로직(모델 정규화·variant pending 동기화·삭제 시 pending 폐기·preview) DB·LLM 없는 smoke 검사 추가(`get_client` stub).
-- 보류(후속): 주요 항목 모두 처리. (claude opus fallback 분기·ppt_viewer 포트 체크는 무해/방어적이라 의도적 유지.)
+
+## 2026-06-15
+- [개선] `prompt_factory` 내부 프롬프트 간소화 및 개선.
 
