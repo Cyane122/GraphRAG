@@ -1,5 +1,5 @@
 # ================================
-# src/simulation/state/relationships.py
+# src/simulation/state/apply/relationships.py
 #
 # Detect and persist relationship changes among secondary scene characters.
 #

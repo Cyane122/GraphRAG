@@ -1,5 +1,5 @@
 # ================================
-# src/simulation/systems/reputation.py
+# src/simulation/systems/world_dynamics/reputation.py
 #
 # NPC 간 소문 전파 및 사회적 평판 변화를 담당합니다.
 # 중요 이벤트(importance >= 5) 발생 후 source NPC의 지인에게

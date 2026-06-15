@@ -13,6 +13,7 @@
 #   - commit_time_plan(time_plan: dict, pc_id: str, npc_id: str, companion_ids: list[str] | None = None) -> datetime : Persist a computed time plan.
 #   - apply_time_updates(plan: dict, base_time: datetime, pc_id: str, npc_id: str) -> datetime : Compute and persist time changes.
 #   - delegate_complex_update(actor_response: str, npc_id: str, pc_id: str, initial_changes: dict | None, event_only: bool, world_config: dict | None, scene_chars: list[str] | None) -> str | None : Run complex updates for event-only paths.
+#   - _await_relationship_task(relationship_task) -> None : Best-effort await for the parallel secondary-relationship task.
 #   - _should_run_auxiliary_character_updates_with_log(actor_response: str, participant_ids: list[str], context_plan: dict | None, world_config: dict | None, scene_chars: list[str] | None) -> bool : Gate auxiliary extractors and print skip context.
 #   - _render_dynamic_state_field_policy(field_types: dict[str, str]) -> str : Render allowed DynamicState fields for extractor prompt.
 #   - _write_updater_diff_snapshot(plan: dict, state_candidates: list[dict], rel_candidate: dict | None, event_candidate: dict | None) -> None : LLM 출력과 diff 결과를 logs/updater_diff.json에 저장.
@@ -31,8 +32,8 @@ from src.core.database import (
     update_relationship_affinity,
 )
 from src.config import MODEL_COMPLEX_UPDATER as COMPLEX_MODEL, TURN_EXTRACTOR_MODE
-from src.simulation.systems.organic import process_ejaculation
-from src.simulation.state.audit import (
+from src.simulation.systems.world_dynamics.organic import process_ejaculation
+from src.simulation.state.apply.audit import (
     _audit_event_candidate,
     _audit_relationship_delta,
     _audit_state_updates,
@@ -43,12 +44,12 @@ from src.simulation.state.audit import (
     _write_state_audit_snapshot,
     guard_actor_response,
 )
-from src.simulation.state.creator_slots import apply_creator_slot_updates
-from src.simulation.state.dynamic_information import (
+from src.simulation.state.extract.creator_slots import apply_creator_slot_updates
+from src.simulation.state.extract.dynamic_information import (
     apply_multi_character_dynamic_information_updates,
 )
 from src.simulation.state.importance import IMPORTANCE_RUBRIC
-from src.simulation.state.events import (
+from src.simulation.state.apply.events import (
     _append_to_event,
     _apply_relationship_status,
     _close_event,
@@ -59,19 +60,19 @@ from src.simulation.state.events import (
     delegate_complex_update,
     update_relationship_narrative,
 )
-from src.simulation.state.multi_character import apply_multi_character_state_updates
-from src.simulation.state.relationships import apply_scene_relationship_updates
-from src.simulation.state.time_plan import (
+from src.simulation.state.extract.multi_character import apply_multi_character_state_updates
+from src.simulation.state.apply.relationships import apply_scene_relationship_updates
+from src.simulation.state.apply.time_plan import (
     apply_time_updates,
     build_time_plan,
     commit_time_plan,
 )
-from src.simulation.state.turn_extractor import (
+from src.simulation.state.extract.turn_extractor import (
     facts_to_primary_plan,
     load_or_extract_turn_facts,
     write_extractor_shadow_diff,
 )
-from src.simulation.state.update_policy import (
+from src.simulation.state.apply.update_policy import (
     has_event_signal,
     should_run_auxiliary_character_updates,
     should_run_life_depth_system,
@@ -114,6 +115,20 @@ async def _run_auxiliary_character_updates(
     for label, result in zip(labels, results):
         if isinstance(result, Exception):
             print(f"[StateUpdater] auxiliary {label} update failed (ignored): {result}")
+
+
+async def _await_relationship_task(relationship_task) -> None:
+    """병렬 실행된 2차 관계 업데이트 태스크를 best-effort로 await한다(예외는 무시·로깅).
+
+    순차 호출 시절의 try/except 동작을 보존한다: apply_scene_relationship_updates의
+    DB 조회/쓰기가 실패해도 턴 처리를 중단시키지 않는다.
+    """
+    if relationship_task is None:
+        return
+    try:
+        await relationship_task
+    except Exception as e:
+        print(f"[RelationshipUpdater] secondary update failed (ignored): {e}")
 
 
 def _should_run_auxiliary_character_updates_with_log(
@@ -721,6 +736,15 @@ async def process_actor_response(
             participant_ids,
             world_config=world_config,
         ))
+    # 2차 관계 업데이트(Pro)는 주 쌍(npc,pc)을 제외한 별개 RELATIONSHIP 엣지만 건드리므로
+    # primary/auxiliary 업데이트와 병렬로 실행해 순차 지연(~7s)을 제거한다.
+    relationship_task = None
+    if should_run_secondary_relationship_updates(participant_ids):
+        relationship_task = asyncio.create_task(apply_scene_relationship_updates(
+            actor_response,
+            participant_ids,
+            primary_pair=(npc_id, pc_id),
+        ))
     try:
         if extractor_mode == "unified" and turn_facts:
             plan = facts_to_primary_plan(turn_facts, allow_event=event_allowed, npc_id=npc_id, pc_id=pc_id)
@@ -747,12 +771,18 @@ async def process_actor_response(
             )
     except Exception as e:
         print(f"[StateUpdater] primary update failed (ignored): {e}")
-        if auxiliary_task:
-            await auxiliary_task
+        try:
+            if auxiliary_task:
+                await auxiliary_task
+        finally:
+            await _await_relationship_task(relationship_task)
         write_extractor_shadow_diff(thread_id, commit_id, turn_facts, None, extractor_metrics)
         return None
-    if auxiliary_task:
-        await auxiliary_task
+    try:
+        if auxiliary_task:
+            await auxiliary_task
+    finally:
+        await _await_relationship_task(relationship_task)
     if not plan:
         write_extractor_shadow_diff(thread_id, commit_id, turn_facts, plan, extractor_metrics)
         return None
@@ -829,16 +859,7 @@ async def process_actor_response(
     except Exception as e:
         print(f"[StateUpdater] event creation failed (ignored): {e}")
 
-    # Apply non-primary participant relationship updates.
-    if should_run_secondary_relationship_updates(participant_ids):
-        try:
-            await apply_scene_relationship_updates(
-                actor_response,
-                participant_ids,
-                primary_pair=(npc_id, pc_id),
-            )
-        except Exception as e:
-            print(f"[WorldBuilder] resolve failed (ignored): {e}")
+    # 2차 관계 업데이트는 위에서 relationship_task로 병렬 실행·await 완료됨(순차 호출 제거).
 
     # Life-depth side effects use event importance and relationship delta.
     # Gossip, memory distortion, and personality drift are intentionally best-effort.
@@ -850,7 +871,7 @@ async def process_actor_response(
     # Gossip propagation: important event plus meaningful affinity movement.
     if new_event and _imp >= 5 and abs(_d) >= 3:
         try:
-            from src.simulation.systems.reputation import propagate_gossip
+            from src.simulation.systems.world_dynamics.reputation import propagate_gossip
             await propagate_gossip(
                 event_summary      = new_event.get("summary", ""),
                 event_importance   = _imp,
@@ -874,7 +895,7 @@ async def process_actor_response(
     # Personality drift check (micro / macro).
     if should_run_life_depth_system("personality", actor_response, context_plan, _imp, _d, scene_types):
         try:
-            from src.simulation.systems.personality import check_personality_drift
+            from src.simulation.systems.world_dynamics.personality import check_personality_drift
             await check_personality_drift(
                 npc_id             = npc_id,
                 pc_id              = pc_id,

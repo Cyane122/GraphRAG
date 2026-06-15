@@ -620,5 +620,52 @@ Chainlit 제거 + Codex 리뷰 지적 반영 + 백로그 정리.
 - `tests/smoke_web_app_state.py`: web_app 상태 로직(모델 정규화·variant pending 동기화·삭제 시 pending 폐기·preview) DB·LLM 없는 smoke 검사 추가(`get_client` stub).
 
 ## 2026-06-15
-- [개선] `prompt_factory` 내부 프롬프트 간소화 및 개선.
+
+### Phase 1a — 런타임 캐릭터 생성 개연성 개선
+- `src/simulation/systems/social/graph.py`: `_fill_plausible_stub_fields` 프롬프트 개편 — `biological_sex`·`age` 앵커 먼저 확정 후 키/몸무게/체형을 내부 일관성 있게 생성하도록 명시화.
+- `src/simulation/systems/social/graph.py`: `_create_stub`·`_ensure_runtime_nodes_in_session` — DynamicState 노드 생성 시 energy/stamina/social_skill/physique/appearance/hygiene 등 풍부한 컬럼을 성격·체형 기반 초기값으로 채움(기존: 하드코딩 0·빈값).
+- `src/simulation/systems/social/models.py` (신규): `StubProfile` Pydantic 모델 — LLM stub 출력 검증용.
+
+### Phase 1b — 이벤트 중요도 루브릭 표준화
+- `src/simulation/state/importance.py` (신규): 단일 루브릭 상수 `EVENT_IMPORTANCE_RUBRIC` 정의.
+  - "VERY FIRST / 첫경험" 계열(첫 정서적 친밀·첫 고백·중요 인물 첫 만남)을 **8-10**으로 상향(기존: 5-7 혼재).
+  - 반복·일상 사건을 5-7 이하로 명확히 구분.
+- `src/simulation/state/updater.py`, `src/simulation/state/apply/events.py`, `src/simulation/state/extract/turn_extractor.py`: `EVENT_IMPORTANCE_RUBRIC` 공유 import로 교체. `turn_extractor`에는 중요도 루브릭이 없었음 → 추가.
+
+### Phase 2 — 성능 최적화
+
+#### output_guard 버그 수정
+- `src/apps/app/output_guard.py`: `parents[1] / "prompt"` → `parents[2] / "prompts"` 경로 수정 — `FORBIDDEN_TERMS.txt`(66개 패턴)가 로드되지 않던 버그 해소. 가드가 조용히 비활성화된 상태였음.
+- `src/apps/app/service.py`: `output_repair`가 `full_response`(analyze 블록 포함) 대신 `visible_text`만 검사·수정하도록 변경 — `<analyze>` 내 1인칭 추론으로 인한 오발동 제거.
+
+#### Actor 금지 구조 명시 (BLACKLIST.md)
+- `src/agents/prompt_factory/prompts/blacklist/BLACKLIST.md`: "Comparison and Simile Prohibition" 섹션 추가.
+  - `마치 ~ 같았다/처럼 느껴졌다`, `~ 가 아니라 ~`, `그것은 ~의미였다` 등 `FORBIDDEN_TERMS.txt`에 있던 정규식 패턴군을 Actor 지시 파일에 반영(기존: 단어 목록만 있고 구조 금지 없음 → Actor가 자유롭게 사용 → output_repair 100% 발동 원인).
+  - `실무적인` 단어 목록에 추가(기존 누락).
+
+#### relationship_updater 병렬화
+- `src/simulation/state/updater.py`: `apply_scene_relationship_updates` 호출을 `asyncio.create_task`로 primary/auxiliary 업데이트와 동시 실행 — 턴당 순차 ~7s 제거.
+- `src/simulation/state/updater.py`: `auxiliary_task`가 예기치 않게 raise할 경우 `relationship_task`가 고아 태스크로 남아 백그라운드에서 DB 쓰는 경로 차단 — `try/finally`로 `_await_relationship_task` 항상 실행 보장(Codex stop-hook 지적 해소).
+
+#### 지연 로깅 인프라
+- `src/core/llm/client.py`: `generate_content_async`에 per-call 지연 로그(`logs/llm_latency.jsonl`) 추가 — ts/log_source/model/elapsed_ms/status.
+- `src/simulation/systems/memory/narrative.py`: `log_source="memory_narrative"` 추가 — 미라벨 2콜 식별.
+- `scripts/analyze_llm_latency.py` (신규): log_source별 평균/최대 지연 + 턴 클러스터 순차/병렬 요약.
+
+#### 기본 모드 확정
+- `integrated`/`unified` 모드 측정 결과(turn_extractor 27.5s / integrated_planner 13.4s) 확인 — legacy보다 느림 확정. 기본값 `MANAGER_PLANNER_MODE=legacy`, `TURN_EXTRACTOR_MODE=legacy` 유지. shadow 모드는 측정 전용.
+
+### Phase 3 — 시뮬레이션 엔진 패키지 리팩터링 (≤6 파일/패키지)
+
+#### `simulation/state/` 분할
+- `simulation/state/extract/` (신규): `turn_extractor.py`, `multi_character.py`, `dynamic_information.py`, `creator_slots.py` + `__init__.py` (공개 API 재노출)
+- `simulation/state/apply/` (신규): `events.py`, `relationships.py`, `audit.py`, `update_policy.py`, `time_plan.py` + `__init__.py` (공개 API 재노출)
+
+#### `simulation/systems/` 루트 분할
+- `simulation/systems/world_dynamics/` (신규): `organic.py`, `personality.py`, `reputation.py` + `__init__.py`
+- `simulation/systems/scheduling/` (신규): `schedules.py`, `schedule_tick.py`, `time_rules.py` + `__init__.py`
+
+#### caller import 전면 갱신
+- 이동된 모듈 경로로 업데이트한 파일: `updater.py`, `simulation/state/__init__.py`, `apply/update_policy.py`, `apply/events.py`, `extract/multi_character.py`, `scheduling/schedule_tick.py`, `needs/location_policy.py`, `needs/math.py`, `apps/app/commit.py`, `agents/manager/effects.py`, `agents/manager/planning.py`, `agents/manager/world_context.py`, `agents/prompt_factory/ooc_handler.py`.
+- `CLAUDE.md` 디렉토리 맵 갱신.
 

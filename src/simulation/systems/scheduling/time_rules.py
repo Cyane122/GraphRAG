@@ -1,5 +1,5 @@
 # ================================
-# src/simulation/systems/time_rules.py
+# src/simulation/systems/scheduling/time_rules.py
 #
 # Fetches active Rule nodes that describe world or location time constraints.
 #

@@ -14,8 +14,8 @@ from datetime import datetime
 
 from src.agents.context.generic import fetch_generic_prompt_context
 from src.simulation.events.manager import evaluate_all as evaluate_static_events
-from src.simulation.systems.schedules import SCHEDULE_PROMPT_WINDOW_MIN, fetch_schedule_context
-from src.simulation.systems.time_rules import fetch_time_rule_context
+from src.simulation.systems.scheduling.schedules import SCHEDULE_PROMPT_WINDOW_MIN, fetch_schedule_context
+from src.simulation.systems.scheduling.time_rules import fetch_time_rule_context
 from src.simulation.systems.social import build_world_context
 from src.simulation.systems.kakao import fetch_kakao_context
 

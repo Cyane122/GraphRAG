@@ -1,5 +1,5 @@
 # ================================
-# src/simulation/state/update_policy.py
+# src/simulation/state/apply/update_policy.py
 #
 # Post-response update gating policy for accepted Actor responses.
 #
@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 
-from src.simulation.state.creator_slots import has_dynamic_slot_signal
+from src.simulation.state.extract.creator_slots import has_dynamic_slot_signal
 
 
 _ORGANIC_SIGNAL_RE = re.compile(

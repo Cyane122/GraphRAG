@@ -30,6 +30,10 @@ import json
 
 PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
 
+_PROMPT_HIDDEN_STATE_KEYS: frozenset[str] = frozenset({
+    "ts_acceptance",
+})
+
 
 _DEFAULT_STATE_FIELDS: list[tuple[str, str, frozenset]] = [
     ("mood", "mood", frozenset()),
@@ -201,7 +205,7 @@ def render_character_section(char_data: dict, scene_types: list[str]) -> str:
     if "personality" in char_data:
         sections.append(_json_block("personality", clean_prompt_dict(char_data["personality"])))
     if "dynamic_state" in char_data:
-        sections.append(_json_block("state", clean_prompt_dict(char_data["dynamic_state"])))
+        sections.append(_json_block("state", clean_prompt_dict(_filter_dynamic_state(char_data["dynamic_state"]))))
     if "intimate" in scene_types and "intimate_profile" in char_data:
         sections.append(_json_block("intimate", clean_prompt_dict(char_data["intimate_profile"])))
     if "workplace" in scene_types and "workplace_profile" in char_data:
@@ -224,7 +228,7 @@ def render_npc_section(npcs: list[dict], char_name: str) -> str:
         if npc.get("personality"):
             sections.append(_json_block("personality", clean_prompt_dict(npc["personality"])))
         if npc.get("dynamic_state"):
-            sections.append(_json_block("state", clean_prompt_dict(npc["dynamic_state"])))
+            sections.append(_json_block("state", clean_prompt_dict(_filter_dynamic_state(npc["dynamic_state"]))))
         if npc.get("speech_profiles"):
             sections.append(_json_block("speech_profiles", clean_prompt_dict({"items": npc["speech_profiles"]})))
         if npc.get("relationship_profiles"):
@@ -375,9 +379,12 @@ def _normalize_npc_prompt_data(npc: dict) -> dict:
 
 
 def _filter_dynamic_state(state: dict | None) -> dict | None:
+    """Remove internal or prompt-suppressed dynamic-state fields."""
     if not state:
         return state
     s = dict(state)
+    for key in _PROMPT_HIDDEN_STATE_KEYS:
+        s.pop(key, None)
     s.pop("has_menstrual_cycle", None)
     s.pop("location_id", None)
     if s.get("pregnant"):

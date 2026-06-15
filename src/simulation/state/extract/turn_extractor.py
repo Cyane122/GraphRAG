@@ -1,5 +1,5 @@
 # ================================
-# src/simulation/state/turn_extractor.py
+# src/simulation/state/extract/turn_extractor.py
 #
 # Unified accepted-turn fact extraction and artifact reuse.
 #

@@ -1,5 +1,5 @@
 # ================================
-# src/simulation/systems/schedules.py
+# src/simulation/systems/scheduling/schedules.py
 #
 # Fetches recurring character Schedule nodes as time-aware prompt hints.
 #

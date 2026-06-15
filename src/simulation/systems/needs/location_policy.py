@@ -10,7 +10,7 @@
 
 from datetime import datetime, time, timedelta
 
-from src.simulation.systems.schedules import _coerce_minute, _matches_date
+from src.simulation.systems.scheduling.schedules import _coerce_minute, _matches_date
 
 _FOOD_TOKENS = {
     "food", "meal", "restaurant", "cafeteria", "canteen", "kitchen", "convenience",

@@ -1,5 +1,5 @@
 # ================================
-# src/simulation/state/dynamic_information.py
+# src/simulation/state/extract/dynamic_information.py
 #
 # Extract and persist slow-changing DynamicInformation updates from accepted
 # actor responses.

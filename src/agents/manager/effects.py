@@ -14,10 +14,10 @@ from src.simulation.events import evaluate_all as evaluate_static_events
 from src.simulation.state.updater import commit_time_plan
 from src.simulation.systems.memory import run_decay
 from src.simulation.systems.needs import run_needs_update
-from src.simulation.systems.organic import tick_all_cycles
+from src.simulation.systems.world_dynamics.organic import tick_all_cycles
 from src.simulation.systems.personal_facts import commit_personal_facts
-from src.simulation.systems.schedule_tick import run_schedule_tick
-from src.simulation.systems.schedules import _fetch_schedule_rows
+from src.simulation.systems.scheduling.schedule_tick import run_schedule_tick
+from src.simulation.systems.scheduling.schedules import _fetch_schedule_rows
 
 
 def _parse_effect_datetime(value: object) -> datetime | None:

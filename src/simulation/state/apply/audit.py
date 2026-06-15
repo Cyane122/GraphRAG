@@ -1,5 +1,5 @@
 # ================================
-# src/simulation/state/audit.py
+# src/simulation/state/apply/audit.py
 #
 # Validate Actor response state, relationship, and event update candidates.
 #

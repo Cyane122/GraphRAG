@@ -1,5 +1,5 @@
 # ================================
-# src/simulation/state/multi_character.py
+# src/simulation/state/extract/multi_character.py
 #
 # Actor response text에서 여러 NPC의 DynamicState 변경을 추출하고 DB에 반영합니다.
 #
@@ -28,7 +28,7 @@ from src.core.database import (
     move_location,
     update_dynamic_state,
 )
-from src.simulation.state.audit import _audit_state_updates, _sanitize_stress_level
+from src.simulation.state.apply.audit import _audit_state_updates, _sanitize_stress_level
 
 
 _CLOTHING_TERMS_RE = (

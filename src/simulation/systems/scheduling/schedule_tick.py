@@ -1,5 +1,5 @@
 # ================================
-# src/simulation/systems/schedule_tick.py
+# src/simulation/systems/scheduling/schedule_tick.py
 #
 # Turn-end hook: scheduled activity 시작 시 NPC를 해당 위치로 이동하고
 # 경량 Event 노드를 생성합니다. LLM 호출 없이 순수 DB 작업만 수행합니다.
@@ -12,7 +12,7 @@ import hashlib
 from datetime import date, datetime, time, timedelta
 
 from src.core.database import async_driver, move_location
-from src.simulation.systems.schedules import (
+from src.simulation.systems.scheduling.schedules import (
     _coerce_minute,
     _fetch_schedule_rows,
     _matches_date,

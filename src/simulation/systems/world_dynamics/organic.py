@@ -1,5 +1,5 @@
 # ================================
-# src/simulation/systems/organic.py
+# src/simulation/systems/world_dynamics/organic.py
 #
 # 임신 확률 계산 및 생리 주기/임신 상태 관리를 담당합니다.
 #

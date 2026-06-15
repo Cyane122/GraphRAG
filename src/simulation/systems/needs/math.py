@@ -12,7 +12,7 @@
 # ================================
 from typing import Optional
 
-from src.simulation.state.audit import _sanitize_stress_level
+from src.simulation.state.apply.audit import _sanitize_stress_level
 
 THRESHOLD = 0.8
 

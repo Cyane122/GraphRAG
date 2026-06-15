@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from src.config import MODEL_STATE_UPDATER as OOC_MODEL
 from src.core.database import update_dynamic_state, ensure_location, move_location, async_driver
 from src.core.llm.client import extract_json_from_llm, get_model, get_response_text
-from src.simulation.systems.schedules import fetch_schedule_context, SCHEDULE_TIME_PARSE_WINDOW_MIN
+from src.simulation.systems.scheduling.schedules import fetch_schedule_context, SCHEDULE_TIME_PARSE_WINDOW_MIN
 
 _BOLD_RE = re.compile(r'\*\*.*?\*\*', re.DOTALL)
 _TIME_SET_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")

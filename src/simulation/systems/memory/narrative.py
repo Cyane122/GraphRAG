@@ -115,7 +115,7 @@ Output timeline log:"""
         model = get_model(model_name=NARRATIVE_MODEL, system_prompt=_SYSTEM_PROMPT)
         resp = await model.generate_content_async(
             prompt,
-            generation_config={"temperature": 0.0, "max_output_tokens": 1024},
+            generation_config={"temperature": 0.0, "max_output_tokens": 1024, "log_source": "memory_narrative"},
         )
         log_text = (resp.text or "").strip()
         if not log_text:

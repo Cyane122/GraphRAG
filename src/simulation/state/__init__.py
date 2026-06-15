@@ -4,7 +4,7 @@
 # simulation.state 패키지 공개 인터페이스.
 # ================================
 
-from src.simulation.state.dynamic_information import (
+from src.simulation.state.extract.dynamic_information import (
     apply_multi_character_dynamic_information_updates,
 )
 from src.simulation.state.updater import (

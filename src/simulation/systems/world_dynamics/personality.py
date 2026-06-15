@@ -1,5 +1,5 @@
 # ================================
-# src/simulation/systems/personality.py
+# src/simulation/systems/world_dynamics/personality.py
 #
 # NPC 성격 변화(미세 변화 / 중대 변화)를 담당합니다.
 # 긴밀한 관계 지속 시 미세한 성격 drift,

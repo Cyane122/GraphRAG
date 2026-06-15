@@ -33,10 +33,10 @@
 
 from src.simulation.systems.memory import ensure_memories_for_event, run_decay, distort_on_affinity_change
 from src.simulation.systems.needs import ensure_traits, ensure_traits_for_characters, run_needs_update
-from src.simulation.systems.organic import tick_cycle_day, tick_all_cycles, process_ejaculation
+from src.simulation.systems.world_dynamics.organic import tick_cycle_day, tick_all_cycles, process_ejaculation
 from src.simulation.systems.social import build_world_context, resolve_and_update
-from src.simulation.systems.reputation import propagate_gossip
-from src.simulation.systems.personality import check_personality_drift
+from src.simulation.systems.world_dynamics.reputation import propagate_gossip
+from src.simulation.systems.world_dynamics.personality import check_personality_drift
 from src.simulation.systems.goals import fetch_goal_hints, apply_goal_updates
 from src.simulation.systems.secrets import fetch_secret_hints, apply_secret_updates
 from src.simulation.systems.items import fetch_object_memory_hints, apply_item_updates

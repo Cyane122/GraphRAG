@@ -19,8 +19,8 @@ from datetime import datetime
 from src.agents.context.scene_keys import normalize_scene_types
 from src.agents.manager.models import ManagerBootstrap, ManagerDependencies, SceneTimePlan
 from src.assets.worlds.base import World
-from src.simulation.systems.schedules import SCHEDULE_TIME_PARSE_WINDOW_MIN, fetch_schedule_context
-from src.simulation.systems.time_rules import fetch_time_rule_context
+from src.simulation.systems.scheduling.schedules import SCHEDULE_TIME_PARSE_WINDOW_MIN, fetch_schedule_context
+from src.simulation.systems.scheduling.time_rules import fetch_time_rule_context
 from src.simulation.state.updater import build_time_plan
 
 _SCHEDULE_SENSITIVE_INPUT_RE = re.compile(

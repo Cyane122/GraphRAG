@@ -1,5 +1,5 @@
 # ================================
-# src/simulation/state/events.py
+# src/simulation/state/apply/events.py
 #
 # Create Event records and handle event-only complex updates.
 #
@@ -17,7 +17,7 @@ from src.config import MODEL_COMPLEX_UPDATER as COMPLEX_MODEL, MODEL_EVENT_CREAT
 from src.core.database import async_driver, get_in_universe_time
 from src.core.embedding.encoder import embed_async
 from src.simulation.systems.memory import ensure_memories_for_event
-from src.simulation.state.audit import _prepare_event_summaries
+from src.simulation.state.apply.audit import _prepare_event_summaries
 from src.simulation.state.importance import IMPORTANCE_RUBRIC
 
 
@@ -435,7 +435,7 @@ async def delegate_complex_update(
     DynamicState / 호감도 업데이트는 포함하지 않는다.
     """
     from src.simulation.systems.social import resolve_and_update as wb_resolve
-    from src.simulation.state.relationships import apply_scene_relationship_updates
+    from src.simulation.state.apply.relationships import apply_scene_relationship_updates
 
     participant_ids = [pc_id, npc_id]
     if world_config and scene_chars:

@@ -135,7 +135,7 @@ def _render_npc_block(npcs: list[dict], budget: int) -> str:
 
 
 def _render_events_block(events: list[dict], budget: int) -> str:
-    """Render recent events as story continuity hints."""
+    """Render recent events as complete story continuity hints."""
     if not events:
         return ""
     lines = ["[Recent Story]"]
@@ -150,7 +150,7 @@ def _render_events_block(events: list[dict], budget: int) -> str:
         if event.get("npc_memory"):
             line += f" NPC remembers: {event['npc_memory']}"
         lines.append(line)
-    return _clamp_block("\n".join(lines), budget)
+    return _join_complete_lines(lines, budget)
 
 
 def _render_memory_block(recall_events: list[dict], budget: int) -> str:
@@ -190,13 +190,6 @@ def _render_numeric_state_block(dynamic_state: dict, budget: int) -> str:
     stress = _first_numeric(dynamic_state, ("stress_level", "stress", "workplace_stress_level"))
     if stress is not None:
         lines.append(f"- stress: {_format_number(stress)} ({_stress_band(stress)})")
-
-    ts_acceptance = _first_numeric(dynamic_state, ("ts_acceptance",))
-    if ts_acceptance is not None:
-        lines.append(
-            f"- ts_acceptance: {_format_number(ts_acceptance)} "
-            f"({_percent_band(ts_acceptance, 'resistant', 'uneasy', 'tentative', 'receptive', 'internalized')})"
-        )
 
     need_parts = []
     for key in ("hunger", "rest", "social", "fun", "safety", "libido"):

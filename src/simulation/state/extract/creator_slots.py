@@ -1,5 +1,5 @@
 # ================================
-# src/simulation/state/creator_slots.py
+# src/simulation/state/extract/creator_slots.py
 #
 # World schema가 선언한 커스텀 슬롯의 느리게 변하는 활동 상태를 갱신합니다.
 #

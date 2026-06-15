@@ -7,7 +7,7 @@ Forbidden in Korean prose:
 소유욕, 유열, 황홀, 매료, 경외,
 근원적, 원초적, 절대적, 소멸, 심연,
 암컷, 수컷, 짐승, 번식,
-합리적인, 효율적인, 실용적인, 현실적인,
+합리적인, 효율적인, 실용적인, 현실적인, 실무적인,
 기제, 발동하다, 입력되다, 종속되다, 휘발되다,
 처분을 기다리다,
 세상이 무너지는 듯한,
@@ -65,6 +65,26 @@ Forbidden after dialogue or action:
 - explanatory connector: 왜냐하면 / 그렇기 때문에 / 그래서인지 / 그 탓인지
 
 Replace with: next action / body response / object handling / dialogue / silence.
+
+## Comparison and Simile Prohibition
+
+Direct simile / sensory-translation — forbidden:
+
+- 마치 ~ 같았다 / 마치 ~ 처럼 / ~ 처럼 느껴졌다 / ~ 처럼 보였다
+- as if / as though (영문 비유 구문)
+
+Contrast-frame show-then-tell — forbidden:
+
+- ~ 가 아니라 ~ / ~ 라기보다 ~ / ~ 보다는 ~ 에 가까웠다
+- 단순히 ~ 가 아니라 / 그저 ~ 가 아니라 / ~ 만은 아니었다 / ~ 이상의 것
+- not A but B / rather than / it is like / it was like
+
+Meaning-explain gloss — forbidden:
+
+- 그것/그건/그 순간/그 침묵/그 시선은 ~의미/뜻/증거/신호였다
+- 말해주고 있었다 / 보여주고 있었다 / 증명하고 있었다 / 드러내고 있었다 / 깨닫게 하고 있었다 / 느끼게 하고 있었다
+
+Replace every instance with: next action / body response / direct sensory fragment / dialogue / silence.
 
 ## Sensation Abstraction
 

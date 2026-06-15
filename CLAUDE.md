@@ -39,8 +39,8 @@ python -m src.apps.graph_viewer                 # graph viewer 서버 (포트 87
 | `WORLD_ID` | 활성 세계관 ID (예: `babe_univ`, `rofan`, `sunghwa_high_school` …) |
 | `MAX_TOKEN` | Actor 출력 상한 (기본 12288) |
 | `IMPERSONATION` | `true`=PC→NPC 모드 |
-| `MANAGER_PLANNER_MODE` | `legacy` / `shadow` / `integrated` — 컨텍스트 플래너 선택 (기본 `shadow`: legacy+integrated 동시 실행해 측정) |
-| `TURN_EXTRACTOR_MODE` | `legacy` / `shadow` / `unified` — 턴 추출기 선택 (기본 `shadow`: legacy+unified 동시 실행해 측정) |
+| `MANAGER_PLANNER_MODE` | `legacy` / `shadow` / `integrated` — 컨텍스트 플래너 (기본 `legacy`; integrated는 Pro라 느려 비채택, shadow=측정용 동시 실행) |
+| `TURN_EXTRACTOR_MODE` | `legacy` / `shadow` / `unified` — 턴 추출기 (기본 `legacy`; unified는 Pro라 느려 비채택, shadow=측정용 동시 실행) |
 | `MODEL_ACTOR` | 롤플레이 LLM (Gemini Pro) |
 | `MODEL_CLASSIFIER` | 씬/시간 분류 (Flash) |
 | `MODEL_STATE_UPDATER` | 경량 상태 추출 |
@@ -203,15 +203,18 @@ GraphRAG/
 │   │   │   └── evaluator.py        # 이벤트 조건 평가기
 │   │   ├── state/                  # Actor 응답 → DB 상태 변환
 │   │   │   ├── updater.py          # 상태 업데이트 총괄 (process_actor_response)
-│   │   │   ├── multi_character.py  # 다중 NPC 상태 추출
-│   │   │   ├── turn_extractor.py   # 턴 추출기 (integrated 모드)
-│   │   │   ├── dynamic_information.py # DynamicState 추출
-│   │   │   ├── relationships.py    # 관계/친밀도 업데이트
-│   │   │   ├── events.py           # 이벤트 생성 + 임베딩
-│   │   │   ├── time_plan.py        # 시간 계획 파싱
-│   │   │   ├── audit.py            # 상태 업데이트 감사 로그
-│   │   │   ├── creator_slots.py    # 커스텀 슬롯 업데이트
-│   │   │   └── update_policy.py    # 업데이트 정책 결정
+│   │   │   ├── importance.py       # 이벤트 중요도 루브릭 상수 (IMPORTANCE_RUBRIC)
+│   │   │   ├── extract/            # LLM 추출기 — Actor 응답에서 정보 추출
+│   │   │   │   ├── turn_extractor.py   # 턴 추출기 (unified 모드)
+│   │   │   │   ├── multi_character.py  # 다중 NPC 상태 추출
+│   │   │   │   ├── dynamic_information.py # DynamicInformation 추출
+│   │   │   │   └── creator_slots.py    # 커스텀 슬롯 업데이트
+│   │   │   └── apply/              # DB 적용 레이어 — 추출 결과를 그래프에 반영
+│   │   │       ├── events.py       # 이벤트 생성 + 임베딩
+│   │   │       ├── relationships.py    # 관계/친밀도 업데이트
+│   │   │       ├── time_plan.py    # 시간 계획 파싱
+│   │   │       ├── audit.py        # 상태 업데이트 감사 로그
+│   │   │       └── update_policy.py    # 업데이트 정책 결정
 │   │   └── systems/                # 독립 시뮬레이션 시스템
 │   │       ├── memory/
 │   │       │   ├── distortion.py   # 기억 왜곡 (NPC 성격 방향으로 의도된 동작)
@@ -232,16 +235,19 @@ GraphRAG/
 │   │       ├── social/
 │   │       │   ├── context.py      # SNS 컨텍스트 수집
 │   │       │   ├── graph.py        # 소셜 그래프 쿼리
+│   │       │   ├── models.py       # StubProfile 등 소셜 데이터 모델
 │   │       │   └── promotion.py    # 소셜 상태 승격
 │   │       ├── kakao/
 │   │       │   └── models.py       # 카카오톡 메시지 모델
-│   │       ├── organic.py          # 유기적 NPC 상태 변화
-│   │       ├── personal_facts.py   # 개인 사실 추출 + 저장
-│   │       ├── personality.py      # 성격 micro/macro drift
-│   │       ├── reputation.py       # 소문 전파 (gossip)
-│   │       ├── schedules.py        # 스케줄 컨텍스트 수집
-│   │       ├── schedule_tick.py    # 스케줄 tick 처리
-│   │       └── time_rules.py       # 시간 규칙 컨텍스트
+│   │       ├── world_dynamics/     # 장기 세계 동역학
+│   │       │   ├── organic.py      # 유기적 NPC 상태 변화
+│   │       │   ├── personality.py  # 성격 micro/macro drift
+│   │       │   └── reputation.py   # 소문 전파 (gossip)
+│   │       ├── scheduling/         # NPC 스케줄 + 시간 규칙
+│   │       │   ├── schedules.py    # 스케줄 컨텍스트 수집
+│   │       │   ├── schedule_tick.py    # 스케줄 tick 처리
+│   │       │   └── time_rules.py   # 시간 규칙 컨텍스트
+│   │       └── personal_facts.py   # 개인 사실 추출 + 저장
 │   │
 │   ├── apps/                       # 사용자-facing 백엔드 앱 묶음
 │   │   ├── app/                    # 메인 GraphRAG 웹 UI 백엔드 (FastAPI, 포트 8000)

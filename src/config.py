@@ -48,6 +48,7 @@ HF_TOKEN       = os.getenv("HF_TOKEN")
 
 # ── 기능 플래그 ─────────────────────────────────────────────
 IMPERSONATION = os.getenv("IMPERSONATION", "true").lower() == "true"
-# 측정 단계: shadow = legacy + integrated/unified 동시 실행 → shadow_diff + llm_latency 로 병목 비교
-MANAGER_PLANNER_MODE = os.getenv("MANAGER_PLANNER_MODE", "shadow").strip().lower()
-TURN_EXTRACTOR_MODE  = os.getenv("TURN_EXTRACTOR_MODE",  "shadow").strip().lower()
+# 측정 결과(2026-06-15): integrated/unified는 Pro 모델이라 legacy(Flash)보다 10~25s 느림 → 채택 안 함.
+# legacy 기본 유지. shadow/unified/integrated는 측정·실험용으로만 env에서 켠다.
+MANAGER_PLANNER_MODE = os.getenv("MANAGER_PLANNER_MODE", "legacy").strip().lower()
+TURN_EXTRACTOR_MODE  = os.getenv("TURN_EXTRACTOR_MODE",  "legacy").strip().lower()
