@@ -264,6 +264,23 @@ CASE
     ELSE mem.narrative_summary
 END"""
 
+# pre-migration DBs have no status column — NULL means 'active'
+_ACTIVE_STATUS_FILTER = "(mem.status IS NULL OR mem.status = 'active')"
+
+
+def _confidence_label(confidence: float | None, memory_type: str | None) -> str:
+    """Map confidence float to prompt label per plan spec."""
+    if memory_type == "gossip":
+        return "unverified"
+    v = float(confidence or 0.75)
+    if v >= 0.85:
+        return "confirmed"
+    if v >= 0.65:
+        return "likely"
+    if v >= 0.45:
+        return "uncertain"
+    return "unverified"
+
 
 async def _recall_relevant_memories(
     user_input: str,
@@ -273,17 +290,65 @@ async def _recall_relevant_memories(
     current_dt: datetime | None = None,
     location_id: str | None = None,
 ) -> tuple[list[dict], list[str], list[dict]]:
-    """Fetch memories via three complementary strategies and merge by priority.
+    """Fetch memories via three independent slots and merge by priority.
+
+    Each slot (pinned / recent / vector) runs in its own try block so that
+    a vector-index failure does not evict pinned or recent memories.
 
     Priority order:
-      1. Pinned (importance >= 8) — always included regardless of similarity
+      1. Pinned (importance >= 8, cap 2) — always included
       2. Recency guarantee — most recent memory if not already covered
       3. Vector search — composite-scored semantic matches fill remaining slots
     """
     recall_events: list[dict] = []
     memory_conflicts: list[str] = []
     raw_memories: list[dict] = []
+    pinned_rows: list[dict] = []
+    recent_rows: list[dict] = []
     limit = _memory_limit(scene_types)
+    recent_event_ids = {event["id"] for event in recent_events}
+
+    # ── 1. Pinned slot (independent — never lost to vector failure) ──────
+    try:
+        async with async_driver.session() as session:
+            pin_rec = await session.run(f"""
+                MATCH (c:Character {{id: $char_id}})-[:REMEMBERS]->(mem:Memory)
+                WHERE mem.importance >= 8 AND mem.summary_level < 3
+                  AND {_ACTIVE_STATUS_FILTER}
+                RETURN mem.event_id         AS id,
+                       {_MEMORY_SUMMARY_EXPR} AS summary,
+                       mem.memory_type      AS memory_type,
+                       mem.distortion_level AS distortion,
+                       mem.importance       AS importance,
+                       mem.confidence       AS confidence
+                ORDER BY mem.importance DESC
+                LIMIT 2
+            """, char_id=npc_id)
+            pinned_rows = await pin_rec.data()
+    except Exception as exc:
+        print(f"[Manager] pinned slot 조회 실패 (무시): {exc}")
+
+    # ── 2. Recent slot (independent) ─────────────────────────────────────
+    try:
+        async with async_driver.session() as session:
+            rec_rec = await session.run(f"""
+                MATCH (c:Character {{id: $char_id}})-[:REMEMBERS]->(mem:Memory)
+                WHERE mem.summary_level < 3
+                  AND {_ACTIVE_STATUS_FILTER}
+                RETURN mem.event_id         AS id,
+                       {_MEMORY_SUMMARY_EXPR} AS summary,
+                       mem.memory_type      AS memory_type,
+                       mem.distortion_level AS distortion,
+                       mem.importance       AS importance,
+                       mem.confidence       AS confidence
+                ORDER BY mem.created_at DESC
+                LIMIT 2
+            """, char_id=npc_id)
+            recent_rows = await rec_rec.data()
+    except Exception as exc:
+        print(f"[Manager] recent slot 조회 실패 (무시): {exc}")
+
+    # ── 3. Vector search slot (failure empties only this slot) ────────────
     try:
         # Expand the embedding query with scene context so short inputs ("응", "계속해")
         # retrieve more relevant memories via semantic similarity.
@@ -299,19 +364,20 @@ async def _recall_relevant_memories(
         memory_query = " ".join(filter(None, query_parts))
         query_embedding = await embed_async(memory_query)
 
-        # ── 1. Vector search ──────────────────────────────────
         async with async_driver.session() as session:
             rec = await session.run(f"""
                 CALL QUERY_VECTOR_INDEX('Memory', 'memory_embeddings', $embedding, $candidates)
                 WITH node AS mem, distance
                 MATCH (c:Character {{id: $char_id}})-[:REMEMBERS]->(mem)
                 WHERE distance <= $max_distance AND mem.summary_level < 3
+                  AND {_ACTIVE_STATUS_FILTER}
                 RETURN mem.event_id         AS id,
                        {_MEMORY_SUMMARY_EXPR} AS summary,
                        mem.memory_type      AS memory_type,
                        mem.distortion_level AS distortion,
                        mem.importance       AS importance,
                        mem.created_at       AS created_at,
+                       mem.confidence       AS confidence,
                        distance
                 ORDER BY distance ASC
                 LIMIT $limit
@@ -323,91 +389,60 @@ async def _recall_relevant_memories(
                 limit=15,
             )
             raw_memories = await rec.data()
-
-        # ── 2. Pinned (importance >= 8) ───────────────────────
-        async with async_driver.session() as session:
-            pin_rec = await session.run(f"""
-                MATCH (c:Character {{id: $char_id}})-[:REMEMBERS]->(mem:Memory)
-                WHERE mem.importance >= 8 AND mem.summary_level < 3
-                RETURN mem.event_id         AS id,
-                       {_MEMORY_SUMMARY_EXPR} AS summary,
-                       mem.memory_type      AS memory_type,
-                       mem.distortion_level AS distortion,
-                       mem.importance       AS importance
-                ORDER BY mem.importance DESC
-                LIMIT 5
-            """, char_id=npc_id)
-            pinned_rows = await pin_rec.data()
-
-        # ── 3. Recency guarantee ──────────────────────────────
-        async with async_driver.session() as session:
-            rec_rec = await session.run(f"""
-                MATCH (c:Character {{id: $char_id}})-[:REMEMBERS]->(mem:Memory)
-                WHERE mem.summary_level < 3
-                RETURN mem.event_id         AS id,
-                       {_MEMORY_SUMMARY_EXPR} AS summary,
-                       mem.memory_type      AS memory_type,
-                       mem.distortion_level AS distortion,
-                       mem.importance       AS importance
-                ORDER BY mem.created_at DESC
-                LIMIT 2
-            """, char_id=npc_id)
-            recent_rows = await rec_rec.data()
-
-        recent_event_ids = {event["id"] for event in recent_events}
-
-        # Score vector results
-        scored: list[tuple[float, dict]] = []
-        for memory in raw_memories:
-            if memory["id"] in recent_event_ids:
-                continue
-            sim = max(0.0, 1.0 - float(memory.get("distance") or 0.0))
-            recency = _recency_score(memory.get("created_at"), current_dt)
-            imp = _importance_score(memory.get("importance"))
-            final_score = round(sim * 0.6 + recency * 0.2 + imp * 0.2, 3)
-            scored.append((final_score, memory))
-        scored.sort(key=lambda x: x[0], reverse=True)
-
-        # Merge: pinned (guaranteed) → recency (1 guaranteed) → vector (fills budget)
-        seen_ids: set[str] = set()
-        budget = limit  # non-pinned slots
-
-        def _add_entry(mem: dict, score: float) -> None:
-            is_conflict = float(mem.get("distortion") or 0.0) > 0.4
-            recall_events.append({
-                "id": mem["id"],
-                "summary": mem["summary"],
-                "memory_type": mem.get("memory_type"),
-                "score": score,
-                "conflict": is_conflict,
-            })
-            if is_conflict:
-                memory_conflicts.append(mem["summary"])
-
-        for mem in pinned_rows:
-            mid = mem.get("id")
-            if mid and mid not in seen_ids and mid not in recent_event_ids:
-                _add_entry(mem, 1.0)
-                seen_ids.add(mid)
-
-        for mem in recent_rows[:1]:
-            mid = mem.get("id")
-            if mid and mid not in seen_ids and mid not in recent_event_ids:
-                _add_entry(mem, 0.75)
-                seen_ids.add(mid)
-                budget -= 1
-
-        for final_score, mem in scored:
-            if budget <= 0:
-                break
-            mid = mem.get("id")
-            if mid and mid not in seen_ids:
-                _add_entry(mem, final_score)
-                seen_ids.add(mid)
-                budget -= 1
-
     except Exception as exc:
-        print(f"[Manager] recall_events 조회 실패 (무시): {exc}")
+        print(f"[Manager] vector slot 조회 실패, vector 슬롯 비움 (무시): {exc}")
+        raw_memories = []
+
+    # ── Merge: pinned → recent → vector ──────────────────────────────────
+    # Score vector results
+    scored: list[tuple[float, dict]] = []
+    for memory in raw_memories:
+        if memory["id"] in recent_event_ids:
+            continue
+        sim = max(0.0, 1.0 - float(memory.get("distance") or 0.0))
+        recency = _recency_score(memory.get("created_at"), current_dt)
+        imp = _importance_score(memory.get("importance"))
+        final_score = round(sim * 0.6 + recency * 0.2 + imp * 0.2, 3)
+        scored.append((final_score, memory))
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    seen_ids: set[str] = set()
+    budget = limit  # non-pinned slots
+
+    def _add_entry(mem: dict, score: float) -> None:
+        is_conflict = float(mem.get("distortion") or 0.0) > 0.4
+        recall_events.append({
+            "id": mem["id"],
+            "summary": mem["summary"],
+            "memory_type": mem.get("memory_type"),
+            "confidence_label": _confidence_label(mem.get("confidence"), mem.get("memory_type")),
+            "score": score,
+            "conflict": is_conflict,
+        })
+        if is_conflict:
+            memory_conflicts.append(mem["summary"])
+
+    for mem in pinned_rows:
+        mid = mem.get("id")
+        if mid and mid not in seen_ids and mid not in recent_event_ids:
+            _add_entry(mem, 1.0)
+            seen_ids.add(mid)
+
+    for mem in recent_rows[:1]:
+        mid = mem.get("id")
+        if mid and mid not in seen_ids and mid not in recent_event_ids:
+            _add_entry(mem, 0.75)
+            seen_ids.add(mid)
+            budget -= 1
+
+    for final_score, mem in scored:
+        if budget <= 0:
+            break
+        mid = mem.get("id")
+        if mid and mid not in seen_ids:
+            _add_entry(mem, final_score)
+            seen_ids.add(mid)
+            budget -= 1
 
     return recall_events, memory_conflicts, raw_memories
 

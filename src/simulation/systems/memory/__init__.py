@@ -5,7 +5,8 @@
 # 왜곡과 압축은 배치 처리로 LLM 호출 횟수를 최소화합니다.
 #
 # Functions
-#   - ensure_memories_for_event(event_id: str, summary: str, importance: int, char_ids: list[str], timestamp: str, embedding: list[float] | None = None, memory_type: str = "episodic", actor_response: str = "") -> None : Event에 관련된 캐릭터별 Memory 노드 생성
+#   - _infer_signals_from_summary(summary: str) -> list[str] : 이벤트 요약에서 Korean keyword 기반 strong signal 태그 추론
+#   - ensure_memories_for_event(event_id: str, summary: str, importance: int, char_ids: list[str], timestamp: str, embedding: list[float] | None = None, memory_type: str = "episodic", actor_response: str = "", signals: list[str] | None = None, source_type: str = "direct_experience", source_commit_id: str = "") -> None : Event에 관련된 캐릭터별 Memory 노드 생성 (게이트 통과 시)
 #   - run_decay(current_game_time: datetime) -> None : 게임 내 시간 경과에 따라 기억 풍화·왜곡·삭제
 #   - distort_on_affinity_change(char_id: str, pc_id: str, affinity_delta: int, current_game_time: datetime) -> None : 호감도 급변 시 관련 기억을 즉시 재해석
 # ================================
@@ -24,6 +25,7 @@ from src.simulation.systems.memory.distortion import (
     _update_memory,
     distort_on_affinity_change,
 )
+from src.simulation.systems.memory.gate import GateDecision, apply_gate
 
 _DECAY_TABLE = {
     (0, 2):  {"distort": 14,  "level1": 30,  "level2": 60,  "delete": 120},
@@ -45,6 +47,51 @@ def _fallback_memory_summary(char_id: str, summary: str, multi_character: bool) 
     if not multi_character:
         return summary
     return f"{char_id}의 기억: {summary}"
+
+
+_SIGNAL_KEYWORDS: dict[str, list[str]] = {
+    "promise":         ["약속", "다짐", "맹세"],
+    "appointment":     ["약속", "만나기로", "볼게"],
+    "secret":          ["비밀", "숨기", "들키", "말하지 마"],
+    "first_time":      ["처음", "첫 ", "최초", "처음으로"],
+    "misunderstanding":["오해", "착각", "잘못 알"],
+    "conflict":        ["갈등", "다툼", "싸움", "충돌", "언쟁", "화가 났"],
+    "reconciliation":  ["화해", "용서", "사과"],
+    "betrayal":        ["배신", "배반", "거짓말"],
+    "gift":            ["선물", "줬다", "받았다"],
+    "debt":            ["빌려", "갚", "빚"],
+    "identity":        ["정체", "사실은", "알고 보니"],
+    "boundary":        ["경계", "선을 넘"],
+    "emotional_wound": ["상처", "트라우마", "아팠"],
+    "favor":           ["부탁", "도움", "고마워"],
+}
+
+
+def _infer_signals_from_summary(summary: str) -> list[str]:
+    """이벤트 요약 텍스트에서 강한 시그널 태그를 추론한다 (Korean keyword matching)."""
+    if not summary:
+        return []
+    signals = []
+    for signal, keywords in _SIGNAL_KEYWORDS.items():
+        if any(kw in summary for kw in keywords):
+            signals.append(signal)
+    # deduplicate while preserving order
+    seen: set[str] = set()
+    return [s for s in signals if not (s in seen or seen.add(s))]  # type: ignore[func-returns-value]
+
+
+def _confidence_from_type(memory_type: str, source_type: str) -> float:
+    """memory_type + source_type 규칙으로 confidence를 산출한다 (LLM 불필요)."""
+    base = {
+        "direct_experience": 0.9,
+        "hearsay": 0.6,
+        "inference": 0.7,
+        "gossip": 0.4,
+    }.get(source_type, 0.75)
+    # 오해 타입은 불확실성이 내재돼 있어 confidence를 낮춘다
+    if memory_type == "misunderstanding":
+        return min(base, 0.65)
+    return base
 
 
 async def _build_subjective_memory_summaries(
@@ -120,26 +167,58 @@ async def _memory_embedding(memory_summary: str, shared_embedding: list[float] |
     return shared_embedding
 
 
+async def _reinforce_memory(
+    session,
+    mem_id: str,
+    importance: int,
+    timestamp: str,
+) -> None:
+    """기존 Memory의 salience/reinforced_count를 보수적으로 올린다. 새 노드를 만들지 않는다."""
+    await session.run("""
+        MATCH (m:Memory {id: $mid})
+        SET m.salience           = coalesce(m.salience, 0.0) + 0.1,
+            m.reinforced_count   = coalesce(m.reinforced_count, 0) + 1,
+            m.last_reinforced_at = $ts,
+            m.importance         = CASE
+                WHEN $importance > coalesce(m.importance, 0) THEN $importance
+                ELSE coalesce(m.importance, 0)
+            END
+    """, mid=mem_id, importance=importance, ts=timestamp)
+    print(f"[MemoryGate] REINFORCE: {mem_id}")
+
+
 # ════════════════════════════════════════════════════════════
 # 1. Memory 노드 생성
 # ════════════════════════════════════════════════════════════
 
 async def ensure_memories_for_event(
-    event_id:   str,
-    summary:    str,
-    importance: int,
-    char_ids:   list[str],
-    timestamp:  str,
-    embedding:  list[float] | None = None,
-    memory_type: str = "episodic",
-    actor_response: str = "",
+    event_id:         str,
+    summary:          str,
+    importance:       int,
+    char_ids:         list[str],
+    timestamp:        str,
+    embedding:        list[float] | None = None,
+    memory_type:      str = "episodic",
+    actor_response:   str = "",
+    signals:          list[str] | None = None,
+    source_type:      str = "direct_experience",
+    source_commit_id: str = "",
 ) -> None:
     """
     Event에 관련된 캐릭터별 Memory 노드를 생성.
     객관 Event summary를 복제하지 않고 캐릭터별 주관 문장으로 저장한다.
+    Memory Gate를 통과한 캐릭터만 생성하거나 reinforce한다.
 
     timestamp: 반드시 ISO 8601 형식 ("2024-03-08T08:00:00").
     """
+    signals_list = signals or []
+    # importance 3-4 + episodic 이벤트가 불필요하게 REJECT 되지 않도록
+    # 명시적 signals가 없을 때 summary에서 keyword 기반으로 추론한다.
+    if not signals_list and summary:
+        signals_list = _infer_signals_from_summary(summary)
+    signals_json = json.dumps(signals_list, ensure_ascii=False)
+    confidence = _confidence_from_type(memory_type, source_type)
+
     emb = embedding
     if emb is None and summary:
         try:
@@ -155,42 +234,76 @@ async def ensure_memories_for_event(
     )
     multi_character = len(char_ids) > 1
 
+    # Phase 1: 캐릭터별 게이트 결정 (각자 세션을 열어 dedup 체크)
+    # decisions[char_id] = (GateDecision, target_mem_id_to_reinforce)
+    decisions: dict[str, tuple[GateDecision, str]] = {}
+    for char_id in char_ids:
+        decisions[char_id] = await apply_gate(
+            char_id=char_id,
+            event_id=event_id,
+            importance=importance,
+            signals=signals_list,
+            memory_type=memory_type,
+            source_commit_id=source_commit_id,
+        )
+
+    # Phase 2: 결정에 따라 CREATE / REINFORCE / skip
     async with async_driver.session() as session:
         for char_id in char_ids:
             mem_id = f"mem_{char_id}_{event_id}"
+            decision, target_mem_id = decisions[char_id]
+
+            if decision == GateDecision.REJECT:
+                print(f"[MemoryGate] REJECT: {event_id} → {char_id} (importance={importance})")
+                continue
+
+            if decision == GateDecision.REINFORCE:
+                # target_mem_id is the actual existing memory to reinforce.
+                # It may differ from mem_id when the dedup matched via source_commit_id.
+                await _reinforce_memory(session, target_mem_id, importance, timestamp)
+                continue
+
+            # CREATE path
             memory_summary = subjective_summaries.get(
                 char_id,
                 _fallback_memory_summary(char_id, summary, multi_character),
             )
             memory_emb = await _memory_embedding(memory_summary, emb, summary)
 
-            rec = await session.run(
-                "MATCH (m:Memory {id: $mid}) RETURN m.id AS id",
-                mid=mem_id,
-            )
-            if await rec.single():
-                continue
-
             await session.run("""
                 CREATE (m:Memory {
-                    id:               $mid,
-                    event_id:         $event_id,
-                    char_id:          $char_id,
-                    summary:          $summary,
-                    embedding:        $emb,
-                    memory_type:      $memory_type,
-                    narrative_summary: '',
-                    state_summary:    $event_summary,
-                    importance:       $importance,
-                    distortion_level: 0.0,
-                    summary_level:    0,
-                    created_at:       $ts,
-                    last_decayed_at:  $ts
+                    id:                 $mid,
+                    event_id:           $event_id,
+                    char_id:            $char_id,
+                    summary:            $summary,
+                    embedding:          $emb,
+                    memory_type:        $memory_type,
+                    narrative_summary:  '',
+                    state_summary:      $event_summary,
+                    importance:         $importance,
+                    distortion_level:   0.0,
+                    summary_level:      0,
+                    created_at:         $ts,
+                    last_decayed_at:    $ts,
+                    status:             'active',
+                    source_commit_id:   $source_commit_id,
+                    source_type:        $source_type,
+                    confidence:         $confidence,
+                    signals:            $signals_json,
+                    salience:           0.0,
+                    recall_count:       0,
+                    last_recalled_at:   '',
+                    reinforced_count:   0,
+                    last_reinforced_at: '',
+                    resolved_at:        ''
                 })
-            """, mid=mem_id, event_id=event_id, char_id=char_id,
-                 summary=memory_summary, emb=memory_emb, memory_type=memory_type,
-                 event_summary=summary,
-                 importance=importance, ts=timestamp)
+            """,
+                mid=mem_id, event_id=event_id, char_id=char_id,
+                summary=memory_summary, emb=memory_emb, memory_type=memory_type,
+                event_summary=summary, importance=importance, ts=timestamp,
+                source_commit_id=source_commit_id, source_type=source_type,
+                confidence=confidence, signals_json=signals_json,
+            )
 
             await session.run("""
                 MATCH (c:Character {id: $cid}), (m:Memory {id: $mid})

@@ -26,8 +26,8 @@ from src.simulation.state.importance import IMPORTANCE_RUBRIC
 
 
 SCHEMA_VERSION = "accepted_turn_facts.v1"
-# v2: 이벤트 중요도 루브릭(IMPORTANCE_RUBRIC) 추가 — 이전 버전 캐시 아티팩트 재사용 차단
-PROMPT_VERSION = "turn-extractor-unified-v2"
+# v3: memory_candidates에 signals/source_type/suggested_memory_type 필드 추가
+PROMPT_VERSION = "turn-extractor-unified-v3"
 
 
 class AcceptedTurnFacts(BaseModel):
@@ -94,7 +94,7 @@ Return ONLY valid JSON with these keys:
 dynamic_state_candidates: list of objects with character_id, field, new_value, evidence_quote, confidence, reason
 relationship_signals: list of objects with source_id, target_id, affinity_delta, evidence_quote, confidence, reason
 event_candidates: list of objects with summary, impact, importance, memory_type, new_relationship_status, evidence_quote, confidence, reason
-memory_candidates: list of objects with character_id, summary, memory_type, evidence_quote, confidence, reason
+memory_candidates: list of objects with character_id, summary, memory_type, suggested_memory_type, signals, source_type, evidence_quote, confidence, reason
 secondary_relationship_signals: list of objects with source_id, target_id, affinity_delta, current_status, evidence_quote, confidence, reason
 
 Rules:
@@ -106,6 +106,9 @@ Rules:
 - Routine politeness/proximity should not create large relationship deltas.
 - Do not extract goal, item, secret, or organic/pregnancy facts in this phase.
 - Every candidate must include evidence_quote, confidence between 0 and 1, and reason.
+- memory_candidates.signals: list any applicable signal tags from [promise, appointment, secret, first_time, misunderstanding, conflict, reconciliation, betrayal, boundary, gift, item_anchor, debt, favor, identity, emotional_wound, gossip]. Use [] if none apply.
+- memory_candidates.source_type: one of "direct_experience" | "hearsay" | "inference" | "gossip".
+- memory_candidates.suggested_memory_type: one of "promise" | "misunderstanding" | "gossip" | "relational" | "item" | "episodic" | "emotional".
 
 Event importance scoring (for each event_candidates.importance):
 {IMPORTANCE_RUBRIC}

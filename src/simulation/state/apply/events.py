@@ -4,7 +4,7 @@
 # Create Event records and handle event-only complex updates.
 #
 # Functions
-#   - _create_event(event_data: dict, npc_id: str, pc_id: str, actor_response: str = "", participant_ids: list[str] | None = None) -> None : Create Event and Memory nodes
+#   - _create_event(event_data: dict, npc_id: str, pc_id: str, actor_response: str = "", participant_ids: list[str] | None = None, commit_id: str = "") -> None : Create Event and Memory nodes
 #   - _update_acceptance_scores(npc_id: str, ts_delta: int, na_delta: int) -> None : Apply TS/NA deltas
 #   - _get_current_iso_time() -> str : Fetch current game time as an ISO string
 #   - delegate_complex_update(actor_response: str, npc_id: str, pc_id: str, initial_changes: dict | None, event_only: bool, world_config: dict | None, scene_chars: list[str] | None) -> None : Delegate complex updates including event-only mode
@@ -283,10 +283,40 @@ async def _create_event(
     pc_id: str,
     actor_response: str = "",
     participant_ids: list[str] | None = None,
+    commit_id: str = "",
 ) -> None:
     """Event 노드와 관련 캐릭터별 Memory 노드를 생성한다."""
     if not event_data or not event_data.get("id"):
         return
+
+    # Idempotency: same commit already produced an Event → skip Event re-creation on retry,
+    # but still call ensure_memories_for_event in case memory creation failed last time.
+    if commit_id:
+        async with async_driver.session() as session:
+            rec = await session.run(
+                """MATCH (e:Event {source_commit_id: $cid})
+                   RETURN e.id AS id, e.summary AS summary,
+                          e.importance AS importance, e.memory_type AS memory_type
+                   LIMIT 1""",
+                cid=commit_id,
+            )
+            row = await rec.single()
+        if row:
+            existing_id = str(row["id"])
+            print(f"[Updater] event {existing_id} already exists for commit {commit_id}, ensuring memories")
+            timestamp_iso = await _get_current_iso_time()
+            related_char_ids = list(dict.fromkeys(participant_ids or [npc_id, pc_id]))
+            await ensure_memories_for_event(
+                event_id         = existing_id,
+                summary          = row["summary"] or "",
+                importance       = int(row["importance"] or 0),
+                char_ids         = related_char_ids,
+                timestamp        = timestamp_iso,
+                memory_type      = row["memory_type"] or "episodic",
+                actor_response   = actor_response,
+                source_commit_id = commit_id,
+            )
+            return
 
     event_data["id"] = await _unique_event_id(str(event_data["id"]))
     timestamp_fmt = await get_in_universe_time()
@@ -308,20 +338,21 @@ async def _create_event(
     async with async_driver.session() as session:
         await session.run("""
             CREATE (:Event {
-                id:            $id,
-                summary:       $summary,
-                timestamp:     $timestamp,
-                importance:    $importance,
-                impact:        $impact,
-                memory_type:   $memory_type,
+                id:               $id,
+                summary:          $summary,
+                timestamp:        $timestamp,
+                importance:       $importance,
+                impact:           $impact,
+                memory_type:      $memory_type,
                 narrative_summary: $narrative_summary,
-                state_summary: $state_summary,
-                content:       $content,
-                status:        'active',
-                turn_count:    1,
-                decay_rate:    0.1,
-                summary_level: 0,
-                embedding:     $embedding
+                state_summary:    $state_summary,
+                content:          $content,
+                status:           'active',
+                turn_count:       1,
+                decay_rate:       0.1,
+                summary_level:    0,
+                embedding:        $embedding,
+                source_commit_id: $commit_id
             })
         """,
             id=event_data["id"], summary=summary, timestamp=timestamp_fmt,
@@ -331,6 +362,7 @@ async def _create_event(
             state_summary=prepared["state_summary"],
             content=content,
             embedding=embedding,
+            commit_id=commit_id,
         )
 
         for char_id in related_char_ids:
@@ -350,14 +382,15 @@ async def _create_event(
     print(f"[Updater] event created: {event_data['id']} (importance={importance})")
 
     await ensure_memories_for_event(
-        event_id   = event_data["id"],
-        summary    = summary,
-        importance = importance,
-        char_ids   = related_char_ids,
-        timestamp  = timestamp_iso,
-        embedding  = embedding,
-        memory_type=prepared["memory_type"],
-        actor_response=actor_response,
+        event_id         = event_data["id"],
+        summary          = summary,
+        importance       = importance,
+        char_ids         = related_char_ids,
+        timestamp        = timestamp_iso,
+        embedding        = embedding,
+        memory_type      = prepared["memory_type"],
+        actor_response   = actor_response,
+        source_commit_id = commit_id,
     )
 
 

@@ -116,6 +116,8 @@ python -m src.apps.graph_viewer                 # graph viewer 서버 (포트 87
 **Deferred commit**: Actor 응답 → `PendingStore` 저장 → 다음 턴 시작 시 DB 적용.
 reroll 시 pending 폐기, DB 무변경.
 
+**Per-thread 설정**: `ConversationState.ooc_config` (OOC 설정 텍스트), `ConversationState.usernotes` (다중 유저노트 리스트). 둘 다 `effective_input`에 주입 — 유저노트는 Player Input 앞, OOC config는 뒤.
+
 ---
 
 ## 디렉토리 맵
@@ -159,7 +161,7 @@ GraphRAG/
 │   │       ├── prompt_sections.py  # 섹션 단위 렌더러
 │   │       ├── ooc_handler.py      # *...* OOC 파싱 + DB 반영
 │   │       ├── checklist.py        # 체크리스트 프롬프트 섹션
-│   │       ├── usernote.py         # 유저 노트 블록 생성/로드
+│   │       ├── usernote.py         # 유저노트 다중 노트 빌더 (ConversationState.usernotes → <usernote> 태그)
 │   │       └── prompts/            # Markdown 프롬프트 파일
 │   │           ├── core/           # 핵심 정책 프롬프트
 │   │           ├── blacklist/      # 금지어 목록
@@ -218,6 +220,8 @@ GraphRAG/
 │   │   └── systems/                # 독립 시뮬레이션 시스템
 │   │       ├── memory/
 │   │       │   ├── distortion.py   # 기억 왜곡 (NPC 성격 방향으로 의도된 동작)
+│   │       │   ├── gate.py         # 결정론적 메모리 게이트 (reject/create/reinforce)
+│   │       │   ├── migration.py    # Memory/Event 메타데이터 컬럼 추가 마이그레이션 (v1)
 │   │       │   └── narrative.py    # N턴마다 대화 → 타임라인 압축
 │   │       ├── needs/
 │   │       │   ├── store.py        # 욕구 수치 저장/조회

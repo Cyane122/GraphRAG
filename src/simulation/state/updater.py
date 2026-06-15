@@ -18,7 +18,7 @@
 #   - _render_dynamic_state_field_policy(field_types: dict[str, str]) -> str : Render allowed DynamicState fields for extractor prompt.
 #   - _write_updater_diff_snapshot(plan: dict, state_candidates: list[dict], rel_candidate: dict | None, event_candidate: dict | None) -> None : LLM 출력과 diff 결과를 logs/updater_diff.json에 저장.
 #   - _select_event_owner_id(npc_id: str, pc_id: str, participant_ids: list[str]) -> str | None : Choose the relationship anchor for Event updates.
-#   - _apply_event_action(plan: dict, event_allowed: bool, active_event: dict | None, actor_response: str, event_owner_id: str, pc_id: str, participant_ids: list[str], state_candidates: list[dict], rel_candidate: dict | None, guard: dict, feasibility_audit: dict) -> dict | None : Apply Event action from an updater plan.
+#   - _apply_event_action(plan: dict, event_allowed: bool, active_event: dict | None, actor_response: str, event_owner_id: str, pc_id: str, participant_ids: list[str], state_candidates: list[dict], rel_candidate: dict | None, guard: dict, feasibility_audit: dict, commit_id: str = "") -> dict | None : Apply Event action from an updater plan.
 # ================================
 import asyncio
 import json
@@ -422,6 +422,7 @@ async def _apply_event_action(
     rel_candidate: dict | None,
     guard: dict,
     feasibility_audit: dict,
+    commit_id: str = "",
 ) -> dict | None:
     """Create, continue, or close an Event from a primary updater plan."""
     new_event: dict | None = None
@@ -469,6 +470,7 @@ async def _apply_event_action(
         pc_id,
         actor_response,
         participant_ids=participant_ids,
+        commit_id=commit_id,
     )
     new_status = new_event.get("new_relationship_status")
     event_importance = _safe_int(new_event.get("importance"), 0)
@@ -690,6 +692,7 @@ async def process_actor_response(
                         None,
                         guard,
                         feasibility_audit,
+                        commit_id=commit_id or "",
                     )
             except Exception as e:
                 print(f"[StateUpdater] NPC=PC event update failed (continuing): {e}")
@@ -855,6 +858,7 @@ async def process_actor_response(
                 rel_candidate,
                 guard,
                 feasibility_audit,
+                commit_id=commit_id or "",
             )
     except Exception as e:
         print(f"[StateUpdater] event creation failed (ignored): {e}")
