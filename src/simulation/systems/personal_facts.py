@@ -236,6 +236,7 @@ Explicit facts only. Skip emotions/metaphors/flirting/scene actions unless durab
                 "max_output_tokens": 1024,
                 "thinking_config": {"thinking_budget": 0},
                 "response_mime_type": "application/json",
+                "log_source": "personal_facts",
             },
         ),
         timeout=_FACT_EXTRACT_TIMEOUT_SECONDS,

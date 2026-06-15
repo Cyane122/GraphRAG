@@ -162,6 +162,7 @@ async def maybe_run_integrated_planner(
                 "temperature": 0.0,
                 "max_output_tokens": 3072,
                 "response_mime_type": "application/json",
+                "log_source": "integrated_manager_planner",
             },
         )
         raw = extract_json_from_llm(response.text, source="integrated_manager_planner")

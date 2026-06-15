@@ -83,6 +83,7 @@ async def run_actor(
             "max_output_tokens": MAX_TOKENS,
             "temperature": 1.0,
             "thinking_config": {"thinking_level": "HIGH"},
+            "log_source": "actor",
         }
     )
 

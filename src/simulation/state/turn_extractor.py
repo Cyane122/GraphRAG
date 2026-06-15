@@ -22,10 +22,12 @@ from src.config import MODEL_TURN_EXTRACTOR
 from src.core.commit_artifacts import read_artifact, text_hash, write_artifact
 from src.core.database import get_dynamic_state_field_types
 from src.core.llm.client import extract_json_from_llm, get_model
+from src.simulation.state.importance import IMPORTANCE_RUBRIC
 
 
 SCHEMA_VERSION = "accepted_turn_facts.v1"
-PROMPT_VERSION = "turn-extractor-unified-v1"
+# v2: 이벤트 중요도 루브릭(IMPORTANCE_RUBRIC) 추가 — 이전 버전 캐시 아티팩트 재사용 차단
+PROMPT_VERSION = "turn-extractor-unified-v2"
 
 
 class AcceptedTurnFacts(BaseModel):
@@ -53,8 +55,10 @@ def _artifact_matches(
     actor_response_hash: str,
 ) -> bool:
     """Return whether a stored extractor artifact can be reused."""
+    # prompt_version 도 일치해야 재사용한다. 프롬프트(루브릭 등)가 바뀌면 구버전 캐시를 무효화.
     return (
         payload.get("schema_version") == SCHEMA_VERSION
+        and payload.get("prompt_version") == PROMPT_VERSION
         and payload.get("commit_id") == commit_id
         and payload.get("user_input_hash") == user_input_hash
         and payload.get("actor_response_hash") == actor_response_hash
@@ -102,6 +106,9 @@ Rules:
 - Routine politeness/proximity should not create large relationship deltas.
 - Do not extract goal, item, secret, or organic/pregnancy facts in this phase.
 - Every candidate must include evidence_quote, confidence between 0 and 1, and reason.
+
+Event importance scoring (for each event_candidates.importance):
+{IMPORTANCE_RUBRIC}
 
 Primary NPC: {npc_id}
 PC: {pc_id}

@@ -47,6 +47,7 @@ from src.simulation.state.creator_slots import apply_creator_slot_updates
 from src.simulation.state.dynamic_information import (
     apply_multi_character_dynamic_information_updates,
 )
+from src.simulation.state.importance import IMPORTANCE_RUBRIC
 from src.simulation.state.events import (
     _append_to_event,
     _apply_relationship_status,
@@ -231,11 +232,7 @@ Active event [{active_event['id']}] — turn {turns} — {active_event.get('summ
 
     event_block = f"""
 Event action is enabled.
-Importance:
-8-10: Major (hospitalization/confession/surgery/death/marriage)
-5-7: Significant (first meeting/major fight+reconciliation/VERY FIRST emotional intimacy/near-breakup/public humiliation)
-2-4: Minor durable (new injury/new named char/promise/secret/gift/location transition/new object or doc/repeated sex incl. arrangement)
-0-1: Routine or atmospheric. Do NOT create unless it leaves a durable record worth remembering.
+{IMPORTANCE_RUBRIC}
 {active_block}
 action: {actions_hint}
 When an active event exists, close it as soon as the activity concludes, the characters leave, time advances past it, or the scene topic shifts. Routine daily activities such as meals should not remain active after their visible conclusion.

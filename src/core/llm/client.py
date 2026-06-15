@@ -8,6 +8,7 @@
 #   - _SafeResponse : response.text가 항상 str을 반환하도록 보장하는 래퍼
 #
 # Functions
+#   - record_llm_latency(log_source: str, model: str, start_epoch_ms: int, elapsed_ms: int, mime: str | None, status: str) -> None : LLM 호출 지연을 logs/llm_latency.jsonl에 기록
 #   - get_client() -> genai.Client : 스트리밍 직접 호출 시 사용하는 클라이언트 반환
 #   - get_model(model_name: str, system_prompt: str | None) -> _GeminiModel : 모델 래퍼 반환
 #   - get_response_text(response) -> str : response.text가 None인 경우 parts에서 텍스트 추출
@@ -18,6 +19,9 @@
 import asyncio
 import json
 import re
+import time
+from pathlib import Path
+from time import perf_counter
 from types import SimpleNamespace
 
 from google import genai
@@ -26,6 +30,38 @@ from google.genai import types
 from src.config import GOOGLE_CLOUD_LOCATION, GOOGLE_PROJECT_ID as PROJECT_ID
 
 _LLM_TIMEOUT_SEC = 90  # 비스트리밍 JSON 호출 최대 대기 시간
+
+# 측정용: 모든 비동기 LLM 호출 1건의 지연을 한 줄씩 누적한다(Phase 2 병목 분석).
+_LLM_LATENCY_LOG = Path("logs") / "llm_latency.jsonl"
+
+
+def record_llm_latency(
+    log_source: str,
+    model: str,
+    start_epoch_ms: int,
+    elapsed_ms: int,
+    mime: str | None,
+    status: str,
+) -> None:
+    """LLM 호출 1건의 지연을 logs/llm_latency.jsonl에 한 줄로 남긴다. 측정 전용, 실패는 무시.
+
+    start_epoch_ms(시작 시각) + elapsed_ms 로 호출 구간이 겹치면 병렬, 안 겹치면 순차임을
+    사후 분석할 수 있다. log_source 별로 묶으면 호출 종류별 지연 분포를 볼 수 있다.
+    """
+    try:
+        _LLM_LATENCY_LOG.parent.mkdir(exist_ok=True)
+        line = json.dumps({
+            "ts": start_epoch_ms,
+            "log_source": log_source,
+            "model": model,
+            "elapsed_ms": elapsed_ms,
+            "mime": mime,
+            "status": status,
+        }, ensure_ascii=False)
+        with _LLM_LATENCY_LOG.open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except Exception:
+        pass
 
 # sexual_information 등 성인 콘텐츠를 포함하는 업데이터 호출용 safety bypass
 _CONTENT_OFF_SAFETY_SETTINGS = [
@@ -317,32 +353,53 @@ class _GeminiModel:
         JSON mime 호출이 빈 텍스트를 반환하면 diagnostics를 남기고 streaming으로 재시도한다.
         """
         config_dict = generation_config or {}
-        log_source = str(config_dict.get("log_source") or "json_async")
+        # 측정 정확도: 라벨 없는 호출은 'unlabeled'로 묶인다(주로 best-effort 병렬 후처리).
+        # 임계 경로(actor/classifier/planner/extractor/updater 등)는 모두 명시 log_source를 가진다.
+        log_source = str(config_dict.get("log_source") or "unlabeled")
+        mime = config_dict.get("response_mime_type")
         config = self._build_config(generation_config)
 
-        if config_dict.get("response_mime_type") == "application/json":
-            resp = await asyncio.wait_for(
-                _client.aio.models.generate_content(
-                    model=self._model,
-                    contents=contents,
-                    config=config,
-                ),
-                timeout=_LLM_TIMEOUT_SEC,
+        # 측정용 타이밍: JSON 빈 응답 → 스트리밍 재시도까지 한 호출의 총 지연을 기록한다.
+        start_epoch_ms = int(time.time() * 1000)
+        started = perf_counter()
+        status = "ok"
+        try:
+            if mime == "application/json":
+                resp = await asyncio.wait_for(
+                    _client.aio.models.generate_content(
+                        model=self._model,
+                        contents=contents,
+                        config=config,
+                    ),
+                    timeout=_LLM_TIMEOUT_SEC,
+                )
+                safe = _SafeResponse(resp)
+                if safe.text.strip():
+                    return safe
+
+                status = "empty_fallback_stream"
+                log_empty_response_diagnostics(resp, log_source)
+                fallback_config = dict(config_dict)
+                fallback_config.pop("log_source", None)
+                fallback_config.pop("response_mime_type", None)
+                fallback_config["thinking_config"] = {"thinking_budget": 0}
+                current_budget = int(fallback_config.get("max_output_tokens") or 1024)
+                fallback_config["max_output_tokens"] = max(2048, min(current_budget * 2, 8192))
+                return await self._generate_content_stream_text(contents, fallback_config)
+
+            return await self._generate_content_stream_text(contents, generation_config)
+        except Exception:
+            status = "error"
+            raise
+        finally:
+            record_llm_latency(
+                log_source,
+                self._model,
+                start_epoch_ms,
+                int((perf_counter() - started) * 1000),
+                mime,
+                status,
             )
-            safe = _SafeResponse(resp)
-            if safe.text.strip():
-                return safe
-
-            log_empty_response_diagnostics(resp, log_source)
-            fallback_config = dict(config_dict)
-            fallback_config.pop("log_source", None)
-            fallback_config.pop("response_mime_type", None)
-            fallback_config["thinking_config"] = {"thinking_budget": 0}
-            current_budget = int(fallback_config.get("max_output_tokens") or 1024)
-            fallback_config["max_output_tokens"] = max(2048, min(current_budget * 2, 8192))
-            return await self._generate_content_stream_text(contents, fallback_config)
-
-        return await self._generate_content_stream_text(contents, generation_config)
 
 
 def get_model(model_name: str, system_prompt: str | None = None) -> _GeminiModel:

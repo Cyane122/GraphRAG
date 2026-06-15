@@ -18,6 +18,7 @@ from src.core.database import async_driver, get_in_universe_time
 from src.core.embedding.encoder import embed_async
 from src.simulation.systems.memory import ensure_memories_for_event
 from src.simulation.state.audit import _prepare_event_summaries
+from src.simulation.state.importance import IMPORTANCE_RUBRIC
 
 
 async def _fetch_active_event(npc_id: str, pc_id: str) -> dict | None:
@@ -194,10 +195,7 @@ Routine meal / sitting / waiting / casual talk / atmosphere -> null unless durab
 
 ## Importance
 
-8-10 = major: hospitalization / surgery / accident / confession.
-5-7 = significant: major injury / near-breakup / very first emotional intimacy / public humiliation.
-2-4 = minor durable: new injury / named character / promise / secret / gift / location transition / small durable conflict / repeated sex arrangement.
-0-1 = routine / atmospheric.
+{IMPORTANCE_RUBRIC}
 
 ## Fields
 

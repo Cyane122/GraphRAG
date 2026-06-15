@@ -24,7 +24,8 @@ from datetime import datetime
 
 from src.config import MODEL_STATE_UPDATER as STUB_MODEL
 from src.core.database import async_driver
-from src.core.database.helpers import ensure_relationship
+from src.core.database.helpers import ensure_relationship, update_dynamic_state
+from src.simulation.systems.social.models import StubProfile
 
 # db_path → {name/alias/id: char_id}. 세션별로 격리해 멀티세션 오염을 방지한다.
 _known_chars_cache: dict[str, dict[str, str]] = {}
@@ -303,12 +304,15 @@ async def _create_stub(
             props_json = personality_json,
         )
 
-        # DynamicInformation — stub에서 얻은 물리 정보 취합
+        # DynamicInformation — stub에서 얻은 물리 정보 취합 (helpers.DYNAMIC_INFORMATION_FIELDS 화이트리스트 내)
         info_props = json.dumps({
-            "height":     stub.get("height", ""),
-            "weight":     stub.get("weight", ""),
-            "appearance": stub.get("appearance", ""),
-            "summary":    stub.get("context") or "No durable dynamic information recorded yet.",
+            "age":            stub.get("age", ""),
+            "height":         stub.get("height", ""),
+            "weight":         stub.get("weight", ""),
+            "measurements":   stub.get("measurements", ""),
+            "biological_sex": stub.get("biological_sex", ""),
+            "appearance":     stub.get("appearance", ""),
+            "summary":        stub.get("context") or "No durable dynamic information recorded yet.",
         }, ensure_ascii=False)
         await session.run("""
             MATCH (c:Character {id: $cid})
@@ -342,6 +346,13 @@ async def _create_stub(
 
         # safety net: 이미 생성된 노드는 WHERE NOT 조건으로 건드리지 않음
         await _ensure_runtime_nodes_in_session(session, char_id)
+
+    # 인라인 CREATE 가 다루지 않는 파생 DynamicState 컬럼을 초기화한다.
+    # update_dynamic_state 가 스키마 타입에 맞춰 정규화(age→INT)하고 비정상 값은 버린다.
+    await update_dynamic_state(char_id, {
+        "physique": stub.get("physique", ""),
+        "age":      stub.get("age", ""),
+    })
 
     print(f"[WorldBuilder] Transient 생성: {name_kor} → {display_name} ({char_id})")
     await ensure_relationship(
@@ -672,13 +683,24 @@ async def _fill_plausible_stub_fields(
     from src.core.llm.client import extract_json_from_llm, get_model
 
     observed = " / ".join(snippets) if snippets else "(no direct descriptive sentence)"
+    # 키/몸무게/3-size 는 성별·나이·체형이 정해져야 개연성이 생기므로, 그 둘을 먼저 확정하도록 지시한다.
     prompt = f"""Create minimal plausible defaults for a newly mentioned transient NPC.
 
-Rules:
+Anchoring rules (decide in this order):
+1. Determine biological_sex and age first — these anchor every physical value.
+2. Derive height (cm), weight (kg), measurements, and physique so they are mutually
+   consistent and realistic for that sex, age, and build (e.g. a slender teenage girl
+   and a heavyset middle-aged man must not share the same numbers).
+3. measurements: for female use "B-W-H" in cm (e.g. "84-60-88"); for male use chest/waist
+   in cm or leave blank if unnatural to state. physique: one short build descriptor
+   (e.g. "마른", "보통", "탄탄한", "통통한").
+
+Constraints:
 - Preserve observed evidence exactly. Do not contradict it.
 - Fill only missing fields. Do not overwrite observed fields.
-- If appearance is observed, reuse that. If not observed, invent a generic plausible appearance.
-- If relationship/role is observed, reuse that. If not observed, invent only a low-detail plausible role/status.
+- If appearance is observed, reuse it; otherwise invent a generic plausible appearance
+  consistent with the anchored sex/age/build.
+- If relationship/role is observed, reuse it; otherwise invent only a low-detail plausible role/status.
 - Do not create secrets, durable biography, trauma, special skills, or strong personality unless evidence says so.
 - Korean is OK. Return concise field values.
 
@@ -690,12 +712,14 @@ Existing stub:
 World/scenario context:
 {_stub_world_context(world_config)}
 
-Return ONLY JSON with optional string fields:
+Return ONLY JSON with optional fields:
 {{
   "biological_sex": "",
   "age": "",
   "height": "",
   "weight": "",
+  "measurements": "",
+  "physique": "",
   "appearance": "",
   "family": "",
   "formative_background": "",
@@ -710,7 +734,7 @@ Return ONLY JSON with optional string fields:
     try:
         model = get_model(
             STUB_MODEL,
-            system_prompt="Generate conservative defaults for transient roleplay NPC records.",
+            system_prompt="Generate conservative, internally consistent defaults for transient roleplay NPC records.",
         )
         resp = await model.generate_content_async(
             prompt,
@@ -729,12 +753,21 @@ Return ONLY JSON with optional string fields:
     if not isinstance(parsed, dict):
         return stub
 
+    # LLM 출력을 StubProfile로 검증/정규화한 뒤, 관찰 증거(이미 채워진 stub 필드)는 덮어쓰지 않는다.
+    try:
+        defaults = StubProfile.model_validate(parsed)
+    except Exception as exc:
+        print(f"[WorldBuilder] transient stub validation failed: {exc}")
+        return stub
+
     merged = dict(stub)
     for key in (
         "biological_sex",
         "age",
         "height",
         "weight",
+        "measurements",
+        "physique",
         "appearance",
         "family",
         "formative_background",
@@ -746,14 +779,11 @@ Return ONLY JSON with optional string fields:
     ):
         if str(merged.get(key) or "").strip():
             continue
-        value = str(parsed.get(key) or "").strip()
+        value = str(getattr(defaults, key) or "").strip()
         if value:
             merged[key] = value[:500]
     if not merged.get("initial_affinity"):
-        try:
-            merged["initial_affinity"] = int(parsed.get("initial_affinity") or 0)
-        except (TypeError, ValueError):
-            merged["initial_affinity"] = 0
+        merged["initial_affinity"] = defaults.initial_affinity
     return merged
 
 
@@ -798,6 +828,8 @@ async def _build_conservative_stub_profile(
         "age":                  "",
         "height":               "",
         "weight":               "",
+        "measurements":         "",
+        "physique":             "",
         "appearance":           appearance,
         "family":               "",
         "formative_background": "",

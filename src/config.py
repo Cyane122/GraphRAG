@@ -48,5 +48,6 @@ HF_TOKEN       = os.getenv("HF_TOKEN")
 
 # ── 기능 플래그 ─────────────────────────────────────────────
 IMPERSONATION = os.getenv("IMPERSONATION", "true").lower() == "true"
-MANAGER_PLANNER_MODE = os.getenv("MANAGER_PLANNER_MODE", "legacy").strip().lower()
-TURN_EXTRACTOR_MODE  = os.getenv("TURN_EXTRACTOR_MODE",  "legacy").strip().lower()
+# 측정 단계: shadow = legacy + integrated/unified 동시 실행 → shadow_diff + llm_latency 로 병목 비교
+MANAGER_PLANNER_MODE = os.getenv("MANAGER_PLANNER_MODE", "shadow").strip().lower()
+TURN_EXTRACTOR_MODE  = os.getenv("TURN_EXTRACTOR_MODE",  "shadow").strip().lower()

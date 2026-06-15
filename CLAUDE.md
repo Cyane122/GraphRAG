@@ -22,9 +22,10 @@ Graph 기반 롤플레이 시뮬레이션 엔진. 웹 UI(정적 `frontend/app/` 
 ## Run
 
 ```bash
-python -m src.ui.web_app                         # 메인 웹 UI (FastAPI, 포트 8000)
+python -m src.apps.app                         # 메인 웹 UI (FastAPI, 포트 8000)
 python -m src.core.database.schema_builder --world_id <world_id>  # 월드 Kuzu 스키마 초기화
-python -m src.tools.world_editor                 # world_editor FastAPI 서버 (포트 8001)
+python -m src.apps.world_editor                 # world_editor FastAPI 서버 (포트 8765)
+python -m src.apps.graph_viewer                 # graph viewer 서버 (포트 8766)
 ```
 
 `cp example.env .env` → 크리덴셜 채우기. 테스트·린트 없음.
@@ -38,8 +39,8 @@ python -m src.tools.world_editor                 # world_editor FastAPI 서버 (
 | `WORLD_ID` | 활성 세계관 ID (예: `babe_univ`, `rofan`, `sunghwa_high_school` …) |
 | `MAX_TOKEN` | Actor 출력 상한 (기본 12288) |
 | `IMPERSONATION` | `true`=PC→NPC 모드 |
-| `MANAGER_PLANNER_MODE` | `legacy` / `integrated` — 컨텍스트 플래너 선택 |
-| `TURN_EXTRACTOR_MODE` | `legacy` / `integrated` — 턴 추출기 선택 |
+| `MANAGER_PLANNER_MODE` | `legacy` / `shadow` / `integrated` — 컨텍스트 플래너 선택 (기본 `shadow`: legacy+integrated 동시 실행해 측정) |
+| `TURN_EXTRACTOR_MODE` | `legacy` / `shadow` / `unified` — 턴 추출기 선택 (기본 `shadow`: legacy+unified 동시 실행해 측정) |
 | `MODEL_ACTOR` | 롤플레이 LLM (Gemini Pro) |
 | `MODEL_CLASSIFIER` | 씬/시간 분류 (Flash) |
 | `MODEL_STATE_UPDATER` | 경량 상태 추출 |
@@ -70,14 +71,14 @@ python -m src.tools.world_editor                 # world_editor FastAPI 서버 (
 - 월드별 스키마를 `schema_builder`로 초기화 (1회)
 - 스레드(채팅방)별 독립 DB: `data/<world_id>/<thread_id>/`
 - 드라이버: `src/core/database/driver.py` (KuzuAsyncDriver + ProxyDriver)
-- 스레드 메타: JSON → `data/threads/<id>.json` (`src/ui/web_app/storage.py`)
+- 스레드 메타: JSON → `data/threads/<id>.json` (`src/apps/app/storage.py`)
 
 ### 턴 파이프라인
 
 ```
 사용자 입력
 → InputRouter    /help /debug, 빈 입력, OOC 전용, 리롤/수정/삭제 분기
-→ DeferredCommit 이전 턴 pending DB write 적용 (src/ui/web_app/commit.py)
+→ DeferredCommit 이전 턴 pending DB write 적용 (src/apps/app/commit.py)
 → OOCHandler     *...* → 즉시 DB 반영 후 조기 종료 (OOC 전용 입력)
 → Manager Pipeline (src/agents/manager/pipeline.py)
     ├ world bootstrap + global state (planning.py)
@@ -88,7 +89,7 @@ python -m src.tools.world_editor                 # world_editor FastAPI 서버 (
     └ dynamic ctx: goal/item/secret/social  (world_context.py)
 → PromptBuilder   Fixed+Genre+Dynamic 조합 (prompt_factory/builder.py)
 → Actor           스트리밍 응답 (src/agents/actor.py)
-→ OutputGuard     금지어 검사 (src/ui/output_guard.py)
+→ OutputGuard     금지어 검사 (src/apps/app/output_guard.py)
 → PendingStore    응답 저장 — DB write는 다음 턴으로 defer
 → [다음 턴 시작 시] StateUpdater (simulation/state/updater.py)
     ├ LITERAL/FIGURATIVE classify
@@ -242,46 +243,44 @@ GraphRAG/
 │   │       ├── schedule_tick.py    # 스케줄 tick 처리
 │   │       └── time_rules.py       # 시간 규칙 컨텍스트
 │   │
-│   ├── tools/
-│   │   └── world_editor/           # 세계관 저작 GUI (FastAPI, 포트 8001)
-│   │       ├── app.py              # FastAPI 라우트 (오케스트레이터)
-│   │       ├── compiler.py         # 세계관 Python 코드 컴파일
-│   │       ├── field_types.py      # 필드 타입 정의/관리
-│   │       ├── migrate.py          # 스키마 마이그레이션
-│   │       ├── models.py           # API 요청/응답 모델
-│   │       ├── module_cache.py     # 모듈 캐시 + purge
-│   │       ├── prompts.py          # 프롬프트 파일 편집
-│   │       ├── repair.py           # 코드 자동 수정
-│   │       ├── scaffold.py         # 신규 세계관 스캐폴딩
-│   │       ├── schedules.py        # 스케줄 편집
-│   │       ├── source_create.py    # 소스 파일 신규 생성
-│   │       ├── source_edit.py      # 소스 파일 편집 (AST 안전 쓰기)
-│   │       └── worlds.py           # 세계관 목록 / 로드
-│   │
-│   └── ui/                         # 웹 UI 지원 레이어 (FastAPI web_app + 그래프 뷰어 + 공유 유틸)
-│       ├── debug_graph.py          # 디버그 그래프 표시
-│       ├── graph_loader.py         # 그래프 데이터 로드
-│       ├── graph_models.py         # 그래프 UI 모델
-│       ├── graph_server.py         # 그래프 서버 연동
-│       ├── graph_writer.py         # 그래프 데이터 쓰기
-│       ├── history.py              # 대화 history 구성
-│       ├── input_routing.py        # 사용자 입력 → TurnInputType 분기
-│       ├── output_guard.py         # Actor 출력 금지어 검사
-│       ├── output_repair.py        # 금지어 위반 응답 수정
-│       ├── pending_store.py        # PendingCommit 임시 저장소
-│       ├── session_models.py       # 세션 Pydantic 모델
-│       ├── social_media_settings.py # SNS 설정 UI
-│       ├── turn_debug.py           # 턴 디버그 출력
-│       └── web_app/                # Standalone FastAPI web UI (포트 8000)
-│           ├── app.py              # FastAPI 라우트
-│           ├── actor.py            # Actor 호출
-│           ├── analysis_tools.py   # 분석 도구
-│           ├── commit.py           # 커밋 처리
-│           ├── models.py           # API 모델
-│           ├── runtime.py          # 런타임 상태
-│           ├── service.py          # 서비스 레이어
-│           ├── storage.py          # 저장소
-│           └── world_state.py      # 월드 상태
+│   ├── apps/                       # 사용자-facing 백엔드 앱 묶음
+│   │   ├── app/                    # 메인 GraphRAG 웹 UI 백엔드 (FastAPI, 포트 8000)
+│   │   │   ├── app.py              # FastAPI 라우트
+│   │   │   ├── actor.py            # Actor 호출
+│   │   │   ├── analysis_tools.py   # 분석 도구
+│   │   │   ├── commit.py           # 커밋 처리
+│   │   │   ├── input_routing.py    # 사용자 입력 → TurnInputType 분기
+│   │   │   ├── models.py           # API 모델
+│   │   │   ├── output_guard.py     # Actor 출력 금지어 검사
+│   │   │   ├── output_repair.py    # 금지어 위반 응답 수정
+│   │   │   ├── pending_store.py    # PendingCommit 임시 저장소
+│   │   │   ├── runtime.py          # 런타임 상태
+│   │   │   ├── service.py          # 서비스 레이어
+│   │   │   ├── session_models.py   # 세션 Pydantic 모델
+│   │   │   ├── storage.py          # 저장소
+│   │   │   ├── turn_debug.py       # 턴 디버그 출력
+│   │   │   └── world_state.py      # 월드 상태
+│   │   ├── world_editor/           # 세계관 저작 GUI 백엔드 (FastAPI, 포트 8765)
+│   │   │   ├── app.py              # FastAPI 라우트 (오케스트레이터)
+│   │   │   ├── compiler.py         # 세계관 Python 코드 컴파일
+│   │   │   ├── field_types.py      # 필드 타입 정의/관리
+│   │   │   ├── migrate.py          # 스키마 마이그레이션
+│   │   │   ├── models.py           # API 요청/응답 모델
+│   │   │   ├── module_cache.py     # 모듈 캐시 + purge
+│   │   │   ├── prompts.py          # 프롬프트 파일 편집
+│   │   │   ├── repair.py           # 코드 자동 수정
+│   │   │   ├── scaffold.py         # 신규 세계관 스캐폴딩
+│   │   │   ├── schedules.py        # 스케줄 편집
+│   │   │   ├── source_create.py    # 소스 파일 신규 생성
+│   │   │   ├── source_edit.py      # 소스 파일 편집 (AST 안전 쓰기)
+│   │   │   └── worlds.py           # 세계관 목록 / 로드
+│   │   └── graph_viewer/           # 그래프 뷰어 백엔드 (포트 8766)
+│   │       ├── debug.py            # 디버그 그래프 표시
+│   │       ├── export.py           # 정적 그래프 export 파일 생성
+│   │       ├── loader.py           # 그래프 데이터 로드
+│   │       ├── models.py           # 그래프 UI 모델
+│   │       ├── server.py           # 그래프 서버 연동
+│   │       └── writer.py           # 그래프 데이터 쓰기
 │
 └── scripts/                        # 개발/디버그용 스크립트 (프로덕션 무관)
 ```
