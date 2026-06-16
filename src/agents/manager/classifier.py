@@ -134,13 +134,13 @@ def _try_rule_based(user_input: str, recent_story: str = "") -> dict | None:
     """Return a deterministic parse for short/simple inputs, or None when LLM parsing is needed."""
     # 1. OOC 포함 원문에서 intimate 키워드 감지 (팬티/자지 등이 *...*블록에 있을 수 있음)
     if _INTIMATE_INPUT_PATTERN.search(user_input):
-        return _INTIMATE_RESULT
+        return dict(_INTIMATE_RESULT)
 
     # 2. recent_story 마지막 600자에 intimate 컨텍스트가 있으면
     if recent_story and _INTIMATE_CONTEXT_PATTERN.search(recent_story[-600:]):
         rule_input = _OOC_SPAN_RE.sub("", user_input).strip() or user_input
         if len(rule_input) <= _RULE_BASED_MAX_LEN and not _NEEDS_LLM_PATTERN.search(rule_input):
-            return _INTIMATE_RESULT
+            return dict(_INTIMATE_RESULT)
         return None
 
     # 3. 일반 rule-based: OOC 제거 후 짧은 입력만 처리

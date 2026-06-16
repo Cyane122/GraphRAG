@@ -5,7 +5,7 @@
 #
 # Functions
 #   - resolve_prompt_world_config(world: World, world_config: dict, npc_id: str, pc_id: str, perspective: int) -> dict : Resolve prompt world config
-#   - build_prompt_parts(user_input: str, recent_story: str, perspective: int, world_config: dict, scene_plan: SceneTimePlan, context: CoreContext, world_context: dict, scene_need_hints: dict[str, str] | None) -> PromptParts : Render manager prompt parts
+#   - build_prompt_parts(user_input: str, recent_story: str, perspective: int, world_config: dict, scene_plan: SceneTimePlan, context: CoreContext, world_context: dict, scene_need_hints: dict[str, str] | None, turn_ooc_directives: str = "") -> PromptParts : Render manager prompt parts
 # ================================
 
 from src.agents.context.renderer import build_rendered_dynamic_context
@@ -38,6 +38,7 @@ def build_prompt_parts(
     context: CoreContext,
     world_context: dict,
     scene_need_hints: dict[str, str] | None = None,
+    turn_ooc_directives: str = "",
 ) -> PromptParts:
     """Render Fixed, Genre, and Dynamic prompt segments from prepared context."""
     rendered_world_context = dict(world_context)
@@ -82,6 +83,7 @@ def build_prompt_parts(
             world_context=world_context,
             dynamic_state=context.char_data.get("dynamic_state", {}),
         ),
+        turn_ooc_directives=turn_ooc_directives,
     )
     return PromptParts(fixed=fixed_prompt, genre=genre_prompt, dynamic=dynamic_prompt)
 

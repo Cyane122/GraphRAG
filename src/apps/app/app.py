@@ -6,7 +6,6 @@
 # Functions
 #   - create_app() -> FastAPI : Create the standalone web UI FastAPI app.
 #   - _load_or_404(store: ConversationStore, thread_id: str) : 스레드 로드 또는 HTTP 404.
-#   - _message_payload(message) -> dict : 메시지 모델을 프런트엔드 JSON으로 변환.
 #   - _conversation_summary(state) -> dict : 대화 목록 메타데이터 반환.
 #   - _conversation_payload(state) -> dict : 대화 전체 페이로드 반환.
 # ================================
@@ -35,14 +34,17 @@ from src.apps.app.models import (
     VariantActivateRequest,
 )
 from src.apps.app.runtime import ActiveConversation, discover_world_profiles, resolve_opening_scene
-from src.apps.app.service import (
+from src.apps.app.message_ops import (
     activate_variant,
-    append_user_and_stream,
-    create_conversation,
     delete_message,
     edit_message,
-    refresh_graph_snapshot_best_effort,
     reroll_assistant,
+)
+from src.apps.app.service import (
+    _message_payload,
+    append_user_and_stream,
+    create_conversation,
+    refresh_graph_snapshot_best_effort,
     run_database_tool,
 )
 from src.apps.app.storage import ConversationStore
@@ -317,29 +319,6 @@ def _load_or_404(store: ConversationStore, thread_id: str):
     except FileNotFoundError as exc:
         raise HTTPException(404, detail="conversation not found") from exc
 
-
-def _message_payload(message) -> dict:
-    """Convert a message model into frontend JSON."""
-    return {
-        "id": message.id,
-        "role": message.role,
-        "content": message.content,
-        "createdAt": message.created_at.strftime("%H:%M"),
-        "parentUserId": message.parent_user_id,
-        "edited": message.edited,
-        "actorModel": message.actor_model,
-        "oocConfig": getattr(message, "ooc_config", ""),
-        "variants": [
-            {
-                "id": variant.id,
-                "content": variant.content,
-                "createdAt": variant.created_at.strftime("%H:%M"),
-                "actorModel": variant.actor_model,
-                "edited": variant.edited,
-            }
-            for variant in message.variants
-        ],
-    }
 
 
 def _conversation_summary(state) -> dict:

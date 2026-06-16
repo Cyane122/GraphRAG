@@ -23,6 +23,8 @@ from src.simulation.systems.scheduling.schedules import SCHEDULE_TIME_PARSE_WIND
 from src.simulation.systems.scheduling.time_rules import fetch_time_rule_context
 from src.simulation.state.updater import build_time_plan
 
+_STANDARD_SCENE_TYPES: frozenset[str] = frozenset({"daily", "emotional", "physical", "intimate", "workplace", "aegyo"})
+
 _SCHEDULE_SENSITIVE_INPUT_RE = re.compile(
     r"(가자|갈까|나가|출발|이동|학교|수업|강의|회사|직장|약속|일정|준비|늦|"
     r"go|leave|move|school|class|work|appointment|schedule|ready|late)",
@@ -162,7 +164,6 @@ async def _classify_scene(
     schedule_context: dict,
 ) -> tuple[dict, list[str]]:
     """Classify a scene via rules first, then the LLM classifier."""
-    _STANDARD_SCENE_TYPES = {"daily", "emotional", "physical", "intimate", "workplace", "aegyo"}
     _world_has_custom_types = bool(set(bootstrap.world.get_scene_types()) - _STANDARD_SCENE_TYPES)
 
     rule_result = deps.try_rule_based(user_input, recent_story)

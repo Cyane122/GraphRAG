@@ -9,16 +9,14 @@
 #   - PromptBuilder : Fixed / Genre / Dynamic 3-part 프롬프트 조립기
 #
 # Functions
-#   - _read_optional_prompt(relative_path: str) -> str : prompt/ 하위 Markdown 파일 읽기
 #   - _format_prompt_vars(text: str, *, char_name: str, user_name: str, for_add: str) -> str : 프롬프트 변수 치환
 #   - _label_mixed_input(user_input: str, user_name: str) -> str : *...* 상황설명과 PC 대사를 원문 순서대로 레이블링
 # ================================
 
 import re
 from datetime import datetime
-from pathlib import Path
-from typing import Optional
 import logging
+from typing import Optional
 
 from src.agents.prompt_factory.checklist import build_turn_checklist
 from src.agents.prompt_factory.fixed import (
@@ -26,7 +24,9 @@ from src.agents.prompt_factory.fixed import (
     build_pre_output_checklist,
 )
 from src.agents.prompt_factory.renderers import (
+    PROMPT_DIR,
     _SafeFormatDict,
+    _read_optional_prompt,
     _render_prompt_block,
     build_genre_section,
     join_rendered_context,
@@ -41,18 +41,6 @@ from src.agents.prompt_factory.renderers import (
 )
 
 logger = logging.getLogger(__name__)
-
-PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
-
-
-# ----------------
-# File helpers
-# ----------------
-
-def _read_optional_prompt(relative_path: str) -> str:
-    """Read a tagless Markdown prompt file from prompt_factory/prompts/."""
-    path = PROMPT_DIR / relative_path
-    return path.read_text(encoding="utf-8") if path.exists() else ""
 
 
 def _render_scene_need_hints(hints: dict[str, str]) -> str:
@@ -280,6 +268,7 @@ class PromptBuilder:
         current_pov: Optional[dict] = None,
         location_nodes: Optional[list[dict]] = None,
         scene_need_hints: Optional[dict[str, str]] = None,
+        turn_ooc_directives: str = "",
     ) -> tuple[str, str, str]:
         """Return fixed, genre, and dynamic prompt sections for the current turn."""
         fixed_prompt = self.build_fixed_section()
@@ -320,6 +309,7 @@ class PromptBuilder:
                 self.build_scene_specific_prompt(scene_types),
                 context_block,
                 self.build_dialogue_examples(scene_types),
+                self.build_turn_ooc_directives(turn_ooc_directives),
                 _render_prompt_block("user_input", _label_mixed_input(user_input, self.user_name)),
                 checklist,
                 (
@@ -332,6 +322,17 @@ class PromptBuilder:
             if part
         )
         return fixed_prompt, genre_prompt, dynamic_prompt
+
+    def build_turn_ooc_directives(self, directives: str) -> str:
+        """Render per-thread OOC directives as instructions outside Player Input."""
+        body = _format_prompt_vars(
+            str(directives or "").strip(),
+            char_name=self.char_name,
+            user_name=self.user_name,
+        )
+        if not body:
+            return ""
+        return _render_prompt_block("turn_ooc_directives", body)
 
     def _lookup_character_blacklist(self, char_data: dict) -> str:
         """Return fixed or keyed character-specific blacklist text."""

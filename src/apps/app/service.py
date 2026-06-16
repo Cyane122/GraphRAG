@@ -2,6 +2,7 @@
 # src/apps/app/service.py
 #
 # Standalone web UI conversation orchestration and generation service.
+# Message mutation operations (reroll/edit/activate/delete) live in message_ops.py.
 #
 # Functions
 #   - preview_text(value: str) -> str : Build a compact sidebar preview from assistant output.
@@ -13,9 +14,8 @@
 #   - refresh_graph_snapshot_best_effort(state: ConversationState) -> None : Refresh graph viewer cache for the current web conversation.
 #   - append_user_and_stream(state: ConversationState, content: str, store: ConversationStore, client_message_id: str | None = None, actor_model: str | None = None) -> AsyncIterator[dict] : Commit previous pending, append user input, and stream Actor output.
 #   - run_database_tool(state: ConversationState, tool_name: str, store: ConversationStore) -> dict : Run a read-only database tool and persist its message.
-#   - reroll_assistant(state: ConversationState, assistant_id: str, store: ConversationStore, actor_model: str | None = None) -> dict : Regenerate an assistant message from its paired user input.
-#   - edit_message(state: ConversationState, message_id: str, content: str, store: ConversationStore, actor_model: str | None = None) -> dict : Edit a message and update state.
-#   - delete_message(state: ConversationState, message_id: str, store: ConversationStore) -> dict : Delete a message and update state.
+#   - _collect_generation(state, content, user_msg_id, store, *, actor_model, ooc_result, turn_ooc_directives, persist) -> dict : Run generation to completion and return the final event.
+#   - _message_payload(message: ChatMessage) -> dict : Convert a persisted message into frontend JSON.
 # ================================
 
 from __future__ import annotations
@@ -23,7 +23,6 @@ from __future__ import annotations
 import random
 import re
 from collections.abc import AsyncIterator
-from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
@@ -36,7 +35,7 @@ from src.core.llm.client import get_client
 from src.apps.app.input_routing import TurnInputType, route_user_input
 from src.apps.app.output_guard import find_forbidden_terms, find_pov_violations
 from src.apps.app.output_repair import repair_actor_output
-from src.apps.app.pending_store import discard_pending_commit, save_pending_commit
+from src.apps.app.pending_store import save_pending_commit
 from src.apps.app.session_models import PendingCommit
 from src.apps.app.social_media_settings import resolve_social_media_features
 from src.apps.graph_viewer.debug import build_debug_graph
@@ -44,11 +43,10 @@ from src.apps.app.turn_debug import write_turn_debug_snapshot
 from src.apps.app.actor import stream_actor_events
 from src.apps.app.analysis_tools import render_database_tool
 from src.apps.app.commit import commit_pending_web
-from src.apps.app.models import ChatMessage, ConversationState, MessageVariant, normalize_actor_model
+from src.apps.app.models import ChatMessage, ConversationState, normalize_actor_model
 from src.apps.app.runtime import (
     ActiveConversation,
     initialize_conversation,
-    restore_game_time,
     snapshot_game_time,
     sync_conversation_perspective,
 )
@@ -240,14 +238,20 @@ async def _repair_if_needed(full_response: str, visible_text: str, state: Conver
     위반이 있으면 보이는 prose만 수정한 뒤, analyze 블록을 보존하도록 full_response를 재구성한다.
     """
     target = visible_text or full_response
-    blocked_terms = find_forbidden_terms(target) + find_pov_violations(target, state.perspective)
+    blocked_terms = find_forbidden_terms(target) + find_pov_violations(
+        target, state.perspective, state.npc_name_kor
+    )
     if not blocked_terms:
         return full_response
     repaired_visible = await repair_actor_output(target, blocked_terms, MODEL_OUTPUT_REPAIR)
-    remaining_terms = find_forbidden_terms(repaired_visible) + find_pov_violations(repaired_visible, state.perspective)
+    remaining_terms = find_forbidden_terms(repaired_visible) + find_pov_violations(
+        repaired_visible, state.perspective, state.npc_name_kor
+    )
     if remaining_terms:
         repaired_visible = await repair_actor_output(repaired_visible, remaining_terms, MODEL_OUTPUT_REPAIR)
-        remaining_terms = find_forbidden_terms(repaired_visible) + find_pov_violations(repaired_visible, state.perspective)
+        remaining_terms = find_forbidden_terms(repaired_visible) + find_pov_violations(
+            repaired_visible, state.perspective, state.npc_name_kor
+        )
     if remaining_terms:
         sample = ", ".join(remaining_terms[:8])
         raise RuntimeError(f"Actor output failed the output guard after repair. Remaining: {sample}")
@@ -263,6 +267,7 @@ async def _run_generation_events(
     *,
     actor_model: str | None = None,
     ooc_result: dict | None = None,
+    turn_ooc_directives: str = "",
 ) -> AsyncIterator[dict]:
     """Run Manager and Actor, yielding frontend stream events."""
     sync_conversation_perspective(state)
@@ -290,6 +295,7 @@ async def _run_generation_events(
         social_media_features=_social_media_features(state),
         thread_id=state.thread_id,
         commit_id=None if ooc_result else commit_id,
+        turn_ooc_directives=turn_ooc_directives,
     )
     manager_effects = _apply_ooc_effects(manager_effects, ooc_result, state.pc_id)
 
@@ -415,7 +421,7 @@ def _message_payload(message: ChatMessage) -> dict:
         "parentUserId": message.parent_user_id,
         "edited": message.edited,
         "actorModel": message.actor_model,
-        "oocConfig": message.ooc_config,
+        "oocConfig": getattr(message, "ooc_config", ""),
         "variants": [
             {
                 "id": variant.id,
@@ -461,10 +467,6 @@ async def append_user_and_stream(
             if note_block:
                 effective_input = f"{note_block}\n\n{effective_input}"
 
-            # OOC 설정이 있으면 Player Input 뒤에 append.
-            if state.ooc_config:
-                effective_input = f"{effective_input}\n\n{state.ooc_config}"
-
             user_msg = ChatMessage(
                 id=client_message_id or f"user_{uuid4().hex}",
                 role="user",
@@ -479,6 +481,7 @@ async def append_user_and_stream(
                 user_msg.id,
                 actor_model=actor_model,
                 ooc_result=ooc_result,
+                turn_ooc_directives=state.ooc_config,
             ):
                 yield event
         finally:
@@ -508,6 +511,7 @@ async def _collect_generation(
     *,
     actor_model: str | None = None,
     ooc_result: dict | None = None,
+    turn_ooc_directives: str = "",
     persist: bool = True,
 ) -> dict:
     """Run generation to completion and return the final event.
@@ -522,6 +526,7 @@ async def _collect_generation(
         user_msg_id,
         actor_model=actor_model,
         ooc_result=ooc_result,
+        turn_ooc_directives=turn_ooc_directives,
     ):
         if event["type"] == "complete":
             final = event
@@ -532,246 +537,3 @@ async def _collect_generation(
     return final
 
 
-async def reroll_assistant(
-    state: ConversationState,
-    assistant_id: str,
-    store: ConversationStore,
-    actor_model: str | None = None,
-) -> dict:
-    """Regenerate an assistant message from its paired user message."""
-    if not state.pc_id or not state.npc_id:
-        initialize_conversation(state)
-    async with ActiveConversation(state):
-        assistant_index = next((i for i, msg in enumerate(state.messages) if msg.id == assistant_id), None)
-        if assistant_index is None:
-            latest_user = next((msg for msg in reversed(state.messages) if msg.role == "user"), None)
-            if latest_user and (not state.messages or state.messages[-1].id == latest_user.id):
-                selected_actor_model = normalize_actor_model(actor_model or state.actor_model)
-                return await _collect_generation(
-                    state,
-                    latest_user.content,
-                    latest_user.id,
-                    store,
-                    actor_model=selected_actor_model,
-                )
-            raise KeyError("assistant message not found")
-        assistant = state.messages[assistant_index]
-        parent = next((msg for msg in state.messages if msg.id == assistant.parent_user_id), None)
-        if parent is None:
-            raise KeyError("paired user message not found")
-        selected_actor_model = normalize_actor_model(actor_model or state.actor_model)
-        original_messages = [msg.model_copy(deep=True) for msg in state.messages]
-        original_history = deepcopy(state.history)
-        original_recent = list(state.recent_responses)
-        original_preview = state.preview
-        original_pending = deepcopy(state.pending_commit)
-        # 보류 커밋은 항상 '최신(미커밋) 응답'의 것이다. reroll은 그 응답만 대상으로 한다.
-        # 다른(과거) 메시지를 reroll하려 하면 거부한다 — 허용하면 최신 응답의 보류 커밋이 재생성으로
-        # 덮어써져 디스크에 stale pending 파일로 남는다(edit/delete의 response_msg_id 매칭과 같은 취지).
-        if state.pending_commit and state.pending_commit.get("response_msg_id") != assistant.id:
-            raise ValueError("can only reroll the response tied to the current pending commit")
-        if state.pending_commit:
-            # 위에서 불일치는 거부했으므로 이 보류 커밋은 reroll 대상(assistant)의 것임이 보장된다.
-            # 폐기하고 재생성을 위해 시간/history/recent를 직전 응답 이전으로 롤백한다. 여기서는 저장하지
-            # 않는다 — 최종 상태는 성공 시(dedup 후) 또는 실패 시(except 롤백)에만 영속화한다.
-            pending = state.pending_commit
-            await restore_game_time(pending.get("prev_game_time"))
-            state.history = list(pending.get("history_snapshot") or [])
-            state.recent_responses = list(pending.get("recent_snapshot") or [])
-            state.prev_cot = str(pending.get("prev_cot") or "")
-            discard_pending_commit(pending, state.world_id, state.pc_id, state.npc_id)
-            state.pending_commit = None
-        assistant.variants.insert(
-            0,
-            MessageVariant(
-                content=assistant.content,
-                created_at=assistant.created_at,
-                actor_model=assistant.actor_model,
-                edited=assistant.edited,
-            ),
-        )
-        try:
-            # persist=False: 새 응답 메시지를 원본에 합치고 중복을 제거한 뒤(아래) 최종 상태를 한 번에 저장한다.
-            result = await _collect_generation(state, parent.content, parent.id, store, actor_model=selected_actor_model, persist=False)
-            new_payload = result["message"]
-            new_message = next((msg for msg in state.messages if msg.id == new_payload["id"]), None)
-            if new_message is None:
-                raise RuntimeError("Reroll completed without a persisted assistant message.")
-            assistant.content = new_message.content
-            assistant.created_at = new_message.created_at
-            assistant.parent_user_id = new_message.parent_user_id
-            assistant.edited = new_message.edited
-            assistant.actor_model = new_message.actor_model
-            state.messages = [msg for msg in state.messages if msg.id != new_message.id]
-            state.history = [
-                {
-                    "role": msg.role,
-                    "content": msg.content,
-                    "msg_id": msg.id,
-                }
-                for msg in state.messages
-                if msg.role in {"user", "assistant"}
-            ][-MAX_HISTORY_TURNS * 2:]
-            if state.pending_commit and state.pending_commit.get("response_msg_id") == new_message.id:
-                state.pending_commit["response_msg_id"] = assistant.id
-                state.pending_commit["ai_response"] = assistant.content
-                save_pending_commit(state.pending_commit, state.world_id, state.pc_id, state.npc_id)
-            store.save(state)
-            return {"message": _message_payload(assistant), "pending_commit_id": result.get("pending_commit_id"), "preview": state.preview}
-        except Exception:
-            # 재생성 실패 시에는 사용자가 보던 기존 응답과 그 pending commit을 되살린다.
-            # 그래야 일시적인 Actor/API 오류가 원본 메시지를 삭제해 이후 reroll이 404가 되는 상태를 만들지 않는다.
-            if state.pending_commit and original_pending:
-                discard_pending_commit(state.pending_commit, state.world_id, state.pc_id, state.npc_id)
-            state.messages = original_messages
-            state.history = original_history
-            state.recent_responses = original_recent
-            state.preview = original_preview
-            state.pending_commit = original_pending
-            if state.pending_commit:
-                save_pending_commit(state.pending_commit, state.world_id, state.pc_id, state.npc_id)
-            store.save(state)
-            raise
-
-
-async def edit_message(
-    state: ConversationState,
-    message_id: str,
-    content: str,
-    store: ConversationStore,
-    actor_model: str | None = None,
-) -> dict:
-    """Edit a message and update conversation state."""
-    if not state.pc_id or not state.npc_id:
-        initialize_conversation(state)
-    async with ActiveConversation(state):
-        index = next((i for i, msg in enumerate(state.messages) if msg.id == message_id), None)
-        if index is None:
-            raise KeyError("message not found")
-        message = state.messages[index]
-        if message.role == "assistant":
-            message.content = content
-            message.edited = True
-            if state.pending_commit and state.pending_commit.get("response_msg_id") == message.id:
-                state.pending_commit["ai_response"] = content
-                save_pending_commit(state.pending_commit, state.world_id, state.pc_id, state.npc_id)
-            state.preview = preview_text(content)
-            store.save(state)
-            return {"message": _message_payload(message), "preview": state.preview}
-
-        selected_actor_model = normalize_actor_model(actor_model or state.actor_model)
-        original_messages = [msg.model_copy(deep=True) for msg in state.messages]
-        original_history = deepcopy(state.history)
-        original_recent = list(state.recent_responses)
-        original_preview = state.preview
-        original_pending = deepcopy(state.pending_commit)
-        message.content = content
-        message.edited = True
-        removed_ids = {msg.id for msg in state.messages[index + 1:]}
-        if state.pending_commit and state.pending_commit.get("response_msg_id") in removed_ids:
-            discard_pending_commit(state.pending_commit, state.world_id, state.pc_id, state.npc_id)
-            state.pending_commit = None
-        state.messages = state.messages[: index + 1]
-        state.history = [
-            {"role": msg.role, "content": msg.content, "msg_id": msg.id}
-            for msg in state.messages
-            if msg.role in {"user", "assistant"}
-        ]
-        state.recent_responses = [msg.content[:1500] for msg in state.messages if msg.role == "assistant"][-RECENT_STORY_TURNS:]
-        # pending 폐기와 메시지 절단을 생성 전에 영속화: 재생성이 실패해도 폐기된 pending이 되살아나지 않게 한다.
-        store.save(state)
-        try:
-            return await _collect_generation(state, content, message.id, store, actor_model=selected_actor_model)
-        except Exception:
-            # 편집 후 재생성 실패는 기존 응답/pending을 잃으면 복구가 어렵다.
-            # 일시적 API 오류는 원래 대화 상태로 되돌리고 사용자가 다시 시도하게 한다.
-            if state.pending_commit and original_pending:
-                discard_pending_commit(state.pending_commit, state.world_id, state.pc_id, state.npc_id)
-            state.messages = original_messages
-            state.history = original_history
-            state.recent_responses = original_recent
-            state.preview = original_preview
-            state.pending_commit = original_pending
-            if state.pending_commit:
-                save_pending_commit(state.pending_commit, state.world_id, state.pc_id, state.npc_id)
-            store.save(state)
-            raise
-
-
-def activate_variant(
-    state: ConversationState,
-    message_id: str,
-    version_index: int,
-    store: ConversationStore,
-) -> dict:
-    """Activate a specific version of an assistant message by index (oldest-first)."""
-    msg = next((m for m in state.messages if m.id == message_id), None)
-    if msg is None:
-        raise KeyError("message not found")
-    if msg.role != "assistant":
-        raise ValueError("can only activate variants of assistant messages")
-
-    # all versions oldest-first: reversed(variants) + [current]
-    variants_oldest_first = list(reversed(msg.variants))
-    total = len(variants_oldest_first) + 1  # +1 for current
-
-    if version_index < 0 or version_index >= total:
-        raise ValueError(f"version_index {version_index} out of range [0, {total - 1}]")
-
-    if version_index == total - 1:
-        store.save(state)
-        return {"message": _message_payload(msg)}
-
-    selected = variants_oldest_first[version_index]
-    old_current = MessageVariant(
-        content=msg.content,
-        created_at=msg.created_at,
-        actor_model=msg.actor_model,
-        edited=msg.edited,
-    )
-    remaining = [v for v in msg.variants if v is not selected]
-    msg.variants = [old_current] + remaining
-    msg.content = selected.content
-    msg.actor_model = selected.actor_model
-    msg.edited = selected.edited
-
-    state.history = [
-        {"role": m.role, "content": m.content, "msg_id": m.id}
-        for m in state.messages
-        if m.role in {"user", "assistant"}
-    ][-MAX_HISTORY_TURNS * 2:]
-    state.recent_responses = [
-        m.content[:1500] for m in state.messages if m.role == "assistant"
-    ][-RECENT_STORY_TURNS:]
-    state.preview = preview_text(msg.content)
-    # variant 활성화로 현재 표시 응답이 바뀌면, 아직 미커밋 상태인 pending_commit의
-    # 응답 내용도 함께 맞춰 다음 턴 Updater가 표시된 내용 기준으로 그래프를 갱신하게 한다.
-    if state.pending_commit and state.pending_commit.get("response_msg_id") == msg.id:
-        state.pending_commit["ai_response"] = msg.content
-        save_pending_commit(state.pending_commit, state.world_id, state.pc_id, state.npc_id)
-    store.save(state)
-    return {"message": _message_payload(msg)}
-
-
-def delete_message(state: ConversationState, message_id: str, store: ConversationStore) -> dict:
-    """Delete a message and update conversation state."""
-    message = next((msg for msg in state.messages if msg.id == message_id), None)
-    if message is None:
-        raise KeyError("message not found")
-    removed_ids = {message.id}
-    if message.role == "user":
-        removed_ids.update(msg.id for msg in state.messages if msg.parent_user_id == message.id)
-    if state.pending_commit and state.pending_commit.get("response_msg_id") in removed_ids:
-        discard_pending_commit(state.pending_commit, state.world_id, state.pc_id, state.npc_id)
-        state.pending_commit = None
-    state.messages = [msg for msg in state.messages if msg.id not in removed_ids]
-    state.history = [
-        {"role": msg.role, "content": msg.content, "msg_id": msg.id}
-        for msg in state.messages
-        if msg.role in {"user", "assistant"}
-    ][-MAX_HISTORY_TURNS * 2:]
-    state.recent_responses = [msg.content[:1500] for msg in state.messages if msg.role == "assistant"][-RECENT_STORY_TURNS:]
-    latest = next((msg for msg in reversed(state.messages) if msg.role == "assistant"), None)
-    state.preview = preview_text(latest.content) if latest else "새 대화"
-    store.save(state)
-    return {"messages": [_message_payload(msg) for msg in state.messages], "preview": state.preview}

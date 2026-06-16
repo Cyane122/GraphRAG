@@ -14,9 +14,7 @@
 #   - _format_prompt_vars(text: str, *, char_name: str, user_name: str, world_config: dict) -> str : 프롬프트 변수 치환
 # ================================
 
-from pathlib import Path
-
-from src.agents.prompt_factory.renderers import _SafeFormatDict, _render_prompt_block
+from src.agents.prompt_factory.renderers import PROMPT_DIR, _SafeFormatDict, _render_prompt_block
 from src.agents.prompt_factory.prompt_sections import (
     BLACKLIST_SECTION,
     EMOTION_ENGINE,
@@ -33,8 +31,6 @@ from src.agents.prompt_factory.prompt_sections import (
     _STYLE_1P,
     _STYLE_3P,
 )
-
-PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
 
 VALID_POV_MODES = {"1p_user", "1p_char", "3p_user", "3p_char"}
 

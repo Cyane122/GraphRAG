@@ -54,6 +54,9 @@ def has_event_signal(
     active_event: dict | None = None,
 ) -> bool:
     """Return whether event extraction is warranted."""
+    # Active accumulated event always needs a decision (append or close)
+    if active_event:
+        return True
     return bool(actor_response.strip())
 
 

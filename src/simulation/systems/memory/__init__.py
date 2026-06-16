@@ -2,13 +2,13 @@
 # src/simulation/systems/memory/__init__.py
 #
 # 캐릭터별 기억(Memory) 노드 생성 및 시간 기반 풍화/왜곡/삭제를 담당합니다.
-# 왜곡과 압축은 배치 처리로 LLM 호출 횟수를 최소화합니다.
+# 왜곡·압축은 decay.py, 풍화 배치 처리는 배치 LLM 호출로 최소화합니다.
 #
 # Functions
+#   - ensure_memories_for_event(event_id, summary, importance, char_ids, timestamp, ...) -> None : Event에 관련된 캐릭터별 Memory 노드 생성 (게이트 통과 시)
+#   - run_decay(current_game_time: datetime) -> None : re-exported from decay.py
+#   - distort_on_affinity_change(char_id, pc_id, affinity_delta, current_game_time) -> None : re-exported from distortion.py
 #   - _infer_signals_from_summary(summary: str) -> list[str] : 이벤트 요약에서 Korean keyword 기반 strong signal 태그 추론
-#   - ensure_memories_for_event(event_id: str, summary: str, importance: int, char_ids: list[str], timestamp: str, embedding: list[float] | None = None, memory_type: str = "episodic", actor_response: str = "", signals: list[str] | None = None, source_type: str = "direct_experience", source_commit_id: str = "") -> None : Event에 관련된 캐릭터별 Memory 노드 생성 (게이트 통과 시)
-#   - run_decay(current_game_time: datetime) -> None : 게임 내 시간 경과에 따라 기억 풍화·왜곡·삭제
-#   - distort_on_affinity_change(char_id: str, pc_id: str, affinity_delta: int, current_game_time: datetime) -> None : 호감도 급변 시 관련 기억을 즉시 재해석
 # ================================
 
 import json
@@ -16,54 +16,34 @@ from datetime import datetime
 
 from src.config import MODEL_STATE_UPDATER as DECAY_MODEL
 from src.core.database import async_driver
-from src.core.llm.client import get_model, extract_json_from_llm
 from src.core.embedding.encoder import embed_async
-from src.simulation.systems.memory.distortion import (
-    _delete_memory,
-    _distort_memories_batch,
-    _fetch_char_traits,
-    _update_memory,
-    distort_on_affinity_change,
-)
+from src.core.llm.client import extract_json_from_llm, get_model
+from src.simulation.systems.memory.decay import run_decay
+from src.simulation.systems.memory.distortion import distort_on_affinity_change
 from src.simulation.systems.memory.gate import GateDecision, apply_gate
 
-_DECAY_TABLE = {
-    (0, 2):  {"distort": 14,  "level1": 30,  "level2": 60,  "delete": 120},
-    (3, 5):  {"distort": 30,  "level1": 60,  "level2": 120, "delete": 240},
-    (6, 8):  {"distort": 90,  "level1": 180, "level2": None, "delete": None},
-    (9, 10): {"distort": None, "level1": None, "level2": None, "delete": None},
-}
-
-def _get_decay_rule(importance: int) -> dict:
-    """importance 값에 해당하는 풍화 규칙 반환."""
-    for (lo, hi), rule in _DECAY_TABLE.items():
-        if lo <= importance <= hi:
-            return rule
-    return {"distort": None, "level1": None, "level2": None, "delete": None}
-
-
-def _fallback_memory_summary(char_id: str, summary: str, multi_character: bool) -> str:
-    """캐릭터별 Memory 생성 실패 시 사용할 최소 주관화 문장을 반환한다."""
-    if not multi_character:
-        return summary
-    return f"{char_id}의 기억: {summary}"
-
+__all__ = [
+    "ensure_memories_for_event",
+    "run_decay",
+    "distort_on_affinity_change",
+    "_infer_signals_from_summary",
+]
 
 _SIGNAL_KEYWORDS: dict[str, list[str]] = {
-    "promise":         ["약속", "다짐", "맹세"],
-    "appointment":     ["약속", "만나기로", "볼게"],
-    "secret":          ["비밀", "숨기", "들키", "말하지 마"],
-    "first_time":      ["처음", "첫 ", "최초", "처음으로"],
-    "misunderstanding":["오해", "착각", "잘못 알"],
-    "conflict":        ["갈등", "다툼", "싸움", "충돌", "언쟁", "화가 났"],
-    "reconciliation":  ["화해", "용서", "사과"],
-    "betrayal":        ["배신", "배반", "거짓말"],
-    "gift":            ["선물", "줬다", "받았다"],
-    "debt":            ["빌려", "갚", "빚"],
-    "identity":        ["정체", "사실은", "알고 보니"],
-    "boundary":        ["경계", "선을 넘"],
-    "emotional_wound": ["상처", "트라우마", "아팠"],
-    "favor":           ["부탁", "도움", "고마워"],
+    "promise":          ["약속", "다짐", "맹세"],
+    "appointment":      ["약속", "만나기로", "볼게"],
+    "secret":           ["비밀", "숨기", "들키", "말하지 마"],
+    "first_time":       ["처음", "첫 ", "최초", "처음으로"],
+    "misunderstanding": ["오해", "착각", "잘못 알"],
+    "conflict":         ["갈등", "다툼", "싸움", "충돌", "언쟁", "화가 났"],
+    "reconciliation":   ["화해", "용서", "사과"],
+    "betrayal":         ["배신", "배반", "거짓말"],
+    "gift":             ["선물", "줬다", "받았다"],
+    "debt":             ["빌려", "갚", "빚"],
+    "identity":         ["정체", "사실은", "알고 보니"],
+    "boundary":         ["경계", "선을 넘"],
+    "emotional_wound":  ["상처", "트라우마", "아팠"],
+    "favor":            ["부탁", "도움", "고마워"],
 }
 
 
@@ -75,7 +55,6 @@ def _infer_signals_from_summary(summary: str) -> list[str]:
     for signal, keywords in _SIGNAL_KEYWORDS.items():
         if any(kw in summary for kw in keywords):
             signals.append(signal)
-    # deduplicate while preserving order
     seen: set[str] = set()
     return [s for s in signals if not (s in seen or seen.add(s))]  # type: ignore[func-returns-value]
 
@@ -88,10 +67,16 @@ def _confidence_from_type(memory_type: str, source_type: str) -> float:
         "inference": 0.7,
         "gossip": 0.4,
     }.get(source_type, 0.75)
-    # 오해 타입은 불확실성이 내재돼 있어 confidence를 낮춘다
     if memory_type == "misunderstanding":
         return min(base, 0.65)
     return base
+
+
+def _fallback_memory_summary(char_id: str, summary: str, multi_character: bool) -> str:
+    """캐릭터별 Memory 생성 실패 시 사용할 최소 주관화 문장을 반환한다."""
+    if not multi_character:
+        return summary
+    return f"{char_id}의 기억: {summary}"
 
 
 async def _build_subjective_memory_summaries(
@@ -154,7 +139,11 @@ Return ONLY JSON object:
     return summaries
 
 
-async def _memory_embedding(memory_summary: str, shared_embedding: list[float] | None, event_summary: str) -> list[float] | None:
+async def _memory_embedding(
+    memory_summary: str,
+    shared_embedding: list[float] | None,
+    event_summary: str,
+) -> list[float] | None:
     """Memory 문장에 맞는 임베딩을 반환하되 동일 문장은 Event 임베딩을 재사용한다."""
     if shared_embedding is not None and memory_summary == event_summary:
         return shared_embedding
@@ -167,12 +156,7 @@ async def _memory_embedding(memory_summary: str, shared_embedding: list[float] |
     return shared_embedding
 
 
-async def _reinforce_memory(
-    session,
-    mem_id: str,
-    importance: int,
-    timestamp: str,
-) -> None:
+async def _reinforce_memory(session, mem_id: str, importance: int, timestamp: str) -> None:
     """기존 Memory의 salience/reinforced_count를 보수적으로 올린다. 새 노드를 만들지 않는다."""
     await session.run("""
         MATCH (m:Memory {id: $mid})
@@ -188,7 +172,7 @@ async def _reinforce_memory(
 
 
 # ════════════════════════════════════════════════════════════
-# 1. Memory 노드 생성
+# Memory 노드 생성
 # ════════════════════════════════════════════════════════════
 
 async def ensure_memories_for_event(
@@ -212,8 +196,6 @@ async def ensure_memories_for_event(
     timestamp: 반드시 ISO 8601 형식 ("2024-03-08T08:00:00").
     """
     signals_list = signals or []
-    # importance 3-4 + episodic 이벤트가 불필요하게 REJECT 되지 않도록
-    # 명시적 signals가 없을 때 summary에서 keyword 기반으로 추론한다.
     if not signals_list and summary:
         signals_list = _infer_signals_from_summary(summary)
     signals_json = json.dumps(signals_list, ensure_ascii=False)
@@ -235,7 +217,6 @@ async def ensure_memories_for_event(
     multi_character = len(char_ids) > 1
 
     # Phase 1: 캐릭터별 게이트 결정 (각자 세션을 열어 dedup 체크)
-    # decisions[char_id] = (GateDecision, target_mem_id_to_reinforce)
     decisions: dict[str, tuple[GateDecision, str]] = {}
     for char_id in char_ids:
         decisions[char_id] = await apply_gate(
@@ -258,12 +239,9 @@ async def ensure_memories_for_event(
                 continue
 
             if decision == GateDecision.REINFORCE:
-                # target_mem_id is the actual existing memory to reinforce.
-                # It may differ from mem_id when the dedup matched via source_commit_id.
                 await _reinforce_memory(session, target_mem_id, importance, timestamp)
                 continue
 
-            # CREATE path
             memory_summary = subjective_summaries.get(
                 char_id,
                 _fallback_memory_summary(char_id, summary, multi_character),
@@ -316,171 +294,3 @@ async def ensure_memories_for_event(
             """, mid=mem_id, eid=event_id)
 
     print(f"[DecayManager] Memory 생성: {event_id} → {char_ids}")
-
-
-# ════════════════════════════════════════════════════════════
-# 2. 풍화 루프 (배치 처리)
-# ════════════════════════════════════════════════════════════
-
-async def run_decay(current_game_time: datetime) -> None:
-    """
-    days_passed > 0 일 때 호출.
-    풍화 대상 기억을 삭제/압축/왜곡 버킷으로 분류한 뒤
-    압축·왜곡은 배치 LLM 호출로 처리해 호출 횟수를 최소화한다.
-    """
-    async with async_driver.session() as session:
-        rec = await session.run("""
-            MATCH (c:Character)-[:REMEMBERS]->(m:Memory)
-            RETURN m.id               AS mid,
-                   m.char_id          AS char_id,
-                   m.summary          AS summary,
-                   m.importance       AS importance,
-                   m.distortion_level AS distortion,
-                   m.summary_level    AS level,
-                   m.created_at       AS created_at
-        """)
-        memories = await rec.data()
-
-    for m in memories:
-        if isinstance(m.get("mid"), list):
-            m["mid"] = m["mid"][0] if m["mid"] else ""
-        if isinstance(m.get("char_id"), list):
-            m["char_id"] = m["char_id"][0] if m["char_id"] else ""
-
-    to_delete:                    list[str]         = []
-    to_compress_l2:               list[dict]        = []
-    to_compress_l1:               list[dict]        = []
-    to_distort_by_char: dict[str, list[dict]]       = {}
-
-    for m in memories:
-        importance = int(m["importance"] or 3)
-        rule       = _get_decay_rule(importance)
-        created    = _parse_dt(m["created_at"])
-        days_since = (current_game_time - created).days
-
-        if rule["delete"] and days_since >= rule["delete"] and m["level"] >= 2:
-            to_delete.append(m["mid"])
-            continue
-
-        if rule["level2"] and days_since >= rule["level2"] and m["level"] < 2:
-            to_compress_l2.append(m)
-            continue
-
-        if rule["level1"] and days_since >= rule["level1"] and m["level"] < 1:
-            to_compress_l1.append(m)
-            continue
-
-        distortion = float(m["distortion"] or 0)
-        if rule["distort"] and days_since >= rule["distort"] and distortion < 0.5:
-            char_id = m["char_id"]
-            to_distort_by_char.setdefault(char_id, []).append(m)
-
-    # ── 삭제 ─────────────────────────────────────────────────
-    for mid in to_delete:
-        await _delete_memory(mid)
-
-    # ── Level 2 압축 (배치) ──────────────────────────────────
-    if to_compress_l2:
-        results = await _compress_memories_batch(to_compress_l2, level=2)
-        for m in to_compress_l2:
-            new_summary = results.get(m["mid"])
-            if new_summary:
-                await _update_memory(
-                    m["mid"], new_summary, None,
-                    2, float(m["distortion"] or 0), current_game_time,
-                )
-
-    # ── Level 1 압축 (배치) ──────────────────────────────────
-    if to_compress_l1:
-        results = await _compress_memories_batch(to_compress_l1, level=1)
-        for m in to_compress_l1:
-            new_summary = results.get(m["mid"])
-            if new_summary:
-                await _update_memory(
-                    m["mid"], new_summary, None,
-                    1, float(m["distortion"] or 0), current_game_time,
-                )
-
-    # ── 왜곡 (char_id별 배치) ───────────────────────────────
-    for char_id, char_memories in to_distort_by_char.items():
-        traits  = await _fetch_char_traits(char_id)
-        results = await _distort_memories_batch(char_memories, char_id, traits)
-        for m in char_memories:
-            mid = m["mid"]
-            if isinstance(mid, list):
-                mid = mid[0] if mid else ""
-            mid = str(mid)
-            if mid not in results:
-                continue
-            new_summary = results[mid]
-            if new_summary != m["summary"]:
-                distortion = float(m["distortion"] or 0)
-                await _update_memory(
-                    mid, new_summary, None,
-                    int(m["level"]), min(1.0, distortion + 0.25),
-                    current_game_time,
-                )
-
-
-# ════════════════════════════════════════════════════════════
-# 배치 LLM 호출
-# ════════════════════════════════════════════════════════════
-
-async def _compress_memories_batch(memories: list[dict], level: int) -> dict[str, str]:
-    """
-    여러 Memory를 한 번에 압축한다.
-    Returns: {mid: new_summary} — 실패한 항목은 포함되지 않음.
-    """
-    instruction = (
-        "Compress each memory to 1 short sentence. Keep the emotional core."
-        if level == 1
-        else "Reduce each memory to a single fragment: just a feeling or vague impression. Korean OK."
-    )
-    items = "\n".join(
-        f'{i + 1}. [id:{m["mid"]}] {m["summary"]}'
-        for i, m in enumerate(memories)
-    )
-
-    prompt = f"""{instruction}
-
-Memories:
-{items}
-
-Return ONLY a JSON array:
-[{{"id": "<mid>", "summary": "<compressed>"}}, ...]"""
-
-    try:
-        model = get_model(DECAY_MODEL, system_prompt="You are a memory compressor. Reduce information while keeping the emotional core.")
-        resp  = await model.generate_content_async(
-            prompt,
-            generation_config={
-                "max_output_tokens": 64 * len(memories) + 128,
-                "temperature": 0.3,
-                "response_mime_type": "application/json",
-            },
-        )
-        results = extract_json_from_llm(resp.text, source="memory_compress_batch")
-        if isinstance(results, list):
-            return {
-                item["id"]: item["summary"]
-                for item in results
-                if isinstance(item, dict) and "id" in item and "summary" in item
-            }
-    except Exception as e:
-        print(f"[DecayManager] 배치 압축 실패 (level={level}): {e}")
-    return {}
-
-
-def _parse_dt(dt_str: str | None) -> datetime:
-    """ISO 8601 또는 YYYYMMDD_HHMM 문자열을 naive datetime으로 파싱한다."""
-    if not dt_str:
-        return datetime(2024, 1, 1)
-    try:
-        return datetime.fromisoformat(dt_str).replace(tzinfo=None)
-    except ValueError:
-        pass
-    try:
-        return datetime.strptime(dt_str, "%Y%m%d_%H%M")
-    except ValueError:
-        pass
-    return datetime(2024, 1, 1)

@@ -9,7 +9,7 @@
 # Functions
 #   - load_forbidden_terms() -> list[ForbiddenPattern] : 금지어 데이터 파일에서 패턴 목록 로드
 #   - find_forbidden_terms(text: str) -> list[str] : 텍스트에 포함된 금지어 목록 반환
-#   - find_pov_violations(text: str, perspective: int) -> list[str] : 시점 위반 표현 목록 반환
+#   - find_pov_violations(text: str, perspective: int, narrator_name: str | None = None) -> list[str] : 시점 위반 표현 목록 반환
 # ================================
 
 import re
@@ -76,18 +76,33 @@ def find_forbidden_terms(text: str) -> list[str]:
     return [item.label for item in load_forbidden_terms() if item.matches(text)]
 
 
-def find_pov_violations(text: str, perspective: int) -> list[str]:
-    """3인칭 출력의 지문/내면 독백에 섞인 1인칭 대명사를 반환합니다."""
-    if perspective != 3 or not text:
+def find_pov_violations(text: str, perspective: int, narrator_name: str | None = None) -> list[str]:
+    """출력 지문/내면 독백에 섞인 시점 위반 표현을 반환합니다."""
+    if not text:
         return []
 
     narration = _remove_quoted_dialogue(text)
+    if perspective == 1:
+        return _find_first_person_self_name_violations(narration, narrator_name)
+    if perspective != 3:
+        return []
     hits = [
         label
         for label, pattern in _FIRST_PERSON_NARRATION_PATTERNS
         if re.search(pattern, narration)
     ]
     return hits
+
+
+def _find_first_person_self_name_violations(narration: str, narrator_name: str | None) -> list[str]:
+    """1인칭 지문에서 narrator가 자기 이름으로 지칭된 흔적을 반환합니다."""
+    name = str(narrator_name or "").strip()
+    if not name:
+        return []
+    pattern = rf"(?<![가-힣A-Za-z0-9]){re.escape(name)}(?:은|는|이|가|을|를|에게|한테|도|만|의|와|랑)(?![가-힣A-Za-z0-9])"
+    if re.search(pattern, narration):
+        return [f"1인칭 지문 자기 이름 3인칭화: {name}"]
+    return []
 
 
 def _parse_forbidden_pattern(line: str) -> ForbiddenPattern:
@@ -106,4 +121,5 @@ def _parse_forbidden_pattern(line: str) -> ForbiddenPattern:
 
 def _remove_quoted_dialogue(text: str) -> str:
     """큰따옴표 대사를 제거하고 지문/내면 독백만 검사 대상으로 남깁니다."""
-    return re.sub(r'"[^"\n]*(?:"|$)', "", text)
+    without_dialogue = re.sub(r'"[^"\n]*(?:"|$)', "", text)
+    return re.sub(r"`[^`\n]*(?:`|$)", "", without_dialogue)

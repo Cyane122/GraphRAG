@@ -1,7 +1,7 @@
 # ================================
 # src/apps/app/actor.py
 #
-# Chainlit-free Actor generation for fetch streaming.
+# Actor generation for fetch-based streaming (provider-agnostic).
 #
 # Functions
 #   - recover_missing_analyze_prose(raw: str) -> tuple[str, bool] : Recover prose when Actor omits closing analyze tag.
@@ -31,6 +31,19 @@ from src.config import (
     ANTHROPIC_CLAUDE_SONNET_MODEL,
 )
 from src.core.llm.client import record_llm_latency
+
+_anthropic_client: AsyncAnthropic | None = None
+
+
+def _get_anthropic_client() -> AsyncAnthropic:
+    """Return the module-level Anthropic client, creating it on first use."""
+    global _anthropic_client
+    if _anthropic_client is None:
+        if not ANTHROPIC_API_KEY:
+            raise RuntimeError("ANTHROPIC_API_KEY is required for Claude actor models.")
+        _anthropic_client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+    return _anthropic_client
+
 
 _HEADER_HOUR_RE = re.compile(
     r"\*{1,2}\d{4}년\s*\d{1,2}월\s*\d{1,2}일\s*[월화수목금토일]요일\s*(\d{2})시\s*\d{2}분"
@@ -216,10 +229,7 @@ async def _stream_claude_text_chunks(
     max_token: int,
 ) -> AsyncIterator[str]:
     """Yield text chunks from Claude through Anthropic streaming."""
-    if not ANTHROPIC_API_KEY:
-        raise RuntimeError("ANTHROPIC_API_KEY is required for Claude actor models.")
-
-    client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+    client = _get_anthropic_client()
     stream = await client.messages.create(
         model=_resolve_claude_model_name(model_name),
         max_tokens=max_token,

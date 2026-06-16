@@ -643,3 +643,14 @@ Chainlit 제거 + Codex 리뷰 지적 반영 + 백로그 정리.
 - [개선] `src/agents/manager/core_context.py`: `_recall_relevant_memories`를 3 독립 try 블록(pinned cap 2/recent/vector)으로 분리; pre-migration NULL status 호환 필터; confidence_label 추가.
 - [버그픽스] `src/simulation/state/apply/events.py`: `commit_id` 기반 idempotency — 같은 commit이 이미 Event를 생성했으면 Event 재생성 스킵 + `ensure_memories_for_event` 재호출(Event 생성 성공 후 Memory 생성 실패 시 retry에서 Memory 영구 누락 방지); Event CREATE에 `source_commit_id` 컬럼 추가.
 
+## 2026-06-16
+
+- [리팩토링] **Phase D 대형 파일 분리** — 4개 파일 300줄 이하로 축소, 3개 신규 파일 생성.
+  - `src/core/database/migrations.py` 신규: `_TABLE_MIGRATIONS`, `_COLUMN_MIGRATIONS`, `_DATA_PATCHES` 리스트를 `driver.py`에서 분리. Secret-Character HAS_SECRET backfill 패치 추가. `driver.py` 620L → ~370L.
+  - `src/apps/app/message_ops.py` 신규: `reroll_assistant`, `edit_message`, `activate_variant`, `delete_message` 4개 함수를 `service.py`에서 분리. `service.py`와의 순환 참조 방지를 위해 `_message_ops_payload`·`_preview`·`_generate` 내부 래퍼에 lazy import 사용. `service.py` 778L → ~520L.
+  - `src/simulation/state/extract/primary.py` 신규: `_run_primary_update`, `_render_state_world_context`, `_render_dynamic_state_field_policy`, `_compact_world_context_text`를 `updater.py`에서 분리. `updater.py` 964L → ~780L.
+  - `src/simulation/systems/memory/__init__.py`: decay 로직(이미 `decay.py`에 존재)·`_compress_memories_batch` 제거 → 메모리 생성(`ensure_memories_for_event`) 전용으로 축소 487L → ~220L; `decay.run_decay`·`distortion.distort_on_affinity_change` re-export 유지.
+  - `src/apps/app/app.py`: import를 `service`와 `message_ops` 두 모듈로 분리.
+  - `CLAUDE.md` 디렉토리 맵: `migrations.py`, `primary.py`, `message_ops.py`, `decay.py(기존)` 항목 추가; `service.py` 설명 갱신.
+  - `AGENTS.md` Project Map·Where To Change Things 갱신: 신규 4개 파일 반영, reroll/edit/activate/delete → `message_ops.py` 행 추가.
+

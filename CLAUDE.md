@@ -186,6 +186,7 @@ GraphRAG/
 │   │   ├── state_normalization.py  # 상태 정규화 유틸
 │   │   ├── database/
 │   │   │   ├── driver.py           # KuzuAsyncDriver + ProxyDriver 싱글톤
+│   │   │   ├── migrations.py       # DDL/컬럼/데이터 마이그레이션 상수 (_TABLE_MIGRATIONS 등)
 │   │   │   ├── helpers.py          # CRUD helpers (update_dynamic_state 등)
 │   │   │   ├── proxy.py            # 컨텍스트 기반 드라이버 프록시
 │   │   │   ├── records.py          # DB 레코드 타입 정의
@@ -207,6 +208,7 @@ GraphRAG/
 │   │   │   ├── updater.py          # 상태 업데이트 총괄 (process_actor_response)
 │   │   │   ├── importance.py       # 이벤트 중요도 루브릭 상수 (IMPORTANCE_RUBRIC)
 │   │   │   ├── extract/            # LLM 추출기 — Actor 응답에서 정보 추출
+│   │   │   │   ├── primary.py          # 주 NPC 상태/관계/이벤트 추출 (_run_primary_update)
 │   │   │   │   ├── turn_extractor.py   # 턴 추출기 (unified 모드)
 │   │   │   │   ├── multi_character.py  # 다중 NPC 상태 추출
 │   │   │   │   ├── dynamic_information.py # DynamicInformation 추출
@@ -220,6 +222,7 @@ GraphRAG/
 │   │   └── systems/                # 독립 시뮬레이션 시스템
 │   │       ├── memory/
 │   │       │   ├── distortion.py   # 기억 왜곡 (NPC 성격 방향으로 의도된 동작)
+│   │       │   ├── decay.py        # 풍화 루프 + 배치 LLM 압축 (run_decay)
 │   │       │   ├── gate.py         # 결정론적 메모리 게이트 (reject/create/reinforce)
 │   │       │   ├── migration.py    # Memory/Event 메타데이터 컬럼 추가 마이그레이션 (v1)
 │   │       │   └── narrative.py    # N턴마다 대화 → 타임라인 압축
@@ -260,12 +263,13 @@ GraphRAG/
 │   │   │   ├── analysis_tools.py   # 분석 도구
 │   │   │   ├── commit.py           # 커밋 처리
 │   │   │   ├── input_routing.py    # 사용자 입력 → TurnInputType 분기
+│   │   │   ├── message_ops.py      # 메시지 변형 연산 (reroll/edit/activate/delete)
 │   │   │   ├── models.py           # API 모델
 │   │   │   ├── output_guard.py     # Actor 출력 금지어 검사
 │   │   │   ├── output_repair.py    # 금지어 위반 응답 수정
 │   │   │   ├── pending_store.py    # PendingCommit 임시 저장소
 │   │   │   ├── runtime.py          # 런타임 상태
-│   │   │   ├── service.py          # 서비스 레이어
+│   │   │   ├── service.py          # 생성 서비스 레이어 (append_user_and_stream 등)
 │   │   │   ├── session_models.py   # 세션 Pydantic 모델
 │   │   │   ├── storage.py          # 저장소
 │   │   │   ├── turn_debug.py       # 턴 디버그 출력

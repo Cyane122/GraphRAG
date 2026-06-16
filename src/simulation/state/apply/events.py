@@ -442,11 +442,10 @@ Return ONLY JSON: {{"summary": "..."}}"""
         if not new_summary:
             return
 
-        _esc = new_summary.replace("\\", "\\\\").replace("'", "\\'")
         async with async_driver.session() as session:
             await session.run(
-                f"MATCH (a:Character {{id: $a}})-[r:RELATIONSHIP]->(b:Character {{id: $b}}) SET r.summary = '{_esc}'",
-                a=npc_id, b=pc_id,
+                "MATCH (a:Character {id: $a})-[r:RELATIONSHIP]->(b:Character {id: $b}) SET r.summary = $summary",
+                a=npc_id, b=pc_id, summary=new_summary,
             )
         print(f"[RelationshipNarrative] {npc_id}↔{pc_id} 갱신 완료")
     except Exception as e:

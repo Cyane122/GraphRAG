@@ -8,7 +8,7 @@
 #
 # Functions
 #   - _parse_datetime(value: object) -> datetime : Parse a stored timestamp.
-#   - _strip_ui_markers(value: str) -> str : Remove invisible Chainlit UI markers.
+#   - _strip_ui_markers(value: str) -> str : Remove invisible UI markers from stored message content.
 #   - _preview(value: str) -> str : Build a compact preview string.
 # ================================
 

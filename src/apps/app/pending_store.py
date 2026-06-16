@@ -1,7 +1,7 @@
 # ================================
 # src/apps/app/pending_store.py
 #
-# Durable JSON storage for Chainlit pending commits.
+# Durable JSON storage for pending commits.
 #
 # Functions
 #   - save_pending_commit(pending: dict, world_id: str, pc_id: str, npc_id: str) -> None : Persist one pending commit snapshot.

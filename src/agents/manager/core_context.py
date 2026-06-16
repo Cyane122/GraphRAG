@@ -18,17 +18,7 @@ from src.assets.worlds.base import World
 from src.core.database import async_driver
 from src.core.embedding.encoder import embed_async
 from src.simulation.systems.personal_facts import fetch_active_personal_facts, merge_prompt_facts
-
-_LOCATION_ID_ALIASES: dict[str, tuple[str, ...]] = {
-    "sunghwa_high_school": ("sunghwa_school",),
-    "sunghwa_high_school_classroom_1_7": ("sunghwa_classroom_1_7",),
-    "sunghwa_high_school_hallway": ("sunghwa_hallway",),
-    "sunghwa_high_school_cafeteria": ("sunghwa_cafeteria",),
-    "sunghwa_high_school_gym": ("sunghwa_gym",),
-    "sunghwa_high_school_rooftop": ("sunghwa_rooftop",),
-    "sunghwa_high_school_library": ("sunghwa_library",),
-    "sunghwa_high_school_shoe_locker": ("sunghwa_shoe_locker",),
-}
+from src.agents.manager.queries import _LOCATION_ID_ALIASES
 
 
 async def assemble_core_context(

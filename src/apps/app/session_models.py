@@ -1,7 +1,7 @@
 # ================================
 # src/apps/app/session_models.py
 #
-# Chainlit session data models shared by UI turn handlers.
+# Session data models for per-turn state in the web UI.
 #
 # Classes
 #   - PendingCommit : Deferred side effects waiting for acceptance on the next turn.
@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 
 
 class PendingCommit(BaseModel):
-    """Deferred actor response data stored in the Chainlit session."""
+    """Deferred actor response data stored in the web UI session."""
 
     commit_id: str = Field(default_factory=lambda: uuid4().hex)
     status: str = "pending"

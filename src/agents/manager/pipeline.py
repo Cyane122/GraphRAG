@@ -36,6 +36,7 @@ async def run_manager_pipeline(
     social_media_features: dict | None = None,
     thread_id: str | None = None,
     commit_id: str | None = None,
+    turn_ooc_directives: str = "",
 ) -> tuple[PromptParts, list[str], dict]:
     """Run turn preparation and optional pre-Actor KakaoTalk preprocessing."""
     bootstrap = await bootstrap_manager(world_id, perspective, deps)
@@ -161,5 +162,6 @@ async def run_manager_pipeline(
         core_context,
         world_context,
         scene_need_hints=scene_need_hints or {},
+        turn_ooc_directives=turn_ooc_directives,
     )
     return prompts, scene_plan.scene_types, scene_plan.manager_effects
