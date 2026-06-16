@@ -654,3 +654,22 @@ Chainlit 제거 + Codex 리뷰 지적 반영 + 백로그 정리.
   - `CLAUDE.md` 디렉토리 맵: `migrations.py`, `primary.py`, `message_ops.py`, `decay.py(기존)` 항목 추가; `service.py` 설명 갱신.
   - `AGENTS.md` Project Map·Where To Change Things 갱신: 신규 4개 파일 반영, reroll/edit/activate/delete → `message_ops.py` 행 추가.
 
+- [아키텍처 감사 개선] **core/·simulation/ 감사 로드맵 Phase A/B/D 구현** (Codex 적대적 리뷰로 단계별 게이팅).
+  - **Phase A — 트랜잭션·실패 시맨틱:**
+    - `core/database/session.py` `KuzuTransaction` 추가(BEGIN→COMMIT 동안 락 유지, 오류 시 ROLLBACK, 재진입 불가). `driver.py`·`proxy.py`에 `transaction()` 위임.
+    - `helpers.py` `update_global_flags`/`set_global_flag`(원자적 read-modify-write 머지) — `events/manager.py`·`memory/narrative.py`의 손수 escape를 폐기(lost-update 해소). `move_location`·`update_dynamic_state`·`update_relationship_affinity`·`get_dynamic_state_field_types`를 `tx=` 인자로 외부 트랜잭션에 합류 가능하게(`_executor` 컨텍스트).
+    - 다중 쓰기 핫스팟 원자화: 캐릭터별 메모리 생성(임베딩은 트랜잭션 밖 선계산), Kakao `_store_message`, 양방향 affinity, `multi_character` 캐릭터별 루프, 이벤트 생성(`apply/events.py`).
+    - `core/llm/errors.py` 신규(`LLMError`/`TransientLLMError(=TimeoutError)`/`LLMJsonError`); `client.py` 스트리밍 타임아웃 + 제한적 재시도/백오프, `extract_json_from_llm(strict=)` 추가(추출 실패와 정상 빈 결과 구분).
+    - reroll 일관성: 커밋된 응답 reroll 거부(서버 가드 + 프론트 원복).
+    - 테스트: `tests/smoke_db_transaction.py`, `tests/smoke_llm_client.py`.
+  - **Phase B — 타입 경계(핵심 슬라이스):**
+    - `simulation/systems/needs/models.py` 신규(`NeedLevels` + 정본 `NEED_DEFAULTS`/`SETTLE_LEVELS`). `resolver→needs` 역방향 import 레이어 정리(needs가 단일 출처, resolver 함수는 needs 내부에서 지연 import로 사이클 차단).
+    - `turn_extractor.py` `_synthesize_event_id` 추가 — unified 모드에서 event id 누락으로 `_create_event`가 조기 반환해 이벤트가 조용히 누락되던 버그 수정(기본 legacy 경로 영향 없음).
+    - message_ops edit/delete/activate의 커밋-턴 drift는 **WONTFIX**로 결정(자유로운 히스토리 편집 유지; 실제 그래프 롤백/브랜칭 도입 전까지 허용된 한계).
+  - **Phase D — 견고성 폴리시:**
+    - `config.py` `EMBEDDING_DIM`을 `int|None`으로 파싱(빈 값만 None; 형식 오류·비양수는 import 시 즉시 실패), `HF_TOKEN` 형식 검증(`hf_` 접두사). `encoder.py` 임베딩 싱글톤에 `threading.Lock` 이중검사 잠금(executor 스레드 동시 첫 호출 이중 적재 방지). `schema_builder.py`의 `agents` 상향 import를 `__main__` 안으로 이동(모듈 import 시 레이어 위반 제거).
+    - 메모리 라이프사이클 정리: `memory/__init__.py`에 상태머신(create→reinforce→distort(즉시)→decay(시간)→narrative) 순서·불변식 문서화. `distort_on_affinity_change`→`AffinityDistortReport`, `run_decay`→`DecayReport`(버킷별 카운트 + `llm_failed`) 신호 반환; 배치 LLM 헬퍼는 경성 실패 시 `None`(정상 no-op `{}`와 구분, `strict=True` 파싱) → 호출부(`updater.py`·`manager/effects.py`)가 `llm_failed` 로깅.
+    - 마이그레이션 견고화: `migrations.py` `MigrationOp`/`migration_ops()`로 DDL을 파싱해 **노드→rel→컬럼** 순서 적용(rel이 노드보다 먼저 실행돼 영구 누락되던 순서 버그 해소). `driver.py` `_run_migrations`를 `SchemaMigration` 원장 + `table_info`/`show_tables` introspection 기반으로 재작성(에러 문자열 매칭 폐지; endpoint 없는 rel은 다음 기동에 재시도하도록 보류, 진짜 실패는 로깅).
+  - Codex 리뷰 수정: `EMBEDDING_DIM` 무성 1024 fallback → 빠른 실패로 전환; 메모리 배치 헬퍼가 파싱 실패(`{}`)를 no-op으로 삼키던 문제 → `strict=True` + 비-list 시 `None`.
+  - `CLAUDE.md`/`AGENTS.md`: 트랜잭션 규칙·`errors.py`·`needs/models.py`·`migrations.py` 파서/원장·`driver.py` introspection 항목 동기화.
+

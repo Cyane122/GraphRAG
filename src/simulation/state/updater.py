@@ -26,6 +26,7 @@ from datetime import datetime
 from pathlib import Path
 
 from src.core.database import (
+    async_driver,
     get_dynamic_state_field_types,
     update_dynamic_state,
     update_relationship_affinity,
@@ -647,8 +648,10 @@ async def process_actor_response(
             print(f"[RelationshipDiff] affinity {sign}{v} [{rel_candidate['commit_policy']}]")
         if delta:
             d = int(delta)
-            await update_relationship_affinity(npc_id, pc_id, d)
-            await update_relationship_affinity(pc_id, npc_id, d)
+            # 양방향 호감도를 한 트랜잭션으로 묶어 한쪽만 반영돼 비대칭이 되는 일을 막는다.
+            async with async_driver.transaction() as tx:
+                await update_relationship_affinity(npc_id, pc_id, d, tx=tx)
+                await update_relationship_affinity(pc_id, npc_id, d, tx=tx)
     except Exception as e:
         print(f"[StateUpdater] relationship update failed (ignored): {e}")
 
@@ -713,7 +716,10 @@ async def process_actor_response(
     if abs(_d) >= 10:
         try:
             from src.simulation.systems.memory import distort_on_affinity_change
-            await distort_on_affinity_change(npc_id, pc_id, _d, _depth_dt)
+            distort_report = await distort_on_affinity_change(npc_id, pc_id, _d, _depth_dt)
+            # 호감도는 이미 커밋됐는데 재해석이 실패하면 기억이 옛 관계 상태에 머문다 → 가시화.
+            if distort_report.llm_failed:
+                print(f"[Updater] affinity-distort LLM failed for {npc_id} (Δ={_d:+d}); shared memories left stale")
         except Exception as e:
             print(f"[Updater] memory distortion failed (ignored): {e}")
 

@@ -7,7 +7,7 @@
 # DDL 마이그레이션 데이터는 migrations.py 참조.
 #
 # Classes
-#   - KuzuAsyncDriver : session() 팩토리 및 동기 execute_sync() 제공
+#   - KuzuAsyncDriver : session()/transaction() 팩토리 및 동기 execute_sync() 제공
 #
 # Functions
 #   - set_active_driver(driver: KuzuAsyncDriver | None) : 현재 async 컨텍스트의 Kuzu 드라이버 설정
@@ -23,6 +23,7 @@
 import asyncio
 import atexit
 from contextvars import ContextVar
+from datetime import datetime
 from importlib import import_module
 from pathlib import Path
 
@@ -31,10 +32,10 @@ from kuzu import QueryResult
 
 from src.assets.worlds.base import World
 from src.config import WORLD_ID
-from src.core.database.migrations import _COLUMN_MIGRATIONS, _DATA_PATCHES, _TABLE_MIGRATIONS
+from src.core.database.migrations import _DATA_PATCHES, migration_ops
 from src.core.database.proxy import ProxyDriver
 from src.core.database.records import KuzuRecord, KuzuResult
-from src.core.database.session import KuzuSession
+from src.core.database.session import KuzuSession, KuzuTransaction
 
 _active_driver: ContextVar["KuzuAsyncDriver | None"] = ContextVar("active_kuzu_driver", default=None)
 
@@ -80,6 +81,10 @@ class KuzuAsyncDriver:
     def session(self) -> KuzuSession:
         """KuzuSession을 반환합니다 (async context manager로 사용)."""
         return KuzuSession(self._conn, self._lock)
+
+    def transaction(self) -> KuzuTransaction:
+        """원자적 다중 쓰기용 KuzuTransaction을 반환합니다 (async context manager로 사용)."""
+        return KuzuTransaction(self._conn, self._lock)
 
     def _table_names(self) -> set[str]:
         """현재 Kuzu DB에 존재하는 테이블 이름을 반환합니다."""
@@ -131,7 +136,17 @@ class KuzuAsyncDriver:
         apply_schedule_templates(self._conn, self._world_id, self._scenario_id)
 
     def _run_migrations(self) -> None:
-        """기존 DB에 누락된 테이블과 컬럼을 추가한다."""
+        """기존 DB에 누락된 테이블과 컬럼을 추가한다.
+
+        idempotency 판단을 에러 문자열 매칭이 아니라 구조적 introspection + 적용 원장
+        (SchemaMigration)으로 한다:
+          1. 원장에 이미 기록된 op은 건너뛴다.
+          2. 대상 테이블/컬럼이 이미 존재하면(기존 DB) 실행 없이 원장만 보강한다.
+          3. rel은 양끝 노드 테이블이 모두 생긴 뒤에만 만든다 — 없으면 기록하지 않고 보류해
+             다음 기동 때 재시도한다(이전엔 'cannot find table'을 성공으로 삼켜 영구 누락).
+          4. 실행이 'already exists/duplicate' 류로 실패하면 양성으로 보고 원장에 기록,
+             그 외 진짜 실패는 기록하지 않고 로깅한다(다음 기동 재시도 + 가시화).
+        """
         tables = self._table_names()
         required_base_tables = {"Character", "DynamicState", "Location", "GlobalState"}
         if not required_base_tables.issubset(tables):
@@ -139,22 +154,109 @@ class KuzuAsyncDriver:
             print(f"[KuzuMigration] skipped: base schema is missing ({missing}).")
             return
 
-        for ddl in [*_TABLE_MIGRATIONS, *_COLUMN_MIGRATIONS]:
+        self._ensure_migration_ledger()
+        applied = self._load_applied_migrations()
+        existing = self._table_names()
+
+        for op in migration_ops():
+            if op.id in applied:
+                continue
+
+            # 2: 기존 DB에 이미 있는 테이블/컬럼 → 실행 없이 원장만 보강
+            if op.kind in ("node", "rel") and op.table in existing:
+                self._record_migration(op.id)
+                continue
+            if op.kind == "column":
+                columns = self._table_columns(op.table)
+                if columns and op.column in columns:
+                    self._record_migration(op.id)
+                    continue
+                if op.table not in existing:
+                    print(f"[KuzuMigration] defer column {op.id}: table '{op.table}' missing")
+                    continue
+
+            # 3: rel은 양끝 노드 테이블이 있어야 만든다 (없으면 보류 → 다음 기동 재시도)
+            if op.kind == "rel" and op.endpoints:
+                frm, to = op.endpoints
+                if frm not in existing or to not in existing:
+                    print(f"[KuzuMigration] defer rel '{op.table}': endpoint table missing ({frm}, {to})")
+                    continue
+
             try:
-                self._conn.execute(ddl)
+                self._conn.execute(op.ddl)
+                if op.kind in ("node", "rel"):
+                    existing = self._table_names()  # 새 테이블이 이후 rel의 endpoint가 될 수 있다
+                self._record_migration(op.id)
             except Exception as exc:
                 message = str(exc).lower()
-                if (
-                    "already exists" in message
-                    or "already has property" in message
-                    or "duplicate" in message
-                    or "cannot find table" in message
-                ):
-                    continue
-                print(f"[KuzuMigration] skipped failed migration: {ddl} ({exc})")
+                if "already exists" in message or "already has property" in message or "duplicate" in message:
+                    self._record_migration(op.id)  # 양성: 이미 적용됨
+                else:
+                    print(f"[KuzuMigration] failed migration {op.id}: {exc}")  # 진짜 실패 — 기록 안 함
+
         self._migrate_has_dynamic_state_to_has_state()
         self._backfill_located_at_from_dynamic_state()
         self._run_data_patches()
+
+    _MIGRATION_LEDGER = "SchemaMigration"
+
+    def _ensure_migration_ledger(self) -> None:
+        """적용된 마이그레이션을 기록하는 SchemaMigration 노드 테이블을 보장한다."""
+        try:
+            self._conn.execute(
+                f"CREATE NODE TABLE IF NOT EXISTS {self._MIGRATION_LEDGER}"
+                "(id STRING, applied_at STRING, PRIMARY KEY(id))"
+            )
+        except Exception as exc:
+            print(f"[KuzuMigration] ledger init failed (continuing without ledger): {exc}")
+
+    def _load_applied_migrations(self) -> set[str]:
+        """원장에 기록된 적용 완료 마이그레이션 id 집합을 반환한다."""
+        try:
+            qr = self._conn.execute(f"MATCH (m:{self._MIGRATION_LEDGER}) RETURN m.id AS id")
+        except Exception:
+            return set()
+        applied: set[str] = set()
+        try:
+            while qr.has_next():
+                row = qr.get_next()
+                if row and row[0]:
+                    applied.add(row[0])
+        finally:
+            try:
+                qr.close()
+            except Exception:
+                pass
+        return applied
+
+    def _record_migration(self, migration_id: str) -> None:
+        """마이그레이션 적용 사실을 원장에 기록한다(이미 있으면 타임스탬프 갱신)."""
+        try:
+            self._conn.execute(
+                f"MERGE (m:{self._MIGRATION_LEDGER} {{id: $id}}) SET m.applied_at = $ts",
+                {"id": migration_id, "ts": datetime.now().isoformat()},
+            )
+        except Exception as exc:
+            print(f"[KuzuMigration] ledger record failed for {migration_id}: {exc}")
+
+    def _table_columns(self, table: str) -> set[str]:
+        """주어진 테이블의 컬럼 이름 집합을 반환한다(introspection; 실패 시 빈 집합)."""
+        try:
+            qr = self._conn.execute(f"CALL table_info('{table}') RETURN name")
+        except Exception:
+            return set()
+        columns: set[str] = set()
+        try:
+            while qr.has_next():
+                row = qr.get_next()
+                if row and row[0]:
+                    columns.add(row[0])
+        finally:
+            try:
+                qr.close()
+            except Exception:
+                pass
+        return columns
 
     def _run_data_patches(self) -> None:
         """특정 노드 속성값을 보정하는 데이터 패치를 실행합니다."""

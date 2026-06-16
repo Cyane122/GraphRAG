@@ -6,10 +6,12 @@
 # Functions
 #   - update_dynamic_information(char_id: str, updates: dict) -> None : DynamicInformation props JSON update
 #   - ensure_location(location_id: str | None, name: str, description: str = "", prompt_hint: str = "", parent_location_id: str | None = None, tags: list[str] | None = None, prompt_priority: int = 8) -> str : Location node create/update helper
-#   - update_dynamic_state(char_id: str, updates: dict) -> None : DynamicState 노드 속성 공통 업데이트
-#   - update_relationship_affinity(char_a: str, char_b: str, delta: int) -> None : 호감도 공통 업데이트 (양방향, ±100 상한)
+#   - update_dynamic_state(char_id: str, updates: dict, *, tx: KuzuTransaction | None = None) -> None : DynamicState 노드 속성 공통 업데이트 (tx 합류 가능)
+#   - update_relationship_affinity(char_a: str, char_b: str, delta: int, *, tx: KuzuTransaction | None = None) -> None : 호감도 단방향 업데이트 (±100 상한, tx 합류 가능)
 #   - _compact_relationship_status(value: object) -> str | None : Remove scene-action detail from RELATIONSHIP current_status.
-#   - move_location(char_id: str, new_loc_id: str) -> bool : 캐릭터 장소 이동 (성공 True / 대상 위치 없음 False)
+#   - update_global_flags(mutate: Callable[[dict], None]) -> dict : GlobalState.flags를 단일 트랜잭션 read-modify-write (lost-update 방지)
+#   - set_global_flag(key: str, value: object) -> None : GlobalState.flags 단일 키 원자적 설정
+#   - move_location(char_id: str, new_loc_id: str, *, tx: KuzuTransaction | None = None) -> bool : 캐릭터 장소 이동 (성공 True / 대상 위치 없음 False, tx 합류 가능)
 #   - advance_cycle_day(char_id: str, days: int) -> None : 생리/바이오리듬 일자 공통 업데이트
 #   - get_in_universe_time() -> str : GlobalState에서 현재 인게임 시간을 YYYYMMDD_HHMM 형식으로 반환
 #   - load_graph_info() -> dict : 그래프 현재 상태(전역·캐릭터·장소·관계)를 dict로 반환
@@ -18,10 +20,27 @@
 import hashlib
 import json
 import re
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from datetime import datetime
 
 from src.core.database import async_driver
+from src.core.database.session import KuzuSession, KuzuTransaction
 from src.core.state_normalization import normalize_stress_level
+
+
+@asynccontextmanager
+async def _executor(tx: KuzuTransaction | None) -> AsyncIterator[KuzuSession | KuzuTransaction]:
+    """쿼리를 실행할 runner를 yield한다.
+
+    tx가 주어지면 그 트랜잭션 위에서 실행하고(커밋/롤백은 바깥 트랜잭션이 책임),
+    없으면 단발 세션을 연다. 이를 통해 같은 helper를 단독 호출/트랜잭션 합류 양쪽에서 쓴다.
+    """
+    if tx is not None:
+        yield tx
+    else:
+        async with async_driver.session() as session:
+            yield session
 
 
 DYNAMIC_STATE_FIELDS = {
@@ -133,10 +152,14 @@ def _coerce_bool(value: object) -> bool | None:
     return None
 
 
-async def get_dynamic_state_field_types() -> dict[str, str]:
-    """Return DynamicState column names and Kuzu types from the live schema."""
-    async with async_driver.session() as session:
-        result = await session.run("CALL table_info('DynamicState') RETURN name, type")
+async def get_dynamic_state_field_types(*, tx: KuzuTransaction | None = None) -> dict[str, str]:
+    """Return DynamicState column names and Kuzu types from the live schema.
+
+    tx를 주면 그 트랜잭션 위에서 읽는다 — 바깥 트랜잭션 안에서 새 세션을 열어 락을
+    재요청하다 데드락 나는 것을 막는다.
+    """
+    async with _executor(tx) as runner:
+        result = await runner.run("CALL table_info('DynamicState') RETURN name, type")
         rows = await result.fetch_all()
     return {
         str(row["name"]): str(row["type"]).upper()
@@ -179,17 +202,17 @@ def _normalize_dynamic_state_updates(
     return normalized
 
 
-async def update_dynamic_state(char_id: str, updates: dict) -> None:
-    """DynamicState 노드 속성 공통 업데이트."""
+async def update_dynamic_state(char_id: str, updates: dict, *, tx: KuzuTransaction | None = None) -> None:
+    """DynamicState 노드 속성 공통 업데이트. tx를 주면 그 트랜잭션에 합류한다."""
     if not updates:
         return
-    field_types = await get_dynamic_state_field_types()
+    field_types = await get_dynamic_state_field_types(tx=tx)
     updates = _normalize_dynamic_state_updates(updates, field_types=field_types)
     if not updates:
         return
     set_clause = ", ".join(f"d.{k} = ${k}" for k in updates)
-    async with async_driver.session() as session:
-        await session.run(
+    async with _executor(tx) as runner:
+        await runner.run(
             f"MATCH (c:Character {{id: $char_id}})-[:HAS_STATE]->(d:DynamicState) SET {set_clause}",
             char_id=char_id, **updates,
         )
@@ -315,10 +338,15 @@ async def ensure_location(
     return loc_id
 
 
-async def update_relationship_affinity(char_a: str, char_b: str, delta: int) -> None:
-    """호감도 공통 업데이트 (양방향, ±100 상한). trust < 90이면 affinity 증가 차단."""
-    async with async_driver.session() as session:
-        await session.run("""
+async def update_relationship_affinity(
+    char_a: str, char_b: str, delta: int, *, tx: KuzuTransaction | None = None
+) -> None:
+    """호감도 단방향 업데이트 (±100 상한). trust < 90이면 affinity 증가 차단.
+
+    양방향 동기화가 필요하면 호출처가 두 방향을 같은 tx로 묶어 원자적으로 적용한다.
+    """
+    async with _executor(tx) as runner:
+        await runner.run("""
             MATCH (a:Character {id: $a})-[r:RELATIONSHIP]->(b:Character {id: $b})
             SET r.affinity = CASE
                 WHEN $delta > 0 AND coalesce(r.trust, 0) < 90 THEN coalesce(r.affinity, 0)
@@ -456,39 +484,85 @@ async def update_relationship_fields(char_a: str, char_b: str, updates: dict) ->
         )
 
 
-async def move_location(char_id: str, new_loc_id: str) -> bool:
+async def update_global_flags(mutate: Callable[[dict], None]) -> dict:
+    """GlobalState.flags JSON을 단일 트랜잭션 안에서 read-modify-write 한다.
+
+    read와 write 사이에 락을 계속 쥐고 있으므로 두 시스템이 같은 flags 블롭을 동시에
+    덮어써서 한쪽 갱신이 유실되는(lost-update) 문제를 막는다. mutate는 디코드된 flags
+    dict를 in-place로 수정한다. 갱신된 flags를 반환한다.
+    """
+    async with async_driver.transaction() as tx:
+        rec = await tx.run(
+            "MATCH (gs:GlobalState {id: 'singleton'}) RETURN gs.flags AS flags"
+        )
+        row = await rec.single()
+        flags: dict = {}
+        if row and row.get("flags"):
+            try:
+                flags = json.loads(row["flags"])
+            except (json.JSONDecodeError, TypeError):
+                flags = {}
+
+        mutate(flags)
+
+        # Kuzu 0.11.3은 SET = $param 을 정상 지원 — 과거 우회용 리터럴 이스케이프는 폐기.
+        await tx.run(
+            "MATCH (gs:GlobalState {id: 'singleton'}) SET gs.flags = $flags",
+            flags=json.dumps(flags, ensure_ascii=False),
+        )
+    return flags
+
+
+async def set_global_flag(key: str, value: object) -> None:
+    """GlobalState.flags의 단일 키를 원자적으로 설정한다 (lost-update 안전)."""
+    def _apply(flags: dict) -> None:
+        flags[key] = value
+
+    await update_global_flags(_apply)
+
+
+async def _move_location_ops(runner: KuzuSession | KuzuTransaction, char_id: str, new_loc_id: str) -> bool:
+    """LOCATED_AT 관계 + DynamicState.location_id 동기화 쿼리를 runner 위에서 실행한다.
+
+    대상 Location이 없으면 아무 변경 없이 False를 반환한다(쓰기 없음). 성공 시 True.
+    """
+    check_rec = await runner.run(
+        "MATCH (l:Location {id: $new_loc_id}) RETURN l.id AS id",
+        new_loc_id=new_loc_id,
+    )
+    if not await check_rec.single():
+        print(f"[move_location] invalid location ignored: {new_loc_id}")
+        return False
+
+    await runner.run("""
+        MATCH (c:Character {id: $char_id})-[old:LOCATED_AT]->(:Location)
+        DELETE old
+    """, char_id=char_id)
+
+    await runner.run("""
+        MATCH (c:Character {id: $char_id}), (next:Location {id: $new_loc_id})
+        CREATE (c)-[:LOCATED_AT]->(next)
+    """, char_id=char_id, new_loc_id=new_loc_id)
+
+    await runner.run("""
+        MATCH (c:Character {id: $char_id})-[:HAS_STATE]->(d:DynamicState)
+        SET d.location_id = $new_loc_id
+    """, char_id=char_id, new_loc_id=new_loc_id)
+    return True
+
+
+async def move_location(char_id: str, new_loc_id: str, *, tx: KuzuTransaction | None = None) -> bool:
     """캐릭터 장소 이동 공통 로직. LOCATED_AT 관계 + DynamicState.location_id 양쪽을 동기화한다.
 
     대상 Location이 없으면 아무 변경 없이 False를 반환해 호출처가 실패를 인지하게 한다. 성공 시 True.
+    LOCATED_AT 갱신과 DynamicState.location_id 동기화를 한 트랜잭션으로 묶어 위치가 어긋나는
+    일을 막는다. tx를 주면 바깥 트랜잭션에 합류하고(상태 갱신 등과 함께 원자적), 없으면 자체
+    트랜잭션을 연다.
     """
-    async with async_driver.session() as session:
-        check_rec = await session.run(
-            "MATCH (l:Location {id: $new_loc_id}) RETURN l.id AS id",
-            new_loc_id=new_loc_id,
-        )
-        if not await check_rec.single():
-            print(f"[move_location] invalid location ignored: {new_loc_id}")
-            return False
-
-        await session.run("""
-            MATCH (c:Character {id: $char_id})-[old:LOCATED_AT]->(:Location)
-            DELETE old
-        """, char_id=char_id)
-
-        await session.run("""
-            MATCH (c:Character {id: $char_id}), (next:Location {id: $new_loc_id})
-            CREATE (c)-[:LOCATED_AT]->(next)
-        """, char_id=char_id, new_loc_id=new_loc_id)
-
-        try:
-            await session.run("""
-                MATCH (c:Character {id: $char_id})-[:HAS_STATE]->(d:DynamicState)
-                SET d.location_id = $new_loc_id
-            """, char_id=char_id, new_loc_id=new_loc_id)
-        except Exception as _loc_sync_err:
-            print(f"[move_location] DynamicState.location_id sync skipped: {_loc_sync_err}")
-
-    return True
+    if tx is not None:
+        return await _move_location_ops(tx, char_id, new_loc_id)
+    async with async_driver.transaction() as own_tx:
+        return await _move_location_ops(own_tx, char_id, new_loc_id)
 
 
 async def advance_cycle_day(char_id: str, days: int) -> None:

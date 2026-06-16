@@ -101,7 +101,10 @@ async def commit_manager_auxiliary_effects(
     daily_time = current_dt or _parse_effect_datetime(daily_plan.get("current_time"))
     if days_passed > 0 and daily_time:
         try:
-            await run_decay(daily_time)
+            decay_report = await run_decay(daily_time)
+            # 배치 압축/왜곡이 경성 실패하면 일부 기억이 풍화되지 않은 채 남는다 → 가시화.
+            if decay_report.llm_failed:
+                print("[ManagerCommit] decay batch LLM failed; some memories left un-decayed this pass")
         except Exception as e:
             print(f"[ManagerCommit] decay failed (ignored): {e}")
         try:

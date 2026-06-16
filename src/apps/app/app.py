@@ -93,7 +93,13 @@ def create_app() -> FastAPI:
     @app.post("/api/conversations")
     def api_create_conversation(body: ConversationCreateRequest) -> dict:
         """Create a new conversation."""
-        state = create_conversation(body.world_id or WORLD_ID, body.scenario_id, store, actor_model=body.actor_model)
+        state = create_conversation(
+            body.world_id or WORLD_ID,
+            body.scenario_id,
+            store,
+            actor_model=body.actor_model,
+            ooc_config=body.ooc_config,
+        )
         return _conversation_payload(state)
 
     @app.get("/api/conversations")

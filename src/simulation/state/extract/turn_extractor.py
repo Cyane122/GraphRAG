@@ -8,6 +8,7 @@
 #
 # Functions
 #   - load_or_extract_turn_facts(actor_response: str, user_input: str, thread_id: str | None, commit_id: str | None, npc_id: str, pc_id: str, scene_types: list[str] | None, scene_chars: list[str] | None, mode: str) -> tuple[AcceptedTurnFacts | None, dict] : Reuse or run the unified turn extractor.
+#   - _synthesize_event_id(npc_id: str, summary: object) -> str : Build a stable event id for unified-mode candidates.
 #   - facts_to_primary_plan(facts: AcceptedTurnFacts, allow_event: bool, npc_id: str, pc_id: str) -> dict : Convert accepted facts to the legacy primary updater plan shape.
 #   - write_extractor_shadow_diff(thread_id: str | None, commit_id: str | None, facts: AcceptedTurnFacts | None, legacy_plan: dict | None, metrics: dict) -> None : Persist extractor metrics and candidate summaries.
 # ================================
@@ -210,6 +211,18 @@ async def load_or_extract_turn_facts(
         metrics["latency_ms"] = int((perf_counter() - started) * 1000)
 
 
+def _synthesize_event_id(npc_id: str, summary: object) -> str:
+    """Build a stable event id for unified-mode candidates (the LLM emits none here).
+
+    _create_event uniquifies the id, so collisions are harmless; we only need a non-empty,
+    descriptive base in the legacy {desc}_{YYYYMMDD_HHMM} spirit.
+    """
+    raw = str(summary or "").strip()
+    slug = "".join(ch if ch.isalnum() else "_" for ch in raw)[:24].strip("_") or "event"
+    ts = datetime.now().strftime("%Y%m%d_%H%M")
+    return f"{npc_id}_{slug}_{ts}"
+
+
 def facts_to_primary_plan(facts: AcceptedTurnFacts, allow_event: bool, npc_id: str, pc_id: str) -> dict:
     """Convert accepted facts into the legacy primary updater plan shape."""
     state: dict[str, Any] = {}
@@ -237,7 +250,11 @@ def facts_to_primary_plan(facts: AcceptedTurnFacts, allow_event: bool, npc_id: s
     for item in facts.event_candidates:
         if not isinstance(item, dict) or not _candidate_is_supported(item):
             continue
+        # The unified extractor does not emit an event id, but _create_event early-returns
+        # without one. Synthesize a stable id (it gets uniquified downstream); legacy plans
+        # get this id straight from the LLM in {location}_{desc}_{YYYYMMDD_HHMM} form.
         event_candidate = {
+            "id": _synthesize_event_id(npc_id, item.get("summary")),
             "summary": item.get("summary"),
             "impact": item.get("impact") or item.get("reason"),
             "importance": item.get("importance", 0),

@@ -42,9 +42,38 @@ ANTHROPIC_CLAUDE_OPUS_4_8_MODEL = os.getenv("ANTHROPIC_CLAUDE_OPUS_4_8_MODEL", "
 ANTHROPIC_CLAUDE_OPUS_MODEL = os.getenv("ANTHROPIC_CLAUDE_OPUS_MODEL", ANTHROPIC_CLAUDE_OPUS_4_8_MODEL)
 
 # ── 임베딩 ──────────────────────────────────────────────────
+def _embedding_dim(raw: str | None) -> int | None:
+    """EMBEDDING_DIM을 파싱한다.
+
+    미설정이면 None(호출부가 1024 기본값을 쓴다). 설정됐는데 정수가 아니거나 양수가 아니면
+    import 시점에 즉시 실패한다 — 잘못된 차원을 조용히 1024로 떨어뜨리면, encoder가 실제로
+    내보내는 차원과 벡터 스키마(FLOAT[1024])가 어긋나 이후 Event/Memory 임베딩 저장이
+    소리 없이 실패할 수 있기 때문이다(빠른 실패가 더 안전)."""
+    text = (raw or "").strip()
+    if not text:
+        return None
+    try:
+        value = int(text)
+    except ValueError as exc:
+        raise ValueError(f"EMBEDDING_DIM={text!r} is not an integer") from exc
+    if value <= 0:
+        raise ValueError(f"EMBEDDING_DIM={text!r} must be a positive integer")
+    return value
+
+
+def _validate_hf_token(raw: str | None) -> str | None:
+    """HF_TOKEN을 정규화한다. 설정돼 있는데 형식이 어긋나면 경고만 한다(공개 모델은 토큰 불필요)."""
+    text = (raw or "").strip()
+    if not text:
+        return None
+    if not text.startswith("hf_"):
+        print("[config] HF_TOKEN is set but does not start with 'hf_'; gated-model downloads may fail.")
+    return text
+
+
 MODEL_EMBEDDER = os.getenv("MODEL_EMBEDDER")
-EMBEDDING_DIM  = os.getenv("EMBEDDING_DIM")
-HF_TOKEN       = os.getenv("HF_TOKEN")
+EMBEDDING_DIM  = _embedding_dim(os.getenv("EMBEDDING_DIM"))
+HF_TOKEN       = _validate_hf_token(os.getenv("HF_TOKEN"))
 
 # ── 기능 플래그 ─────────────────────────────────────────────
 IMPERSONATION = os.getenv("IMPERSONATION", "true").lower() == "true"

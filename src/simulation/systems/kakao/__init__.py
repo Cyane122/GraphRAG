@@ -488,14 +488,15 @@ async def _store_message(
     """Persist a KakaoTalk message and link it to room and sender."""
     ts = timestamp.isoformat()
     message_id = _message_id(room_id, sender_id, content, ts)
-    async with async_driver.session() as session:
-        existing = await session.run(
+    # 메시지 노드 + 방/발신자 관계 + 방 갱신을 한 트랜잭션으로 묶어 반쪽 연결을 막는다.
+    async with async_driver.transaction() as tx:
+        existing = await tx.run(
             "MATCH (m:KakaoMessage {id: $message_id}) RETURN m.id AS id",
             message_id=message_id,
         )
         if await existing.single():
             return
-        await session.run(
+        await tx.run(
             """
             CREATE (:KakaoMessage {
                 id: $message_id,
@@ -516,7 +517,7 @@ async def _store_message(
             timestamp=ts,
             source=source,
         )
-        await session.run(
+        await tx.run(
             """
             MATCH (r:KakaoRoom {id: $room_id}), (m:KakaoMessage {id: $message_id})
             CREATE (r)-[:ROOM_HAS_MESSAGE]->(m)
@@ -524,7 +525,7 @@ async def _store_message(
             room_id=room_id,
             message_id=message_id,
         )
-        await session.run(
+        await tx.run(
             """
             MATCH (c:Character {id: $sender_id}), (m:KakaoMessage {id: $message_id})
             CREATE (c)-[:SENT_KAKAO]->(m)
@@ -532,7 +533,7 @@ async def _store_message(
             sender_id=sender_id,
             message_id=message_id,
         )
-        await session.run(
+        await tx.run(
             """
             MATCH (r:KakaoRoom {id: $room_id})
             SET r.last_active_at = $timestamp

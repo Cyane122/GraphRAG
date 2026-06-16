@@ -14,6 +14,7 @@ import json
 from datetime import datetime
 
 from src.core.database import async_driver
+from src.core.database.helpers import set_global_flag
 from src.simulation.events.evaluator import evaluate_conditions
 
 
@@ -81,26 +82,8 @@ async def set_flag(key: str, value: bool) -> None:
     """
     GlobalState.flags JSON에 플래그를 세팅합니다.
     Complex Updater에서 서사적 조건이 충족됐을 때 호출합니다.
+    read-modify-write를 단일 트랜잭션으로 처리해 narrative 로그 등 다른 flags 갱신과
+    충돌(lost-update)하지 않는다.
     """
-    async with async_driver.session() as session:
-        rec = await session.run(
-            "MATCH (gs:GlobalState {id: 'singleton'}) RETURN gs.flags AS flags"
-        )
-        row = await rec.single()
-
-    flags: dict = {}
-    if row and row.get("flags"):
-        try:
-            flags = json.loads(row["flags"])
-        except (json.JSONDecodeError, TypeError):
-            pass
-
-    flags[key] = value
-
-    # KuzuDB SET + $param 버그 우회 — GlobalState 쓰기는 리터럴 삽입 방식 사용
-    _flags_json = json.dumps(flags, ensure_ascii=False).replace("\\", "\\\\").replace("'", "\\'")
-    async with async_driver.session() as session:
-        await session.run(
-            f"MATCH (gs:GlobalState {{id: 'singleton'}}) SET gs.flags = '{_flags_json}'"
-        )
+    await set_global_flag(key, value)
     print(f"[StaticEvent] flag '{key}' = {value}")

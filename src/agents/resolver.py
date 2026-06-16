@@ -12,24 +12,8 @@ from datetime import datetime
 from src.config import MODEL_STATE_UPDATER as ACTION_MODEL
 from src.core.database import async_driver
 from src.core.llm.client import get_model, extract_json_from_llm
-
-# 해소 후 안착 수치
-SETTLE_LEVELS = {
-    "hunger": 0.15,
-    "rest":   0.10,
-    "social": 0.20,
-    "fun":    0.20,
-    "libido": 0.10,
-}
-
-NEED_DEFAULTS = {
-    "hunger": 0.3,
-    "rest":   0.2,
-    "social": 0.1,
-    "fun":    0.4,
-    "safety": 0.05,
-    "libido": 0.2,
-}
+# 욕구 기준 상수의 단일 출처는 needs 패키지다(레이어 역방향 import 제거).
+from src.simulation.systems.needs.models import NEED_DEFAULTS, SETTLE_LEVELS
 
 # 해소 가능한 욕구 → 행동 힌트
 NEED_ACTION_HINTS = {

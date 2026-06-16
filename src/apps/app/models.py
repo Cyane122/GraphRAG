@@ -109,6 +109,7 @@ class ConversationCreateRequest(BaseModel):
     world_id: str
     scenario_id: str | None = None
     actor_model: str | None = None
+    ooc_config: str = ""
 
 
 class MessageCreateRequest(BaseModel):

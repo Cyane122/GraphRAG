@@ -15,9 +15,10 @@ from pathlib import Path
 import kuzu
 
 from src.config import WORLD_ID
-from src.agents.manager.world_loader import load_world_instance
 
 if __name__ == "__main__":
+    # core → agents 는 상향 의존이므로 CLI 실행 시점에만 늦게 import 한다(모듈 import 시 위반 회피).
+    from src.agents.manager.world_loader import load_world_instance
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--world_id",    type=str, default=WORLD_ID, help="초기화할 세계 ID")

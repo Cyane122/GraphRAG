@@ -335,8 +335,11 @@ async def _create_event(
 
     content = actor_response[:3000] if actor_response else ""
 
-    async with async_driver.session() as session:
-        await session.run("""
+    # Event 노드 + INVOLVED_IN 관계 + RELATIONSHIP 포인터를 한 트랜잭션으로 묶어
+    # 고아 Event(참여 관계 없음)나 active_event_id 누락 같은 반쪽 상태를 막는다.
+    # (임베딩은 위에서 트랜잭션 밖에 미리 계산했다 — 락을 쥔 채 네트워크 호출 방지.)
+    async with async_driver.transaction() as tx:
+        await tx.run("""
             CREATE (:Event {
                 id:               $id,
                 summary:          $summary,
@@ -366,13 +369,13 @@ async def _create_event(
         )
 
         for char_id in related_char_ids:
-            await session.run("""
+            await tx.run("""
                 MATCH (c:Character {id: $char_id})
                 MATCH (e:Event {id: $event_id})
                 CREATE (c)-[:INVOLVED_IN]->(e)
             """, char_id=char_id, event_id=event_data["id"])
 
-        await session.run("""
+        await tx.run("""
             MATCH (a:Character {id: $a})-[r:RELATIONSHIP]->(b:Character {id: $b})
             SET r.shared_events    = coalesce(r.shared_events, []) + [$event_id],
                 r.last_interaction = $timestamp,

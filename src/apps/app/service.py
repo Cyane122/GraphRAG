@@ -6,7 +6,7 @@
 #
 # Functions
 #   - preview_text(value: str) -> str : Build a compact sidebar preview from assistant output.
-#   - create_conversation(world_id: str, scenario_id: str | None, store: ConversationStore, actor_model: str | None = None) -> ConversationState : Create a persisted conversation.
+#   - create_conversation(world_id: str, scenario_id: str | None, store: ConversationStore, actor_model: str | None = None, ooc_config: str = "") -> ConversationState : Create a persisted conversation.
 #   - _should_parse_ooc(content: str) -> bool : Decide whether input contains actionable OOC spans.
 #   - _append_ooc_display_block(content: str, ooc_result: dict | None) -> str : Append OOC display metadata to assistant content.
 #   - _format_ooc_change_details(ooc_result: dict) -> str : Render OOC parser changes as compact character-scoped lines.
@@ -84,10 +84,12 @@ def create_conversation(
     scenario_id: str | None,
     store: ConversationStore,
     actor_model: str | None = None,
+    ooc_config: str = "",
 ) -> ConversationState:
     """Create and persist a standalone web conversation."""
     state = initialize_conversation(ConversationState(world_id=world_id, scenario_id=scenario_id or "default"))
     state.actor_model = normalize_actor_model(actor_model or state.actor_model)
+    state.ooc_config = str(ooc_config or "")
     opening_scene = (
         str(state.world_config.get("opening_scene") or "")
         or str(state.world_config.get("prompt", {}).get("sections", {}).get("opening_scene") or "")
@@ -535,5 +537,4 @@ async def _collect_generation(
     if final is None:
         raise RuntimeError("Generation completed without final response.")
     return final
-
 

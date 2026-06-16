@@ -11,25 +11,33 @@
 # ================================
 
 import asyncio
+import threading
+
 import torch
 
 from src.config import MODEL_EMBEDDER as MODEL_NAME, EMBEDDING_DIM, HF_TOKEN
 
 _model = None  # 싱글톤
+# embed_async가 모델을 executor 스레드에서 로드하므로, 동시 첫 호출이 모델을 두 번
+# 적재하는 경쟁을 막기 위해 (asyncio.Lock이 아니라) threading.Lock으로 보호한다.
+_model_lock = threading.Lock()
 
 
 def _get_model():
-    """SentenceTransformer 싱글톤을 반환한다. 최초 호출 시 로드한다."""
+    """SentenceTransformer 싱글톤을 반환한다. 최초 호출 시 로드한다(이중 검사 잠금)."""
     global _model
-    if _model is None:
-        print(f"[Embedder] 모델 로드 중: {MODEL_NAME} ...")
-        from sentence_transformers import SentenceTransformer
-        _model = SentenceTransformer(
-            MODEL_NAME,
-            device=("cuda" if torch.cuda.is_available() else "cpu"),
-            token=HF_TOKEN,
-        )
-        print("[Embedder] 모델 로드 완료.")
+    if _model is not None:
+        return _model
+    with _model_lock:
+        if _model is None:
+            print(f"[Embedder] 모델 로드 중: {MODEL_NAME} ...")
+            from sentence_transformers import SentenceTransformer
+            _model = SentenceTransformer(
+                MODEL_NAME,
+                device=("cuda" if torch.cuda.is_available() else "cpu"),
+                token=HF_TOKEN,
+            )
+            print("[Embedder] 모델 로드 완료.")
     return _model
 
 

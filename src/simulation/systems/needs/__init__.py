@@ -12,8 +12,8 @@
 import asyncio
 from datetime import datetime, timedelta
 
-from src.agents.resolver import NEED_DEFAULTS, SETTLE_LEVELS, _fetch_valid_locations, resolve_action
 from src.core.database import move_location
+from src.simulation.systems.needs.models import NEED_DEFAULTS, SETTLE_LEVELS
 from src.simulation.systems.needs.location_policy import (
     action_time_after_schedule,
     filter_locations_for_need,
@@ -57,6 +57,10 @@ async def run_needs_update(
     """
     if elapsed_minutes <= 0:
         return {"libido_hints": {}, "scene_need_hints": {}, "events_created": []}
+
+    # 지연 import: agents.resolver가 needs 상수를 import하므로, 모듈 로드 시점에 맞물리면
+    # 순환 import가 된다. 실제 사용 시점에 가져와 사이클을 끊는다.
+    from src.agents.resolver import _fetch_valid_locations, resolve_action
 
     _scene_set = set(scene_chars or [])
     npcs = await _fetch_all_npcs(exclude_id=pc_id)

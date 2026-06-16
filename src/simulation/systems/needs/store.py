@@ -13,9 +13,9 @@
 import json
 from datetime import datetime
 
-from src.agents.resolver import NEED_DEFAULTS
 from src.core.database import async_driver
 from src.simulation.systems.needs.math import NEED_BASE_RATES
+from src.simulation.systems.needs.models import NEED_DEFAULTS
 
 async def _apply_safety_decay(
     npc_id:      str,

@@ -3,20 +3,43 @@
 #
 # DB helpers for memory distortion, deletion, and trait lookup.
 #
+# Classes
+#   - AffinityDistortReport : Observable result of distort_on_affinity_change (counts + llm_failed).
+#
 # Functions
-#   - _distort_memories_batch(memories: list[dict], char_id: str, traits: dict) -> dict[str, str] : Distort memories in a batch
-#   - distort_on_affinity_change(char_id: str, pc_id: str, affinity_delta: int, current_game_time: datetime) -> None : Distort memories after affinity changes
-#   - _update_memory(mem_id: str, updates: dict) -> None : Update Memory fields
-#   - _delete_memory(mem_id: str) -> None : Delete a Memory
-#   - _fetch_char_traits(char_id: str) -> dict : Fetch character traits
+#   - _build_trait_hints(traits: dict) -> list[str] : Build distortion-direction hints from traits.
+#   - _distort_memories_with_hints(memories: list[dict], char_id: str, hints: list[str]) -> dict[str, str] | None : Batch-distort with hints; None on hard LLM failure, {} on no-op.
+#   - _distort_memories_batch(memories: list[dict], char_id: str, traits: dict) -> dict[str, str] | None : Trait-based batch distortion; None on hard LLM failure.
+#   - distort_on_affinity_change(char_id: str, pc_id: str, affinity_delta: int, current_game_time: datetime) -> AffinityDistortReport : Distort shared memories after an affinity swing.
+#   - _fetch_shared_memories(char_id: str, pc_id: str) -> list[dict] : Fetch up to 3 shared, distortable memories.
+#   - _update_memory(mem_id: str, new_summary: str, old_embedding: list[float] | None, summary_level: int, distortion: float, game_time: datetime) -> None : Update Memory summary/embedding/level/distortion.
+#   - _delete_memory(mem_id: str) -> None : Delete a Memory node.
+#   - _fetch_char_traits(char_id: str) -> dict : Fetch character trait_* fields.
 # ================================
 import json
+from dataclasses import dataclass
 from datetime import datetime
 
 from src.config import MODEL_STATE_UPDATER as DECAY_MODEL
 from src.core.database import async_driver
 from src.core.embedding.encoder import embed_async
 from src.core.llm.client import get_model, extract_json_from_llm
+
+
+@dataclass(frozen=True)
+class AffinityDistortReport:
+    """distort_on_affinity_change의 관찰 가능한 결과.
+
+    triggered: 호감도 임계(|delta|>=10)를 넘어 실제로 왜곡을 시도했는가.
+    candidates: 왜곡 후보로 조회된 공유 기억 수.
+    mutated: 실제로 요약이 바뀐 기억 수.
+    llm_failed: 후보가 있었으나 배치 LLM 호출이 경성 실패(예외)했는가 — 이전에는 조용히 묻혔다.
+    """
+    triggered: bool = False
+    candidates: int = 0
+    mutated: int = 0
+    llm_failed: bool = False
+
 
 def _build_trait_hints(traits: dict) -> list[str]:
     """trait 딕셔너리에서 기억 왜곡 방향 힌트를 생성한다."""
@@ -42,10 +65,12 @@ async def _distort_memories_with_hints(
     memories: list[dict],
     char_id:  str,
     hints:    list[str],
-) -> dict[str, str]:
+) -> dict[str, str] | None:
     """
     주어진 힌트로 기억 목록을 왜곡한다.
-    Returns: {mid: new_summary} — 힌트가 없으면 빈 dict.
+    Returns:
+        {mid: new_summary} — 정상(힌트/대상이 없으면 빈 dict; 빈 배열이면 빈 dict).
+        None — 경성 실패(예외/파싱 실패/형식 위반) 시. 호출부가 무성 실패를 관찰하도록 구분한다.
     """
     if not hints or not memories:
         return {}
@@ -76,27 +101,30 @@ Return ONLY JSON array: [{{"id":"<mid>","summary":"<rewritten>"}},...]"""
                 "response_mime_type": "application/json",
             },
         )
-        results = extract_json_from_llm(resp.text, source="memory_distort_batch")
+        # strict=True: 파싱 실패 시 {} 대신 LLMJsonError → 아래 except에서 None으로 신호한다.
+        results = extract_json_from_llm(resp.text, source="memory_distort_batch", strict=True)
         if isinstance(results, list):
             return {
                 item["id"]: item["summary"]
                 for item in results
                 if isinstance(item, dict) and "id" in item and "summary" in item
             }
+        # 배치는 비어있지 않은데(위에서 early-return) 결과가 배열이 아님 → 형식 위반(경성 실패).
+        return None
     except Exception as e:
         print(f"[DecayManager] 배치 왜곡 실패 ({char_id}): {e}")
-    return {}
+        return None
 
 
 async def _distort_memories_batch(
     memories: list[dict],
     char_id:  str,
     traits:   dict,
-) -> dict[str, str]:
+) -> dict[str, str] | None:
     """
     동일 캐릭터의 여러 Memory를 trait 기반으로 한 번에 왜곡한다.
-    trait_hints가 없으면 왜곡 없이 빈 dict 반환.
-    Returns: {mid: new_summary}
+    trait_hints가 없으면 왜곡 없이 빈 dict 반환. 경성 LLM 실패 시 None.
+    Returns: {mid: new_summary} | None
     """
     hints = _build_trait_hints(traits)
     return await _distort_memories_with_hints(memories, char_id, hints)
@@ -111,18 +139,20 @@ async def distort_on_affinity_change(
     pc_id:             str,
     affinity_delta:    int,
     current_game_time: datetime,
-) -> None:
+) -> AffinityDistortReport:
     """
     호감도 급변(|delta| >= 10) 시 공유 기억을 즉시 재해석한다.
     긍정 delta → 부정 기억 완화, 부정 delta → 중립·긍정 기억 어둡게 변형.
     시간 기반 decay와 별개로 트리거된다.
+
+    Returns: AffinityDistortReport — 호출부가 (특히 llm_failed를) 로깅·관찰하도록 신호를 돌려준다.
     """
     if abs(affinity_delta) < 10:
-        return
+        return AffinityDistortReport(triggered=False)
 
     memories = await _fetch_shared_memories(char_id, pc_id)
     if not memories:
-        return
+        return AffinityDistortReport(triggered=True, candidates=0)
 
     traits = await _fetch_char_traits(char_id)
 
@@ -138,6 +168,12 @@ async def distort_on_affinity_change(
     all_hints = list(set(direction_hints + _build_trait_hints(traits)))
     results   = await _distort_memories_with_hints(memories, char_id, all_hints)
 
+    if results is None:
+        # 경성 LLM 실패: 호감도는 이미 커밋됐는데 재해석이 실패했다 → 더 이상 묻지 않고 신호로 돌려준다.
+        print(f"[DecayManager] affinity 왜곡 실패(LLM): {char_id} (candidates={len(memories)}, delta={affinity_delta:+d})")
+        return AffinityDistortReport(triggered=True, candidates=len(memories), mutated=0, llm_failed=True)
+
+    mutated = 0
     for m in memories:
         new_summary = results.get(m["mid"])
         if new_summary and new_summary != m["summary"]:
@@ -147,9 +183,11 @@ async def distort_on_affinity_change(
                 int(m["level"]), min(1.0, distortion + 0.2),
                 current_game_time,
             )
+            mutated += 1
 
-    if results:
-        print(f"[DecayManager] affinity 왜곡: {char_id} ({len(results)}개, delta={affinity_delta:+d})")
+    if mutated:
+        print(f"[DecayManager] affinity 왜곡: {char_id} ({mutated}개, delta={affinity_delta:+d})")
+    return AffinityDistortReport(triggered=True, candidates=len(memories), mutated=mutated, llm_failed=False)
 
 
 async def _fetch_shared_memories(char_id: str, pc_id: str) -> list[dict]:

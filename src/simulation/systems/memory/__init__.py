@@ -4,10 +4,37 @@
 # 캐릭터별 기억(Memory) 노드 생성 및 시간 기반 풍화/왜곡/삭제를 담당합니다.
 # 왜곡·압축은 decay.py, 풍화 배치 처리는 배치 LLM 호출로 최소화합니다.
 #
+# ── Memory lifecycle (ordering / state machine) ─────────────────────────────
+# 하나의 Memory 노드는 다음 단계를 거친다. 각 단계가 누구에 의해 언제 트리거되는지와
+# 단계 간 순서를 여기서 단일 출처로 문서화한다(이전에는 암묵적이었음, audit T6).
+#
+#   1. CREATE        ensure_memories_for_event() — 턴 상태 갱신 중 Event 생성 시.
+#                    gate.apply_gate()가 reject / create / reinforce를 결정(결정론적).
+#                    동일 event_id 또는 동일 source_commit_id 중복 → REINFORCE(재생성 금지).
+#   2. REINFORCE     같은 사건이 다시 관측되면 새 노드 대신 기존 노드를 강화.
+#   3. DISTORT(즉시) distortion.distort_on_affinity_change() — 호감도 |Δ|>=10일 때 그 턴에.
+#                    공유 기억을 관계 방향으로 재해석(distortion_level += 0.2). 시간과 무관.
+#   4. DECAY(시간)   decay.run_decay() — 게임 내 하루 이상 경과 시(Manager 커밋 단계).
+#                    importance×경과일 규칙으로 버킷 분류 후, 한 노드에 대해 상호배타적으로:
+#                      distort(0.5 미만) → compress L1 → compress L2(summary_level↑) → delete.
+#                    delete는 summary_level>=2 AND 규칙상 delete 기한 도달일 때만 → 압축이
+#                    삭제보다 항상 먼저 일어나므로 "distort vs delete" 경쟁은 없다.
+#   5. NARRATIVE     narrative.compress_to_narrative_log() — N턴마다, 개별 Memory가 아니라
+#                    최근 대화를 GlobalState.flags의 타임라인 로그로 압축(별개 채널).
+#
+# 관찰성: 3·4단계는 배치 LLM 호출이 조용히 실패하면 기억이 옛 상태에 머문다. 그래서
+# distort_on_affinity_change → AffinityDistortReport, run_decay → DecayReport 를 돌려주고
+# 호출부(updater / manager.effects)가 llm_failed를 로깅한다.
+#
+# Classes (re-exported)
+#   - GateDecision        : gate.py — reject/create/reinforce/update/resolve
+#   - AffinityDistortReport: distortion.py — distort_on_affinity_change 결과 신호
+#   - DecayReport         : decay.py — run_decay 결과 신호
+#
 # Functions
 #   - ensure_memories_for_event(event_id, summary, importance, char_ids, timestamp, ...) -> None : Event에 관련된 캐릭터별 Memory 노드 생성 (게이트 통과 시)
-#   - run_decay(current_game_time: datetime) -> None : re-exported from decay.py
-#   - distort_on_affinity_change(char_id, pc_id, affinity_delta, current_game_time) -> None : re-exported from distortion.py
+#   - run_decay(current_game_time: datetime) -> DecayReport : re-exported from decay.py
+#   - distort_on_affinity_change(char_id, pc_id, affinity_delta, current_game_time) -> AffinityDistortReport : re-exported from distortion.py
 #   - _infer_signals_from_summary(summary: str) -> list[str] : 이벤트 요약에서 Korean keyword 기반 strong signal 태그 추론
 # ================================
 
@@ -18,14 +45,16 @@ from src.config import MODEL_STATE_UPDATER as DECAY_MODEL
 from src.core.database import async_driver
 from src.core.embedding.encoder import embed_async
 from src.core.llm.client import extract_json_from_llm, get_model
-from src.simulation.systems.memory.decay import run_decay
-from src.simulation.systems.memory.distortion import distort_on_affinity_change
+from src.simulation.systems.memory.decay import DecayReport, run_decay
+from src.simulation.systems.memory.distortion import AffinityDistortReport, distort_on_affinity_change
 from src.simulation.systems.memory.gate import GateDecision, apply_gate
 
 __all__ = [
     "ensure_memories_for_event",
     "run_decay",
     "distort_on_affinity_change",
+    "AffinityDistortReport",
+    "DecayReport",
     "_infer_signals_from_summary",
 ]
 
@@ -228,27 +257,39 @@ async def ensure_memories_for_event(
             source_commit_id=source_commit_id,
         )
 
-    # Phase 2: 결정에 따라 CREATE / REINFORCE / skip
-    async with async_driver.session() as session:
-        for char_id in char_ids:
-            mem_id = f"mem_{char_id}_{event_id}"
-            decision, target_mem_id = decisions[char_id]
+    # Phase 1.5: CREATE 대상의 주관 요약·임베딩을 트랜잭션 밖에서 미리 만든다.
+    # embed_async는 네트워크 호출 — 트랜잭션 락을 쥔 채 돌리면 DB 접근이 그동안 직렬화된다.
+    prepared: dict[str, tuple[str, list[float] | None]] = {}
+    for char_id in char_ids:
+        decision, _ = decisions[char_id]
+        if decision != GateDecision.CREATE:
+            continue
+        memory_summary = subjective_summaries.get(
+            char_id,
+            _fallback_memory_summary(char_id, summary, multi_character),
+        )
+        memory_emb = await _memory_embedding(memory_summary, emb, summary)
+        prepared[char_id] = (memory_summary, memory_emb)
 
-            if decision == GateDecision.REJECT:
-                print(f"[MemoryGate] REJECT: {event_id} → {char_id} (importance={importance})")
-                continue
+    # Phase 2: 결정에 따라 CREATE / REINFORCE / skip — 캐릭터별로 원자적으로 적용한다.
+    for char_id in char_ids:
+        mem_id = f"mem_{char_id}_{event_id}"
+        decision, target_mem_id = decisions[char_id]
 
-            if decision == GateDecision.REINFORCE:
-                await _reinforce_memory(session, target_mem_id, importance, timestamp)
-                continue
+        if decision == GateDecision.REJECT:
+            print(f"[MemoryGate] REJECT: {event_id} → {char_id} (importance={importance})")
+            continue
 
-            memory_summary = subjective_summaries.get(
-                char_id,
-                _fallback_memory_summary(char_id, summary, multi_character),
-            )
-            memory_emb = await _memory_embedding(memory_summary, emb, summary)
+        if decision == GateDecision.REINFORCE:
+            async with async_driver.transaction() as tx:
+                await _reinforce_memory(tx, target_mem_id, importance, timestamp)
+            continue
 
-            await session.run("""
+        memory_summary, memory_emb = prepared[char_id]
+
+        # Memory 노드와 두 관계(REMEMBERS, OF_EVENT)를 한 트랜잭션으로 묶어 고아 노드를 막는다.
+        async with async_driver.transaction() as tx:
+            await tx.run("""
                 CREATE (m:Memory {
                     id:                 $mid,
                     event_id:           $event_id,
@@ -283,12 +324,12 @@ async def ensure_memories_for_event(
                 confidence=confidence, signals_json=signals_json,
             )
 
-            await session.run("""
+            await tx.run("""
                 MATCH (c:Character {id: $cid}), (m:Memory {id: $mid})
                 CREATE (c)-[:REMEMBERS]->(m)
             """, cid=char_id, mid=mem_id)
 
-            await session.run("""
+            await tx.run("""
                 MATCH (m:Memory {id: $mid}), (e:Event {id: $eid})
                 CREATE (m)-[:OF_EVENT]->(e)
             """, mid=mem_id, eid=event_id)

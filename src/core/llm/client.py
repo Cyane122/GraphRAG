@@ -13,7 +13,7 @@
 #   - get_model(model_name: str, system_prompt: str | None) -> _GeminiModel : 모델 래퍼 반환
 #   - get_response_text(response) -> str : response.text가 None인 경우 parts에서 텍스트 추출
 #   - log_empty_response_diagnostics(response: object, source: str) -> None : 빈 LLM 응답의 메타데이터를 출력
-#   - extract_json_from_llm(raw_text, source: str, log_errors: bool) -> dict | list : LLM 응답에서 JSON 안전 추출
+#   - extract_json_from_llm(raw_text, source: str, log_errors: bool, strict: bool) -> dict | list : LLM 응답에서 JSON 안전 추출 (strict=True면 실패 시 LLMJsonError)
 # ================================
 
 import asyncio
@@ -28,8 +28,11 @@ from google import genai
 from google.genai import types
 
 from src.config import GOOGLE_CLOUD_LOCATION, GOOGLE_PROJECT_ID as PROJECT_ID
+from src.core.llm.errors import LLMJsonError, TransientLLMError
 
-_LLM_TIMEOUT_SEC = 90  # 비스트리밍 JSON 호출 최대 대기 시간
+_LLM_TIMEOUT_SEC = 90  # 비스트리밍 JSON 호출 + 스트리밍 소비 최대 대기 시간
+_LLM_MAX_ATTEMPTS = 2  # 타임아웃 시 재시도 포함 총 시도 횟수
+_LLM_BACKOFF_SEC = 0.5  # 재시도 간 백오프 기준(시도 순번에 비례)
 
 # 측정용: 모든 비동기 LLM 호출 1건의 지연을 한 줄씩 누적한다(Phase 2 병목 분석).
 _LLM_LATENCY_LOG = Path("logs") / "llm_latency.jsonl"
@@ -347,59 +350,97 @@ class _GeminiModel:
             )
         )
 
+    async def _generate_once(
+        self,
+        contents,
+        generation_config: dict | None,
+        config_dict: dict,
+        mime: str | None,
+        log_source: str,
+    ) -> tuple[_SafeResponse, str]:
+        """LLM 응답 한 번을 받아 (응답, 지연 로그용 status) 튜플로 반환한다.
+
+        JSON mime 호출이 빈 텍스트면 diagnostics를 남기고 streaming으로 폴백한다.
+        비스트리밍 JSON 호출과 streaming 소비 모두 타임아웃을 건다(무한 대기 방지).
+        """
+        config = self._build_config(generation_config)
+        if mime == "application/json":
+            resp = await asyncio.wait_for(
+                _client.aio.models.generate_content(
+                    model=self._model,
+                    contents=contents,
+                    config=config,
+                ),
+                timeout=_LLM_TIMEOUT_SEC,
+            )
+            safe = _SafeResponse(resp)
+            if safe.text.strip():
+                return safe, "ok"
+
+            log_empty_response_diagnostics(resp, log_source)
+            fallback_config = dict(config_dict)
+            fallback_config.pop("log_source", None)
+            fallback_config.pop("response_mime_type", None)
+            fallback_config["thinking_config"] = {"thinking_budget": 0}
+            current_budget = int(fallback_config.get("max_output_tokens") or 1024)
+            fallback_config["max_output_tokens"] = max(2048, min(current_budget * 2, 8192))
+            fallback = await asyncio.wait_for(
+                self._generate_content_stream_text(contents, fallback_config),
+                timeout=_LLM_TIMEOUT_SEC,
+            )
+            return fallback, "empty_fallback_stream"
+
+        streamed = await asyncio.wait_for(
+            self._generate_content_stream_text(contents, generation_config),
+            timeout=_LLM_TIMEOUT_SEC,
+        )
+        return streamed, "ok"
+
     async def generate_content_async(self, contents, generation_config: dict | None = None):
         """
         비동기 LLM 응답을 반환한다.
-        JSON mime 호출이 빈 텍스트를 반환하면 diagnostics를 남기고 streaming으로 재시도한다.
+        타임아웃은 일시 오류로 보고 백오프 후 최대 _LLM_MAX_ATTEMPTS회까지 재시도하며,
+        모두 실패하면 TransientLLMError를 발생시킨다(호출처가 '빈 응답'과 구분 가능).
         """
         config_dict = generation_config or {}
         # 측정 정확도: 라벨 없는 호출은 'unlabeled'로 묶인다(주로 best-effort 병렬 후처리).
         # 임계 경로(actor/classifier/planner/extractor/updater 등)는 모두 명시 log_source를 가진다.
         log_source = str(config_dict.get("log_source") or "unlabeled")
         mime = config_dict.get("response_mime_type")
-        config = self._build_config(generation_config)
 
-        # 측정용 타이밍: JSON 빈 응답 → 스트리밍 재시도까지 한 호출의 총 지연을 기록한다.
-        start_epoch_ms = int(time.time() * 1000)
-        started = perf_counter()
-        status = "ok"
-        try:
-            if mime == "application/json":
-                resp = await asyncio.wait_for(
-                    _client.aio.models.generate_content(
-                        model=self._model,
-                        contents=contents,
-                        config=config,
-                    ),
-                    timeout=_LLM_TIMEOUT_SEC,
+        last_timeout: BaseException | None = None
+        for attempt in range(_LLM_MAX_ATTEMPTS):
+            # 측정용 타이밍: 시도 1건의 총 지연을 status와 함께 기록한다.
+            start_epoch_ms = int(time.time() * 1000)
+            started = perf_counter()
+            status = "ok"
+            try:
+                result, status = await self._generate_once(
+                    contents, generation_config, config_dict, mime, log_source
                 )
-                safe = _SafeResponse(resp)
-                if safe.text.strip():
-                    return safe
+                return result
+            except (asyncio.TimeoutError, TimeoutError) as exc:
+                status = "timeout"
+                last_timeout = exc
+            except Exception:
+                status = "error"
+                raise
+            finally:
+                record_llm_latency(
+                    log_source,
+                    self._model,
+                    start_epoch_ms,
+                    int((perf_counter() - started) * 1000),
+                    mime,
+                    status,
+                )
+            # 마지막 시도가 아니면 시도 순번에 비례한 백오프 후 재시도한다.
+            if attempt + 1 < _LLM_MAX_ATTEMPTS:
+                await asyncio.sleep(_LLM_BACKOFF_SEC * (attempt + 1))
 
-                status = "empty_fallback_stream"
-                log_empty_response_diagnostics(resp, log_source)
-                fallback_config = dict(config_dict)
-                fallback_config.pop("log_source", None)
-                fallback_config.pop("response_mime_type", None)
-                fallback_config["thinking_config"] = {"thinking_budget": 0}
-                current_budget = int(fallback_config.get("max_output_tokens") or 1024)
-                fallback_config["max_output_tokens"] = max(2048, min(current_budget * 2, 8192))
-                return await self._generate_content_stream_text(contents, fallback_config)
-
-            return await self._generate_content_stream_text(contents, generation_config)
-        except Exception:
-            status = "error"
-            raise
-        finally:
-            record_llm_latency(
-                log_source,
-                self._model,
-                start_epoch_ms,
-                int((perf_counter() - started) * 1000),
-                mime,
-                status,
-            )
+        raise TransientLLMError(
+            f"LLM call timed out after {_LLM_MAX_ATTEMPTS} attempts (source={log_source}, model={self._model})"
+        ) from last_timeout
 
 
 def get_model(model_name: str, system_prompt: str | None = None) -> _GeminiModel:
@@ -411,7 +452,12 @@ def get_model(model_name: str, system_prompt: str | None = None) -> _GeminiModel
 # JSON 파서
 # ════════════════════════════════════════════════════════════
 
-def extract_json_from_llm(raw_text, source: str = "unknown", log_errors: bool = True) -> dict | list:
+def extract_json_from_llm(
+    raw_text,
+    source: str = "unknown",
+    log_errors: bool = True,
+    strict: bool = False,
+) -> dict | list:
     """
     LLM 응답에서 JSON을 안전하게 추출.
 
@@ -423,8 +469,13 @@ def extract_json_from_llm(raw_text, source: str = "unknown", log_errors: bool = 
     5. 정상 파싱 시도
     6. 실패 시 잘린 JSON 복구 시도 (괄호 닫기 보정)
     7. 최종 실패 시 {} 반환. log_errors=False면 실패 로그를 생략한다.
+
+    strict=True이면 추출 실패 시 {} 대신 LLMJsonError를 던진다 — 호출처가 '추출 실패'와
+    '정상적인 빈 결과'를 구분해야 할 때 사용한다(기본 False로 기존 동작 유지).
     """
     if not isinstance(raw_text, str):
+        if strict:
+            raise LLMJsonError(f"{source}: 입력이 문자열이 아님 ({type(raw_text).__name__})")
         print(f"[LLM Parser:{source}] 입력이 문자열이 아님: {type(raw_text)} → {{}} 반환")
         return {}
 
@@ -453,6 +504,8 @@ def extract_json_from_llm(raw_text, source: str = "unknown", log_errors: bool = 
             suffix = ""
         if log_errors:
             print(f"[LLM Parser Error:{source}] 파싱 실패: {e}\nRaw Text: {preview}{suffix}")
+        if strict:
+            raise LLMJsonError(f"{source}: {e}") from e
         return {}
 
 

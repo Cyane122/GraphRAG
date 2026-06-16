@@ -541,6 +541,8 @@ async def apply_multi_character_state_updates(
         if location_id:
             applied_state["location_id"] = location_id
         before = await _fetch_dynamic_state_values(item.char_id, list(applied_state))
+        do_move = False
+        location_text = ""
         if location_id:
             location_text = str(location_id)
             if _location_update_has_scene_evidence(
@@ -550,13 +552,19 @@ async def apply_multi_character_state_updates(
                 known_locations,
                 targets,
             ):
+                # Location 노드 생성은 이동과 원자적일 필요가 없어 트랜잭션 밖에서 먼저 보장한다.
                 await _ensure_location_if_missing(location_text)
-                await move_location(item.char_id, location_text)
+                do_move = True
             else:
                 applied_state.pop("location_id", None)
                 if not applied_state:
                     continue
-        await update_dynamic_state(item.char_id, state)
+        # 위치 이동(LOCATED_AT+location_id)과 상태 필드 갱신을 한 트랜잭션으로 묶어
+        # 캐릭터별로 원자 적용한다(둘 중 하나만 반영돼 어긋나는 일 방지).
+        async with async_driver.transaction() as tx:
+            if do_move:
+                await move_location(item.char_id, location_text, tx=tx)
+            await update_dynamic_state(item.char_id, state, tx=tx)
         evidence_by_field = _candidate_evidence_by_field(candidates)
         change_lines.extend(_format_state_change_lines(
             _display_character_name(item.char_id, targets),

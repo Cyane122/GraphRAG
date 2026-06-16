@@ -185,17 +185,18 @@ GraphRAG/
 │   │   ├── commit_artifacts.py     # 커밋 단위 아티팩트 저장
 │   │   ├── state_normalization.py  # 상태 정규화 유틸
 │   │   ├── database/
-│   │   │   ├── driver.py           # KuzuAsyncDriver + ProxyDriver 싱글톤
-│   │   │   ├── migrations.py       # DDL/컬럼/데이터 마이그레이션 상수 (_TABLE_MIGRATIONS 등)
-│   │   │   ├── helpers.py          # CRUD helpers (update_dynamic_state 등)
-│   │   │   ├── proxy.py            # 컨텍스트 기반 드라이버 프록시
+│   │   │   ├── driver.py           # KuzuAsyncDriver + ProxyDriver 싱글톤 (introspection 기반 마이그레이션 + SchemaMigration 원장)
+│   │   │   ├── migrations.py       # DDL/컬럼/데이터 마이그레이션 정의 + 파서(MigrationOp/migration_ops; 노드→rel→컬럼 순)
+│   │   │   ├── helpers.py          # CRUD helpers (update_dynamic_state, update_global_flags/set_global_flag, move_location)
+│   │   │   ├── proxy.py            # 컨텍스트 기반 드라이버 프록시 (session/transaction 위임)
 │   │   │   ├── records.py          # DB 레코드 타입 정의
 │   │   │   ├── schema_builder.py   # CLI: 월드 스키마 초기화
-│   │   │   └── session.py          # 세션 범위 드라이버 관리
+│   │   │   └── session.py          # KuzuSession(쿼리별 락) + KuzuTransaction(원자적 다중 쓰기)
 │   │   ├── embedding/
 │   │   │   └── encoder.py          # HF KURE-v1 임베딩 (embed_async)
 │   │   ├── llm/
-│   │   │   └── client.py           # Vertex AI LLM 래퍼 (get_model, extract_json_from_llm)
+│   │   │   ├── client.py           # Vertex AI LLM 래퍼 (get_model, extract_json_from_llm; 타임아웃 재시도)
+│   │   │   └── errors.py           # LLM 예외 타입 (LLMError/TransientLLMError/LLMJsonError)
 │   │   └── logging/
 │   │       ├── conversation_logger.py # 턴별 대화 로그 (append_turn)
 │   │       └── prompt_debug.py     # 프롬프트 fingerprint / 디버그 출력
@@ -227,6 +228,7 @@ GraphRAG/
 │   │       │   ├── migration.py    # Memory/Event 메타데이터 컬럼 추가 마이그레이션 (v1)
 │   │       │   └── narrative.py    # N턴마다 대화 → 타임라인 압축
 │   │       ├── needs/
+│   │       │   ├── models.py       # NeedLevels 모델 + NEED_DEFAULTS/SETTLE_LEVELS 상수(단일 출처)
 │   │       │   ├── store.py        # 욕구 수치 저장/조회
 │   │       │   ├── math.py         # 욕구 감쇠 계산
 │   │       │   ├── traits.py       # 성격 기반 욕구 초기값
@@ -314,6 +316,7 @@ GraphRAG/
 ## 제약사항
 
 - **Async only**: 모든 I/O `async/await`. Kuzu는 thread pool로 래핑. blocking call 금지.
+- **다중 쓰기는 트랜잭션**: 여러 쓰기/관계 생성이 함께 일관돼야 하거나 read-modify-write가 필요하면 `async with async_driver.transaction() as tx:`로 묶는다(원자성+직렬화+lost-update 방지). 단, 락은 재진입 불가 — 트랜잭션 본문에서 `async_driver.session()`을 다시 열거나 다른 트랜잭션 함수를 호출하면 데드락. 느린 호출(임베딩 등)은 트랜잭션 밖에서 미리 계산.
 - **Fixed 불변**: Fixed 프롬프트 내용이 턴 간 달라지면 Gemini cache miss. dynamic 내용 주입 금지.
 - **Thread 격리**: 스레드 간 DB 쿼리 금지. `session.py`로 드라이버 범위 관리.
 - **기억 왜곡은 의도된 동작**: NPC 성격 방향으로 기억이 왜곡됨. 버그 아님.

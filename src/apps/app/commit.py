@@ -105,7 +105,15 @@ async def commit_pending_web(
     state: ConversationState,
     scheduler: Any | None = None,
 ) -> dict[str, str]:
-    """Commit a pending Actor response without Chainlit session or UI calls."""
+    """Commit a pending Actor response without Chainlit session or UI calls.
+
+    크래시 복구 모델: 각 단계는 완료 후 `completed_stages`에 기록되고, 재진입 시 이미 완료된
+    단계는 건너뛴다. 따라서 각 단계는 **재실행 안전(idempotent)** 해야 한다 — 단계가 부분
+    적용된 채 죽으면(완료 기록 전) 다음 호출에서 통째로 다시 실행되기 때문이다. 새 단계를
+    추가할 때 이 계약을 지킬 것(예: 증분 delta가 아니라 절대값 set, 또는 중복 가드 사용).
+    `actor_response` 단계의 이벤트 생성은 source_commit_id로 dedup되지만, 상태/관계 delta는
+    아직 완전 idempotent하지 않다(후속 슬라이스 대상).
+    """
     del scheduler
     pending = update_pending_status(pending, state.world_id, state.pc_id, state.npc_id, status="committing")
     manager_effects = pending.get("manager_effects") or {}

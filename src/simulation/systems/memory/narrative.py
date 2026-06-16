@@ -12,6 +12,7 @@ import json
 
 from src.config import MODEL_EVENT_CREATOR as NARRATIVE_MODEL
 from src.core.database import async_driver
+from src.core.database.helpers import update_global_flags
 from src.core.llm.client import get_model
 
 
@@ -148,28 +149,16 @@ async def fetch_narrative_log() -> str:
 
 
 async def _store_narrative_log(log_text: str) -> None:
-    """GlobalState.flags.narrative_log에 새 로그를 누적 저장한다 (최대 4000자)."""
-    async with async_driver.session() as session:
-        rec = await session.run(
-            "MATCH (gs:GlobalState {id: 'singleton'}) RETURN gs.flags AS flags"
-        )
-        row = await rec.single()
+    """GlobalState.flags.narrative_log에 새 로그를 누적 저장한다 (최대 4000자).
 
-    flags: dict = {}
-    if row and row.get("flags"):
-        try:
-            flags = json.loads(row["flags"])
-        except (json.JSONDecodeError, TypeError):
-            pass
+    read-modify-write를 단일 트랜잭션으로 처리해 set_flag 등 다른 flags 갱신과
+    충돌(lost-update)하지 않는다.
+    """
+    def _append(flags: dict) -> None:
+        existing = flags.get("narrative_log", "")
+        combined = (existing + "\n\n" + log_text).strip() if existing else log_text
+        if len(combined) > 4000:
+            combined = combined[-4000:]
+        flags["narrative_log"] = combined
 
-    existing = flags.get("narrative_log", "")
-    combined = (existing + "\n\n" + log_text).strip() if existing else log_text
-    if len(combined) > 4000:
-        combined = combined[-4000:]
-    flags["narrative_log"] = combined
-
-    flags_json = json.dumps(flags, ensure_ascii=False).replace("\\", "\\\\").replace("'", "\\'")
-    async with async_driver.session() as session:
-        await session.run(
-            f"MATCH (gs:GlobalState {{id: 'singleton'}}) SET gs.flags = '{flags_json}'"
-        )
+    await update_global_flags(_append)
