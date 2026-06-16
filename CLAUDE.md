@@ -117,7 +117,8 @@ python -m src.apps.graph_viewer                 # graph viewer 서버 (포트 87
 씬 타입: `daily` `emotional` `physical` `intimate` `workplace` `aegyo`
 
 **Deferred commit**: Actor 응답 → `PendingStore` 저장 → 다음 턴 시작 시 DB 적용.
-reroll 시 pending 폐기, DB 무변경.
+- **최신(미커밋) 응답 reroll**: pending 폐기 후 스냅샷에서 재생성, DB 무변경.
+- **과거(커밋된) 응답 reroll**: 부모 입력 직전 컨텍스트로 텍스트만 재생성 → 새 pending 폐기 + 기존 최신 pending 복원. 그래프는 현재 커밋 상태 유지(텍스트↔그래프 개연성 불일치는 사용자 책임).
 
 **Per-thread 설정**: `ConversationState.ooc_config` (OOC 설정 텍스트), `ConversationState.usernotes` (다중 유저노트 리스트). 둘 다 `effective_input`에 주입 — 유저노트는 Player Input 앞, OOC config는 뒤.
 
