@@ -315,7 +315,8 @@ class PromptBuilder:
                 (
                     "Fill out the <analyze> template from the checklist above. "
                     "Close </analyze>, then IMMEDIATELY write the Korean prose scene. "
-                    "Begin the final prose with the exact date/time/location header shown above. "
+                    "Begin the final prose with a Korean date/time/location header based on the current header above; "
+                    "advance time naturally when the scene implies elapsed time, and never move it backward. "
                     "The scene is mandatory; do not stop after </analyze>."
                 ),
             ]

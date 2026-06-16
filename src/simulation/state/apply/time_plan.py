@@ -1,11 +1,13 @@
 # ================================
 # src/simulation/state/apply/time_plan.py
 #
-# Apply Manager-planned time, weather, and location updates to the DB.
+# Apply planned or accepted-prose time, weather, and location updates to the DB.
 #
 # Functions
 #   - build_time_plan(plan: dict, base_time: datetime) -> dict : Build a DB-write-ready time plan
 #   - commit_time_plan(time_plan: dict, pc_id: str, npc_id: str, companion_ids: list[str] | None = None) -> datetime : Commit a prepared time plan to the DB
+#   - parse_prose_header_datetime(actor_response: str) -> datetime | None : Parse the accepted Actor header time
+#   - commit_time_from_prose_header(actor_response: str, fallback_time: object = None) -> datetime | None : Commit accepted Actor header time without rollback
 #   - apply_time_updates(plan: dict, base_time: datetime, pc_id: str, npc_id: str) -> datetime : Build and commit a time plan
 #   - reconcile_location_with_prose(actor_response: str, pc_id: str, npc_id: str, companion_ids: list[str] | None = None) -> str | None : Override committed location when Actor prose header disagrees
 # ================================
@@ -115,14 +117,121 @@ def _esc(value: str) -> str:
 
 
 _PROSE_HEADER_LOCATION_RE = re.compile(r"\*\*[^*\n]*?\d{1,2}\s*분\s*,\s*([^*\n]+?)\s*\*\*")
+_ANALYZE_BLOCK_RE = re.compile(r"<analyze>[\s\S]*?</analyze>", re.IGNORECASE)
+_BOLD_HEADER_RE = re.compile(r"\*\*(?P<header>[^*\n]+)\*\*")
+_HEADER_DATE_RE = re.compile(
+    r"(?P<year>\d{4})\s*년\s*"
+    r"(?P<month>\d{1,2})\s*월\s*"
+    r"(?P<day>\d{1,2})\s*일"
+    r"(?:\s*,?\s*\(?[월화수목금토일]\s*요일?\)?)?"
+)
+_HEADER_TIME_RE = re.compile(
+    r"(?:(?P<ampm>오전|오후|새벽|아침|저녁|밤)\s*)?"
+    r"(?P<hour>\d{1,2})\s*시"
+    r"(?:\s*(?P<minute>\d{1,2})\s*분)?"
+)
+
+
+def _visible_prose(actor_response: str) -> str:
+    """Return response text with analysis blocks removed for prose-header parsing."""
+    return _ANALYZE_BLOCK_RE.sub("", actor_response or "").strip()
+
+
+def _first_prose_header(actor_response: str) -> str | None:
+    """Return the first bold prose header outside analyze blocks."""
+    match = _BOLD_HEADER_RE.search(_visible_prose(actor_response))
+    return match.group("header").strip() if match else None
+
+
+def _coerce_header_hour(hour: int, ampm: str | None) -> int:
+    """Convert Korean AM/PM markers into a 24-hour clock."""
+    marker = str(ampm or "").strip()
+    if marker in {"오후", "저녁", "밤"} and hour < 12:
+        return hour + 12
+    if marker in {"오전", "새벽", "아침"} and hour == 12:
+        return 0
+    return hour
+
+
+def parse_prose_header_datetime(actor_response: str) -> datetime | None:
+    """Parse the accepted Actor prose header into a datetime, if present."""
+    header = _first_prose_header(actor_response)
+    if not header:
+        return None
+    date_match = _HEADER_DATE_RE.search(header)
+    time_match = _HEADER_TIME_RE.search(header)
+    if not date_match or not time_match:
+        return None
+    try:
+        hour = _coerce_header_hour(int(time_match.group("hour")), time_match.group("ampm"))
+        minute = int(time_match.group("minute") or 0)
+        return datetime(
+            int(date_match.group("year")),
+            int(date_match.group("month")),
+            int(date_match.group("day")),
+            hour,
+            minute,
+        )
+    except ValueError:
+        return None
+
+
+def _parse_fallback_datetime(value: object) -> datetime | None:
+    """Parse a fallback datetime value for downstream systems."""
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    return None
+
+
+async def commit_time_from_prose_header(
+    actor_response: str,
+    fallback_time: object = None,
+) -> datetime | None:
+    """Commit accepted Actor prose header time without using Manager time planning."""
+    header_dt = parse_prose_header_datetime(actor_response)
+    fallback_dt = _parse_fallback_datetime(fallback_time)
+    if header_dt is None:
+        return fallback_dt
+    if fallback_dt and header_dt < fallback_dt:
+        print(
+            "[ActorHeaderTime] skipped backward header "
+            f"{header_dt.strftime('%Y-%m-%d %H:%M')} < {fallback_dt.strftime('%Y-%m-%d %H:%M')}"
+        )
+        return fallback_dt
+
+    safe_value = _esc(header_dt.isoformat())
+    async with async_driver.session() as session:
+        await session.run(
+            f"MATCH (gs:GlobalState {{id: 'singleton'}}) SET gs.currentTime = '{safe_value}'"
+        )
+    print(f"[ActorHeaderTime] {header_dt.strftime('%Y-%m-%d %H:%M')}")
+    return header_dt
 
 
 def _parse_prose_header_location(actor_response: str) -> str | None:
     """Actor 산문 첫머리 헤더(**...분, 장소**)에서 장소명을 추출한다. 없으면 None."""
-    match = _PROSE_HEADER_LOCATION_RE.search(actor_response or "")
-    if not match:
-        return None
-    return match.group(1).strip()
+    header = _first_prose_header(actor_response)
+    if header:
+        date_match = _HEADER_DATE_RE.search(header)
+        if date_match:
+            suffix = header[date_match.end():].strip()
+            time_match = _HEADER_TIME_RE.search(suffix)
+            if time_match:
+                suffix = suffix[time_match.end():].strip()
+            suffix = re.sub(r"^\s*[,，.。]?\s*\(?[월화수목금토일]\s*요일?\)?\s*", "", suffix)
+            suffix = suffix.lstrip(" ,，.。")
+            if suffix:
+                location = re.split(r"[,，.。]\s*", suffix)[-1].strip()
+                if location:
+                    return location
+
+    match = _PROSE_HEADER_LOCATION_RE.search(_visible_prose(actor_response))
+    return match.group(1).strip() if match else None
 
 
 async def _fetch_location_name_index() -> tuple[dict[str, str], str | None]:

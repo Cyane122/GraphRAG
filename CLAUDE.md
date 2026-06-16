@@ -42,7 +42,7 @@ python -m src.apps.graph_viewer                 # graph viewer 서버 (포트 87
 | `MANAGER_PLANNER_MODE` | `legacy` / `shadow` / `integrated` — 컨텍스트 플래너 (기본 `legacy`; integrated는 Pro라 느려 비채택, shadow=측정용 동시 실행) |
 | `TURN_EXTRACTOR_MODE` | `legacy` / `shadow` / `unified` — 턴 추출기 (기본 `legacy`; unified는 Pro라 느려 비채택, shadow=측정용 동시 실행) |
 | `MODEL_ACTOR` | 롤플레이 LLM (Gemini Pro) |
-| `MODEL_CLASSIFIER` | 씬/시간 분류 (Flash) |
+| `MODEL_CLASSIFIER` | 씬 분류 (Flash) |
 | `MODEL_STATE_UPDATER` | 경량 상태 추출 |
 | `MODEL_COMPLEX_UPDATER` | 다중 노드 갱신 (temp=0) |
 | `MODEL_EVENT_CREATOR` | 이벤트 생성 + 소문 전파 |
@@ -82,7 +82,7 @@ python -m src.apps.graph_viewer                 # graph viewer 서버 (포트 87
 → OOCHandler     *...* → 즉시 DB 반영 후 조기 종료 (OOC 전용 입력)
 → Manager Pipeline (src/agents/manager/pipeline.py)
     ├ world bootstrap + global state (planning.py)
-    ├ scene classify + time plan     (planning.py, manager/classifier.py)
+    ├ scene classify                 (planning.py, manager/classifier.py)
     ├ personal fact extract          (simulation/systems/personal_facts.py)
     ├ integrated/legacy context plan (integrated_planner.py, context/planner.py)
     ├ core ctx: char/memory/event/relation  (core_context.py)
@@ -91,13 +91,16 @@ python -m src.apps.graph_viewer                 # graph viewer 서버 (포트 87
 → Actor           스트리밍 응답 (src/agents/actor.py)
 → OutputGuard     금지어 검사 (src/apps/app/output_guard.py)
 → PendingStore    응답 저장 — DB write는 다음 턴으로 defer
-→ [다음 턴 시작 시] StateUpdater (simulation/state/updater.py)
+→ [다음 턴 시작 시] CommitPendingWeb (src/apps/app/commit.py)
+    ├ accepted Actor prose header time → GlobalState.currentTime
+    └ location reconcile from accepted prose header
+→ StateUpdater (simulation/state/updater.py)
     ├ LITERAL/FIGURATIVE classify
     ├ multi-char state extract
     ├ event create + embed
     ├ relation/affinity/personality Δ
     ├ goal/item/secret update
-    ├ time/weather/location mutate
+    ├ weather/location/state mutate
     ├ needs decay + auto-action (resolver.py)
     ├ schedule tick
     └ memory create + decay distort + narrative 압축
@@ -142,7 +145,7 @@ GraphRAG/
 │   │   │
 │   │   ├── manager/                # 턴 준비 파이프라인 (Manager)
 │   │   │   ├── pipeline.py         # 턴 오케스트레이터 (run_manager_pipeline)
-│   │   │   ├── planning.py         # world bootstrap + scene/time plan
+│   │   │   ├── planning.py         # world bootstrap + scene classification
 │   │   │   ├── classifier.py       # 씬 분류 보조 로직
 │   │   │   ├── core_context.py     # char/memory/event ctx 조립
 │   │   │   ├── world_context.py    # goal/item/secret/social ctx 조립

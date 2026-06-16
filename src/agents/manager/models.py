@@ -5,7 +5,7 @@
 #
 # Classes
 #   - ManagerBootstrap : World instance, config, and global state bundle
-#   - SceneTimePlan : Scene types and time plan bundle
+#   - SceneTimePlan : Scene types and prompt time baseline bundle
 #   - CoreContext : Graph context bundle for prompt rendering
 #   - PromptParts : Fixed, genre, and dynamic prompt bundle
 #   - ManagerDependencies : Query and classifier dependencies injected by manager/__init__.py
@@ -27,7 +27,7 @@ class ManagerBootstrap:
 
 @dataclass
 class SceneTimePlan:
-    """Scene classification plus side-effect-free time calculation."""
+    """Scene classification plus the prompt time baseline."""
 
     parse_result: dict
     scene_types: list[str]
@@ -78,6 +78,7 @@ class ManagerDependencies:
     fetch_global_state: Callable[[datetime], Awaitable[dict]]
     try_rule_based: Callable[[str, str], dict | None]
     get_allowed_locations: Callable[[], Awaitable[str]]
+    classify_scene_only: Callable[[str, str, dict[str, str] | None], Awaitable[dict]]
     classify_and_parse_time: Callable[
         [str, str, dict, str, dict[str, str] | None, dict | None],
         Awaitable[dict],

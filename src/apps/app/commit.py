@@ -13,9 +13,9 @@ from datetime import datetime
 from typing import Any
 
 from src.agents.context.scene_state import update_scene_state_after_response
-from src.agents.manager.effects import commit_manager_auxiliary_effects, commit_manager_core_effects
+from src.agents.manager.effects import commit_manager_auxiliary_effects
 from src.core.logging.conversation_logger import append_turn
-from src.simulation.state.apply.time_plan import reconcile_location_with_prose
+from src.simulation.state.apply.time_plan import commit_time_from_prose_header, reconcile_location_with_prose
 from src.simulation.state.updater import process_actor_response
 from src.simulation.systems.kakao import commit_kakao_effects
 from src.apps.app.pending_store import discard_pending_commit, update_pending_status
@@ -82,6 +82,48 @@ def _commit_scene_state(pending: dict, state: ConversationState) -> None:
     )
 
 
+def _accepted_actor_response(pending: dict, state: ConversationState) -> str:
+    """Return the currently accepted assistant text, including user edits/variants."""
+    response_msg_id = pending.get("response_msg_id")
+    if response_msg_id:
+        for message in state.messages:
+            if message.id == response_msg_id and message.role == "assistant":
+                return message.content
+    return str(pending.get("ai_response") or "")
+
+
+def _sync_actor_time_effects(
+    manager_effects: dict,
+    pending: dict,
+    current_dt: datetime | None,
+    pc_id: str,
+) -> None:
+    """Populate auxiliary-system timing from the accepted Actor header time."""
+    if current_dt is None:
+        return
+    prev_dt = _coerce_datetime(pending.get("prev_game_time"))
+    elapsed_minutes = 0.0
+    days_passed = 0
+    if prev_dt:
+        elapsed_minutes = max(0.0, (current_dt - prev_dt).total_seconds() / 60)
+        days_passed = (current_dt.date() - prev_dt.date()).days
+    manager_effects["actor_time_patch"] = {
+        "time_before": prev_dt.isoformat() if prev_dt else None,
+        "time_after": current_dt.isoformat(),
+        "elapsed_minutes": elapsed_minutes,
+        "days_passed": days_passed,
+    }
+    manager_effects["needs_update"] = {
+        "pc_id": pc_id,
+        "elapsed_minutes": elapsed_minutes,
+        "current_time": current_dt.isoformat(),
+    }
+    manager_effects["daily_systems"] = {
+        "days_passed": days_passed,
+        "current_time": current_dt.isoformat(),
+    }
+
+
 async def _maybe_compress_narrative(state: ConversationState) -> None:
     """누적 대화가 임계치에 도달하면 타임라인 narrative 로그로 압축한다 (Chainlit 패리티)."""
     if len(state.narrative_turns) < _NARRATIVE_COMPRESS_THRESHOLD:
@@ -128,22 +170,27 @@ async def commit_pending_web(
     )
     if core_result.get("current_dt"):
         core_result["current_dt"] = _coerce_datetime(core_result.get("current_dt"))
+        _sync_actor_time_effects(manager_effects, pending, core_result.get("current_dt"), state.pc_id)
 
-    if "manager_core" not in completed:
-        core_result = await commit_manager_core_effects(
-            manager_effects,
-            pc_id=state.pc_id,
-            npc_id=state.npc_id,
+    accepted_response = _accepted_actor_response(pending, state)
+    pending["ai_response"] = accepted_response
+
+    if "actor_header_time" not in completed:
+        current_dt = await commit_time_from_prose_header(
+            accepted_response,
+            fallback_time=pending.get("prev_game_time"),
         )
+        _sync_actor_time_effects(manager_effects, pending, current_dt, state.pc_id)
+        core_result = {"current_dt": current_dt}
         pending["core_result"] = core_result
-        _mark_stage_done(pending, state, "manager_core")
+        _mark_stage_done(pending, state, "actor_header_time")
         completed = _completed_stages(pending)
-        print(f"[CommitPendingWeb] stage done: manager_core commit_id={commit_id}")
+        print(f"[CommitPendingWeb] stage done: actor_header_time commit_id={commit_id}")
 
     if "location_reconcile" not in completed:
         # Actor 산문 헤더가 Manager 사전판정과 다른 장소를 가리키면 산문 우선으로 위치를 보정한다.
         await reconcile_location_with_prose(
-            pending.get("ai_response", ""),
+            accepted_response,
             state.pc_id,
             state.npc_id,
             companion_ids=manager_effects.get("scene_npc_ids") or [],

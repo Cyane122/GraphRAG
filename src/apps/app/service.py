@@ -8,6 +8,8 @@
 #   - preview_text(value: str) -> str : Build a compact sidebar preview from assistant output.
 #   - create_conversation(world_id: str, scenario_id: str | None, store: ConversationStore, actor_model: str | None = None, ooc_config: str = "") -> ConversationState : Create a persisted conversation.
 #   - _should_parse_ooc(content: str) -> bool : Decide whether input contains actionable OOC spans.
+#   - _prepare_generation_input(state: ConversationState, content: str, include_pending_ooc: bool = True) -> tuple[str, dict | None] : Split OOC parsing from Actor scene input.
+#   - _is_ooc_only_input(content: str) -> bool : Decide whether input should stop after OOC application.
 #   - _append_ooc_display_block(content: str, ooc_result: dict | None) -> str : Append OOC display metadata to assistant content.
 #   - _format_ooc_change_details(ooc_result: dict) -> str : Render OOC parser changes as compact character-scoped lines.
 #   - _display_change_value(value: object) -> str : Return a readable OOC change value.
@@ -126,6 +128,25 @@ async def _parse_ooc_if_needed(content: str, state: ConversationState) -> dict |
     )
 
 
+async def _prepare_generation_input(
+    state: ConversationState,
+    content: str,
+    include_pending_ooc: bool = True,
+) -> tuple[str, dict | None]:
+    """Parse OOC mutations separately from the Actor scene input."""
+    consumed_ooc = state.pending_ooc if include_pending_ooc else ""
+    ooc_parse_input = f"{consumed_ooc}\n{content}" if consumed_ooc else content
+    ooc_result = await _parse_ooc_if_needed(ooc_parse_input, state)
+    if consumed_ooc:
+        state.pending_ooc = ""
+
+    scene_input = content
+    note_block = build_usernotes_block(state.usernotes)
+    if note_block:
+        scene_input = f"{note_block}\n\n{scene_input}"
+    return scene_input, ooc_result
+
+
 def _should_parse_ooc(content: str) -> bool:
     """Return whether input should be sent through the OOC parser."""
     input_type = route_user_input(content, object())
@@ -137,6 +158,11 @@ def _should_parse_ooc(content: str) -> bool:
     }:
         return False
     return is_ooc(content)
+
+
+def _is_ooc_only_input(content: str) -> bool:
+    """Return True when input contains only OOC spans and no scene text."""
+    return route_user_input(content, object()) == TurnInputType.OOC_PATCH
 
 
 def _apply_ooc_effects(manager_effects: dict, ooc_result: dict | None, pc_id: str) -> dict:
@@ -453,21 +479,9 @@ async def append_user_and_stream(
         # 저장되지 않아 다음 로드 때 이미 커밋된 pending이 재실행되는 것을 방지).
         try:
             await _commit_previous_pending(state)
-            # 직전 커밋에서 임신/유기 시스템이 생성한 OOC가 있으면 이번 턴 입력 앞에 주입한다.
-            # parse_ooc는 호출 즉시 DB(state/위치/시간)에 변경을 반영하므로, 파싱이 성공하면 OOC는
-            # 이미 '소비'된 것 → 그 직후 pending_ooc를 비워 다음 턴 재적용(이중 반영)을 막는다.
-            # 파싱 전에 실패하면 pending_ooc가 남아 다음 턴 재시도되므로 유실도 없다.
-            # 표시되는 user_msg는 사용자가 친 원본을 유지하고, 파싱·생성에는 주입된 입력을 쓴다.
-            consumed_ooc = state.pending_ooc
-            effective_input = f"{consumed_ooc}\n{content}" if consumed_ooc else content
-            ooc_result = await _parse_ooc_if_needed(effective_input, state)
-            if consumed_ooc:
-                state.pending_ooc = ""
-
-            # 유저노트(활성화된 것만) → effective_input 맨 앞에 prepend (Player Input 바로 위).
-            note_block = build_usernotes_block(state.usernotes)
-            if note_block:
-                effective_input = f"{note_block}\n\n{effective_input}"
+            # OOC는 DB mutation으로 먼저 소비하고, Actor에는 사용자가 입력한 scene 텍스트만 보낸다.
+            # pending_ooc는 parse 성공 뒤에만 비워 다음 턴 이중 반영을 막는다.
+            effective_input, ooc_result = await _prepare_generation_input(state, content)
 
             user_msg = ChatMessage(
                 id=client_message_id or f"user_{uuid4().hex}",
@@ -477,6 +491,23 @@ async def append_user_and_stream(
             )
             state.messages.append(user_msg)
             yield {"type": "user", "message": _message_payload(user_msg)}
+            if ooc_result and _is_ooc_only_input(content):
+                assistant_msg = ChatMessage(
+                    id=f"assistant_{uuid4().hex}",
+                    role="assistant",
+                    content=_append_ooc_display_block("", ooc_result).strip(),
+                    parent_user_id=user_msg.id,
+                    actor_model=None,
+                )
+                state.messages.append(assistant_msg)
+                state.preview = preview_text(assistant_msg.content)
+                yield {
+                    "type": "complete",
+                    "message": _message_payload(assistant_msg),
+                    "pending_commit_id": None,
+                    "preview": state.preview,
+                }
+                return
             async for event in _run_generation_events(
                 state,
                 effective_input,
@@ -537,4 +568,3 @@ async def _collect_generation(
     if final is None:
         raise RuntimeError("Generation completed without final response.")
     return final
-

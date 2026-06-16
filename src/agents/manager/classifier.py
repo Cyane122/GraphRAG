@@ -5,10 +5,12 @@
 #
 # Functions
 #   - _try_rule_based(user_input: str, recent_story: str = "") -> dict | None : Fast-path classification for short inputs
+#   - _classify_scene_only(user_input: str, recent_story: str, scene_descriptions: dict[str, str] | None = None) -> dict : LLM-based scene classification without time parsing
 #   - _classify_and_parse_time(user_input: str, recent_story: str, global_state: dict, allowed_locs: str, scene_descriptions: dict[str, str] | None = None, schedule_context: dict | None = None) -> dict : LLM-based scene and time parsing
 #   - _generate_classifier_text(model: Any, prompt: str) -> str : Generate classifier JSON text with larger-budget retry
 #   - _coerce_classifier_result(parsed: object) -> dict | None : Accept common JSON shape variants
 #   - _log_invalid_classifier_result(raw: str, parsed: object) -> None : Print compact invalid classifier diagnostics
+#   - _normalize_scene_only_result(parsed: dict, scene_descriptions: dict[str, str]) -> dict : Normalize scene-only classifier output
 #   - _normalize_classifier_result(parsed: dict, scene_descriptions: dict[str, str]) -> dict : Repair empty classifier fields
 #   - _location_is_grounded_in_scene(location_id: str, new_location: object, allowed_locs: str, user_input: str, context_snippet: str) -> bool : Check planned location grounding
 #   - _clear_unsupported_location_result(parsed: dict, allowed_locs: str, user_input: str, context_snippet: str) -> dict : Drop ungrounded planned locations
@@ -234,6 +236,74 @@ new_weather: Clear/Cloudy/Foggy/Drizzle/Rain/Heavy Rain/Thunderstorm/Snow/Heavy 
         return _fallback_classification()
 
 
+async def _classify_scene_only(
+    user_input: str,
+    recent_story: str,
+    scene_descriptions: dict[str, str] | None = None,
+) -> dict:
+    """Classify scene types without asking the LLM to plan time or location."""
+    context_snippet = recent_story[-800:] if recent_story else ""
+    scenes = scene_descriptions or {"daily": "Everyday life with no significant conflict"}
+    scene_types_block = "\n".join(f"  - {name}: {desc}" for name, desc in scenes.items())
+    allowed_scene_list = list(scenes) or ["daily"]
+    fallback_scene = "daily" if "daily" in allowed_scene_list else allowed_scene_list[0]
+
+    system_instruction = "Korean roleplay scene classifier. Return ONLY valid JSON."
+    prompt = f"""Return ONLY valid JSON.
+
+[Context] {context_snippet}
+[Input] {user_input}
+
+[Scene Types]
+{scene_types_block}
+
+[Output — ONLY this JSON]
+{{
+  "scene_types": ["{fallback_scene}"],
+  "reason": "brief reason"
+}}
+"""
+    try:
+        model = get_model(model_name=CLASSIFIER_MODEL, system_prompt=system_instruction)
+        raw = await _generate_classifier_text(model, prompt)
+        parsed = extract_json_from_llm(raw, source="manager_scene_classifier", log_errors=False)
+        if not isinstance(parsed, dict):
+            _log_invalid_classifier_result(raw, parsed)
+            raise ValueError("invalid scene classifier structure")
+        repaired = _normalize_scene_only_result(parsed, scenes)
+        print(f"[Scene / {CLASSIFIER_MODEL}] scene={repaired.get('scene_types')}")
+        return repaired
+    except asyncio.TimeoutError:
+        print(f"[Scene timeout] {CLASSIFIER_MODEL} > {_CLASSIFIER_TIMEOUT_SECONDS}s -> fallback")
+        return {"scene_types": [fallback_scene], "reason": "scene classifier timeout fallback"}
+    except Exception as exc:
+        print(f"[Scene 실패] {exc} → fallback")
+        return {"scene_types": [fallback_scene], "reason": "scene classifier fallback"}
+
+
+def _normalize_scene_only_result(parsed: dict, scene_descriptions: dict[str, str]) -> dict:
+    """Normalize scene-only classifier output to known scene type keys."""
+    repaired = dict(parsed)
+    allowed_scene_list = list(scene_descriptions) or ["daily"]
+    allowed_scenes = set(allowed_scene_list)
+    raw_scenes = repaired.get("scene_types")
+    if isinstance(raw_scenes, str):
+        raw_scenes = [raw_scenes]
+    if not isinstance(raw_scenes, list):
+        raw_scenes = []
+    scenes = [
+        str(scene).strip()
+        for scene in raw_scenes
+        if str(scene or "").strip() in allowed_scenes
+    ]
+    if not scenes:
+        scenes = ["daily" if "daily" in allowed_scenes else allowed_scene_list[0]]
+    repaired["scene_types"] = scenes
+    if not repaired.get("reason"):
+        repaired["reason"] = "scene classifier output normalized"
+    return repaired
+
+
 async def _generate_classifier_text(model: Any, prompt: str) -> str:
     """Generate classifier JSON and retry with a larger budget if Gemini returns no text."""
     base_config = {
@@ -254,7 +324,7 @@ async def _generate_classifier_text(model: Any, prompt: str) -> str:
         return raw
 
     log_empty_response_diagnostics(resp, "manager_classifier:json_mode")
-    print("[Classify+Time] empty JSON response -> retrying with larger JSON budget")
+    print("[ManagerClassifier] empty JSON response -> retrying with larger JSON budget")
     retry_resp = await asyncio.wait_for(
         model.generate_content_async(
             prompt,
@@ -299,7 +369,7 @@ def _log_invalid_classifier_result(raw: str, parsed: object) -> None:
     if len(raw or "") > 500:
         preview += "... [log truncated]"
     print(
-        "[Classify+Time invalid structure] "
+        "[ManagerClassifier invalid structure] "
         f"parsed_type={type(parsed).__name__} raw={preview or '(empty)'}"
     )
 

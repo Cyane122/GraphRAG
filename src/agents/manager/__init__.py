@@ -10,7 +10,7 @@
 # ================================
 import asyncio
 
-from src.agents.manager.classifier import _classify_and_parse_time, _try_rule_based
+from src.agents.manager.classifier import _classify_and_parse_time, _classify_scene_only, _try_rule_based
 from src.agents.manager.effects import commit_manager_effects
 from src.agents.manager.pipeline import run_manager_pipeline
 from src.agents.manager.models import ManagerDependencies
@@ -61,6 +61,7 @@ async def run_manager(
             fetch_global_state=fetch_global_state,
             try_rule_based=_try_rule_based,
             get_allowed_locations=_get_allowed_locations,
+            classify_scene_only=_classify_scene_only,
             classify_and_parse_time=_classify_and_parse_time,
             fetch_character_data=fetch_character_data,
             fetch_relationship_data=fetch_relationship_data,

@@ -34,7 +34,12 @@ def _effect_base_time(effects: dict) -> datetime | None:
     """Return the previous in-game time for time-plan or OOC time patches."""
     time_plan = effects.get("time_plan") or {}
     ooc_patch = effects.get("ooc_time_patch") or {}
-    return _parse_effect_datetime(time_plan.get("base_time") or ooc_patch.get("time_before"))
+    actor_patch = effects.get("actor_time_patch") or {}
+    return _parse_effect_datetime(
+        time_plan.get("base_time")
+        or ooc_patch.get("time_before")
+        or actor_patch.get("time_before")
+    )
 
 
 async def commit_manager_core_effects(
