@@ -41,6 +41,11 @@ ANTHROPIC_CLAUDE_OPUS_4_7_MODEL = os.getenv("ANTHROPIC_CLAUDE_OPUS_4_7_MODEL", "
 ANTHROPIC_CLAUDE_OPUS_4_8_MODEL = os.getenv("ANTHROPIC_CLAUDE_OPUS_4_8_MODEL", "claude-opus-4-8")
 ANTHROPIC_CLAUDE_OPUS_MODEL = os.getenv("ANTHROPIC_CLAUDE_OPUS_MODEL", ANTHROPIC_CLAUDE_OPUS_4_8_MODEL)
 
+# ── Claude on Vertex AI (primary; quota/비용 부족 시 위 다이렉트 API로 폴백) ──
+# Vertex 모델 ID는 4.6+/Sonnet 4.6에서 다이렉트 ID와 동일(평문)하므로 별도 매핑 불필요.
+# region은 기본적으로 Gemini와 동일한 GOOGLE_CLOUD_LOCATION(global, Claude 권장값)을 따른다.
+ANTHROPIC_VERTEX_REGION = os.getenv("ANTHROPIC_VERTEX_REGION", GOOGLE_CLOUD_LOCATION)
+
 # ── 임베딩 ──────────────────────────────────────────────────
 def _embedding_dim(raw: str | None) -> int | None:
     """EMBEDDING_DIM을 파싱한다.

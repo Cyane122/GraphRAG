@@ -23,16 +23,20 @@ from fastapi.staticfiles import StaticFiles
 
 from src.config import WORLD_ID
 from src.apps.app.models import (
+    AppSettingsRequest,
     ConversationCreateRequest,
     LocationMoveRequest,
     MessageCreateRequest,
     MessageEditRequest,
     MessageRerollRequest,
     OocConfigRequest,
+    ForcePregnancyRequest,
+    SimulatePregnancyRequest,
     UserNoteCreateRequest,
     UserNoteUpdateRequest,
     VariantActivateRequest,
 )
+from src.apps.app.settings import load_settings, save_settings
 from src.apps.app.runtime import ActiveConversation, discover_world_profiles, resolve_opening_scene
 from src.apps.app.message_ops import (
     activate_variant,
@@ -44,8 +48,10 @@ from src.apps.app.service import (
     _message_payload,
     append_user_and_stream,
     create_conversation,
+    force_pregnancy,
     refresh_graph_snapshot_best_effort,
     run_database_tool,
+    simulate_pregnancy,
 )
 from src.apps.app.storage import ConversationStore
 from src.apps.app.world_state import (
@@ -231,6 +237,24 @@ def create_app() -> FastAPI:
             except ValueError as exc:
                 raise HTTPException(400, detail=str(exc)) from exc
 
+    @app.post("/api/conversations/{thread_id}/pregnancy/force")
+    async def api_force_pregnancy(thread_id: str, body: ForcePregnancyRequest) -> dict:
+        """Force the mother pregnant by the optional father (확률 무시, 강제 임신)."""
+        state = _load_or_404(store, thread_id)
+        try:
+            return await force_pregnancy(state, body.mother_id, body.father_id, store)
+        except KeyError as exc:
+            raise HTTPException(404, detail="character not found") from exc
+
+    @app.post("/api/conversations/{thread_id}/pregnancy/simulate")
+    async def api_simulate_pregnancy(thread_id: str, body: SimulatePregnancyRequest) -> dict:
+        """Simulate N internal ejaculations on the mother and apply conception if rolled."""
+        state = _load_or_404(store, thread_id)
+        try:
+            return await simulate_pregnancy(state, body.mother_id, body.father_id, body.shots, store)
+        except KeyError as exc:
+            raise HTTPException(404, detail="character not found") from exc
+
     @app.patch("/api/conversations/{thread_id}/ooc-config")
     def api_update_ooc_config(thread_id: str, body: OocConfigRequest) -> dict:
         """Update the thread-level OOC config."""
@@ -238,6 +262,20 @@ def create_app() -> FastAPI:
         state.ooc_config = body.ooc_config
         store.save(state)
         return {"ooc_config": state.ooc_config}
+
+    @app.get("/api/settings")
+    def api_get_settings() -> dict:
+        """Return app-wide settings (shared across all conversations)."""
+        return load_settings().model_dump()
+
+    @app.patch("/api/settings")
+    def api_update_settings(body: AppSettingsRequest) -> dict:
+        """Update app-wide settings; only provided fields are changed."""
+        settings = load_settings()
+        if body.output_repair_enabled is not None:
+            settings.output_repair_enabled = body.output_repair_enabled
+        save_settings(settings)
+        return settings.model_dump()
 
     @app.get("/api/conversations/{thread_id}/usernotes")
     def api_list_usernotes(thread_id: str) -> dict:

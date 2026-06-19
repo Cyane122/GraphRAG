@@ -9,19 +9,22 @@
 #   - create_conversation(world_id: str, scenario_id: str | None, store: ConversationStore, actor_model: str | None = None, ooc_config: str = "") -> ConversationState : Create a persisted conversation.
 #   - _should_parse_ooc(content: str) -> bool : Decide whether input contains actionable OOC spans.
 #   - _prepare_generation_input(state: ConversationState, content: str, include_pending_ooc: bool = True) -> tuple[str, dict | None] : Split OOC parsing from Actor scene input.
-#   - _is_ooc_only_input(content: str) -> bool : Decide whether input should stop after OOC application.
 #   - _append_ooc_display_block(content: str, ooc_result: dict | None) -> str : Append OOC display metadata to assistant content.
 #   - _format_ooc_change_details(ooc_result: dict) -> str : Render OOC parser changes as compact character-scoped lines.
 #   - _display_change_value(value: object) -> str : Return a readable OOC change value.
 #   - refresh_graph_snapshot_best_effort(state: ConversationState) -> None : Refresh graph viewer cache for the current web conversation.
 #   - append_user_and_stream(state: ConversationState, content: str, store: ConversationStore, client_message_id: str | None = None, actor_model: str | None = None) -> AsyncIterator[dict] : Commit previous pending, append user input, and stream Actor output.
 #   - run_database_tool(state: ConversationState, tool_name: str, store: ConversationStore) -> dict : Run a read-only database tool and persist its message.
+#   - _persist_pregnancy_result(state: ConversationState, store: ConversationStore, ooc: str) -> dict : Persist a pregnancy OOC message and queue it for the actor.
+#   - force_pregnancy(state: ConversationState, mother_id: str, father_id: str | None, store: ConversationStore) -> dict : Force a pregnancy and persist the result.
+#   - simulate_pregnancy(state: ConversationState, mother_id: str, father_id: str | None, shots: int, store: ConversationStore) -> dict : Simulate N internal ejaculations and persist the result.
 #   - _collect_generation(state, content, user_msg_id, store, *, actor_model, ooc_result, turn_ooc_directives, persist) -> dict : Run generation to completion and return the final event.
 #   - _message_payload(message: ChatMessage) -> dict : Convert a persisted message into frontend JSON.
 # ================================
 
 from __future__ import annotations
 
+import logging
 import random
 import re
 from collections.abc import AsyncIterator
@@ -32,16 +35,21 @@ from uuid import uuid4
 from src.agents.manager import run_manager
 from src.agents.prompt_factory.ooc_handler import is_ooc, parse_ooc
 from src.agents.prompt_factory.usernote import build_usernotes_block
+from src.simulation.systems.world_dynamics.organic import (
+    set_pregnant_manual,
+    simulate_internal_ejaculation,
+)
 from src.config import MAX_TOKEN, MODEL_OUTPUT_REPAIR
 from src.core.llm.client import get_client
 from src.apps.app.input_routing import TurnInputType, route_user_input
 from src.apps.app.output_guard import find_forbidden_terms, find_pov_violations
 from src.apps.app.output_repair import repair_actor_output
 from src.apps.app.pending_store import save_pending_commit
+from src.apps.app.settings import load_settings
 from src.apps.app.session_models import PendingCommit
 from src.apps.app.social_media_settings import resolve_social_media_features
 from src.apps.graph_viewer.debug import build_debug_graph
-from src.apps.app.turn_debug import write_turn_debug_snapshot
+from src.apps.app.turn_debug import write_actor_raw_snapshot, write_turn_debug_snapshot
 from src.apps.app.actor import stream_actor_events
 from src.apps.app.analysis_tools import render_database_tool
 from src.apps.app.commit import commit_pending_web
@@ -54,6 +62,8 @@ from src.apps.app.runtime import (
 )
 from src.apps.app.storage import ConversationStore
 from src.apps.graph_viewer.server import ensure_graph_server, update_graph_snapshot
+
+logger = logging.getLogger(__name__)
 
 MAX_HISTORY_TURNS = 10
 RECENT_STORY_TURNS = 3
@@ -160,11 +170,6 @@ def _should_parse_ooc(content: str) -> bool:
     return is_ooc(content)
 
 
-def _is_ooc_only_input(content: str) -> bool:
-    """Return True when input contains only OOC spans and no scene text."""
-    return route_user_input(content, object()) == TurnInputType.OOC_PATCH
-
-
 def _apply_ooc_effects(manager_effects: dict, ooc_result: dict | None, pc_id: str) -> dict:
     """Merge OOC result into manager effects using the legacy Chainlit semantics."""
     if not ooc_result:
@@ -264,7 +269,10 @@ async def _repair_if_needed(full_response: str, visible_text: str, state: Conver
     Guard는 사용자에게 보이는 prose(visible_text)만 검사한다. <analyze> 내부 추론 블록은
     1인칭이 자연스러워 POV guard를 오발동시키므로(불필요한 Pro repair 유발) 검사 대상에서 제외한다.
     위반이 있으면 보이는 prose만 수정한 뒤, analyze 블록을 보존하도록 full_response를 재구성한다.
+    전역 설정에서 output repair가 꺼져 있으면 검사·수정 없이 원본을 그대로 반환한다.
     """
+    if not load_settings().output_repair_enabled:
+        return full_response
     target = visible_text or full_response
     blocked_terms = find_forbidden_terms(target) + find_pov_violations(
         target, state.perspective, state.npc_name_kor
@@ -357,8 +365,7 @@ async def _run_generation_events(
 
     history_snapshot = list(state.history)
     recent_snapshot = list(state.recent_responses)
-    final_event: dict | None = None
-    async for event in stream_actor_events(
+    actor_kwargs = dict(
         fixed_prompt=fixed,
         genre_prompt=genre,
         dynamic_prompt=dynamic,
@@ -366,7 +373,9 @@ async def _run_generation_events(
         genai_client=_GENAI_CLIENT,
         model_name=selected_actor_model,
         max_token=MAX_TOKEN,
-    ):
+    )
+    final_event: dict | None = None
+    async for event in stream_actor_events(**actor_kwargs):
         if event["type"] == "complete":
             final_event = event
             break
@@ -374,6 +383,27 @@ async def _run_generation_events(
 
     if final_event is None:
         raise RuntimeError("Actor stream ended without a complete event.")
+
+    # 모델이 <analyze> 사고만 내고 가시 본문을 누락하면(가끔, 모델 변동성) 사용자에겐 빈 응답이나
+    # 사고 덤프가 보인다. 수동 리롤이 통하는 것과 동일하게, 가시 prose가 비면 1회 자동 재생성한다.
+    if not (final_event.get("visible_text") or "").strip():
+        logger.warning("[WebGeneration] Actor produced empty visible prose; retrying once")
+        retry_event: dict | None = None
+        async for event in stream_actor_events(**actor_kwargs):
+            if event["type"] == "complete":
+                retry_event = event
+                break
+            yield event
+        if retry_event is not None and (retry_event.get("visible_text") or "").strip():
+            final_event = retry_event
+
+    write_actor_raw_snapshot(
+        full_response=str(final_event.get("content") or ""),
+        raw_thinking=str(final_event.get("raw_thinking") or ""),
+        visible_text=str(final_event.get("visible_text") or ""),
+        logs_dir=_LOGS_DIR,
+        debug_dir=debug_dir,
+    )
 
     full_response = await _repair_if_needed(
         final_event["content"], final_event.get("visible_text") or "", state
@@ -491,23 +521,8 @@ async def append_user_and_stream(
             )
             state.messages.append(user_msg)
             yield {"type": "user", "message": _message_payload(user_msg)}
-            if ooc_result and _is_ooc_only_input(content):
-                assistant_msg = ChatMessage(
-                    id=f"assistant_{uuid4().hex}",
-                    role="assistant",
-                    content=_append_ooc_display_block("", ooc_result).strip(),
-                    parent_user_id=user_msg.id,
-                    actor_model=None,
-                )
-                state.messages.append(assistant_msg)
-                state.preview = preview_text(assistant_msg.content)
-                yield {
-                    "type": "complete",
-                    "message": _message_payload(assistant_msg),
-                    "pending_commit_id": None,
-                    "preview": state.preview,
-                }
-                return
+            # *...* 만으로 된 입력도 OOC 효과(시간/상태 등)를 적용한 뒤 항상 Actor 응답을
+            # 생성한다. OOC 전용 단락(응답 없이 요약만)은 출력이 안 나오는 것처럼 보여 제거했다.
             async for event in _run_generation_events(
                 state,
                 effective_input,
@@ -534,6 +549,53 @@ async def run_database_tool(state: ConversationState, tool_name: str, store: Con
     state.title = f"{state.world_id}/{state.scenario_id or 'default'}"
     store.save(state)
     return {"message": _message_payload(message), "preview": state.preview}
+
+
+def _persist_pregnancy_result(state: ConversationState, store: ConversationStore, ooc: str) -> dict:
+    """Persist a pregnancy-tool OOC message as a visible assistant record and queue it for the actor.
+
+    The message is shown in the chat immediately, and appended to state.pending_ooc so the
+    next turn's Actor is aware of the system change (same channel as the auto pregnancy OOC).
+    """
+    message = ChatMessage(
+        id=f"assistant_{uuid4().hex}",
+        role="assistant",
+        content=ooc,
+    )
+    state.messages.append(message)
+    state.preview = preview_text(ooc)
+    state.pending_ooc = f"{state.pending_ooc}\n{ooc}".strip() if state.pending_ooc else ooc
+    store.save(state)
+    return {"message": _message_payload(message), "preview": state.preview, "ooc": ooc}
+
+
+async def force_pregnancy(
+    state: ConversationState,
+    mother_id: str,
+    father_id: str | None,
+    store: ConversationStore,
+) -> dict:
+    """Force the given character (mother) pregnant by the optional father and persist the result."""
+    async with ActiveConversation(state):
+        ooc = await set_pregnant_manual(mother_id, father_id or None)
+    if ooc is None:
+        raise KeyError("character not found")
+    return _persist_pregnancy_result(state, store, ooc)
+
+
+async def simulate_pregnancy(
+    state: ConversationState,
+    mother_id: str,
+    father_id: str | None,
+    shots: int,
+    store: ConversationStore,
+) -> dict:
+    """Simulate N internal ejaculations on the mother, apply conception if rolled, and persist."""
+    async with ActiveConversation(state):
+        ooc = await simulate_internal_ejaculation(mother_id, father_id or None, shots)
+    if ooc is None:
+        raise KeyError("character not found")
+    return _persist_pregnancy_result(state, store, ooc)
 
 
 async def _collect_generation(

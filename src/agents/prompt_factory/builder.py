@@ -39,6 +39,7 @@ from src.agents.prompt_factory.renderers import (
     render_relationship_section,
     render_world_section,
 )
+from src.agents.context.scene_keys import normalize_scene_type
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +142,14 @@ class PromptBuilder:
         blocks = []
         for scene_type in scene_types:
             examples = examples_db.get(scene_type)
+            if not examples:
+                # scene_types는 이미 canonical(예: bonding→emotional)이지만 월드의 few-shot은
+                # raw 라벨(bonding)로 키잉돼 있을 수 있다. canonical로 정규화되는 raw 키를 찾아 매칭한다.
+                examples = next(
+                    (ex for key, ex in examples_db.items()
+                     if normalize_scene_type(key) == scene_type),
+                    None,
+                )
             if not examples:
                 logger.warning("PromptBuilder: no few-shot examples for scene_type '%s'", scene_type)
                 continue

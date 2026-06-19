@@ -4,9 +4,11 @@
 # 임신 확률 계산 및 생리 주기/임신 상태 관리를 담당합니다.
 #
 # Functions
+#   - has_pregnancy_risk_signal(actor_response: str) -> bool : 사정/질내 관련 표현 존재 여부(동기, LLM 미호출) — organic 게이트 공용
 #   - detect_internal_ejaculation(actor_response: str) -> bool : 명시적 사정 표현 prefilter 후 Flash로 현재 질내·콘돔 여부를 분류
 #   - process_ejaculation(npc_id: str, actor_response: str, scene_char_ids: list[str] | None, intimate_char_ids: list[str] | None) -> str | None : 질내사정 감지 시 확률 계산 후 임신 여부 결정
-#   - set_pregnant_manual(char_ref: str) -> str | None : 이름/ID로 캐릭터를 직접 임신 상태로 전환 (수동 보정용)
+#   - set_pregnant_manual(char_ref: str, father_ref: str | None) -> str | None : 이름/ID로 캐릭터를 직접 임신 상태로 전환 (강제 임신; 아빠 지정 가능)
+#   - simulate_internal_ejaculation(mother_ref: str, father_ref: str | None, shots: int) -> str | None : N회 질내사정을 가정해 가임 주기 기반 확률로 임신 여부를 시뮬레이션 (pregManager 누락 보정)
 #   - tick_pregnancy_day(npc_id: str, days_passed: int) -> None : 게임 내 날짜 경과 시 pregnancy_day 증가
 #   - tick_cycle_day(npc_id: str, days_passed: int) -> None : 게임 내 날짜 경과 시 cycle_day 증가 (28일 주기)
 #   - tick_all_cycles(days_passed: int) -> None : has_menstrual_cycle=true인 모든 캐릭터 일괄 갱신
@@ -277,6 +279,16 @@ def _text_mentions_ref(actor_response: str, char_id: str, char_name: str) -> boo
     return bool((char_id and char_id in actor_response) or (char_name and char_name in actor_response))
 
 
+def has_pregnancy_risk_signal(actor_response: str) -> bool:
+    """사정/질내 관련 표현이 있는지 동기로 빠르게 확인한다(LLM 미호출).
+
+    organic 시스템 게이트가 임신 감지기(_EJAC_RE)와 동일한 기준으로 발화하도록
+    공용으로 노출한다. 여기서 True여도 실제 임신 판정은 process_ejaculation 내부의
+    분류기·확률·주기 조건을 모두 통과해야 한다(false positive는 그 단계에서 걸러짐).
+    """
+    return bool(_EJAC_RE.search(actor_response or ""))
+
+
 async def detect_internal_ejaculation(actor_response: str) -> bool:
     """임신 가능한 질내사정 여부를 감지한다.
 
@@ -511,13 +523,15 @@ async def process_ejaculation(
     return None
 
 
-async def set_pregnant_manual(char_ref: str) -> str | None:
+async def set_pregnant_manual(char_ref: str, father_ref: str | None = None) -> str | None:
     """
-    이름 또는 ID로 캐릭터를 직접 임신 상태로 전환합니다.
+    이름 또는 ID로 캐릭터를 직접 임신 상태로 전환합니다 (강제 임신).
 
-    자동 감지가 실패했을 때 /임신 커맨드에서 호출하는 수동 보정용.
+    확률·가임 주기를 무시하고 무조건 임신시킨다. father_ref가 주어지면
+    아버지(pregnancy_father_id)를 함께 기록한다. 생리 주기가 없던 캐릭터도
+    임신 일수가 진행되도록 has_menstrual_cycle을 함께 켠다.
     Returns:
-        OOC 확인 메시지 문자열, 캐릭터를 찾지 못하면 None.
+        OOC 확인 메시지 문자열, 캐릭터(엄마)를 찾지 못하면 None.
     """
     char_id = await _resolve_char_id(char_ref)
     if not char_id:
@@ -528,21 +542,93 @@ async def set_pregnant_manual(char_ref: str) -> str | None:
         char_name = await _get_char_name(char_id)
         return f"*[시스템] {char_name}은(는) 이미 임신 중입니다. (임신 {state['pregnancy_day']}일째)*"
 
-    await update_dynamic_state(char_id, {
+    updates: dict = {
         "pregnant":             True,
         "pregnancy_day":        1,
         "cum_shots_this_cycle": 0,
-    })
+        "has_menstrual_cycle":  True,
+    }
+    resolved_father = await _resolve_char_id(father_ref) if father_ref else None
+    if resolved_father:
+        updates["pregnancy_father_id"] = resolved_father
+    await update_dynamic_state(char_id, updates)
 
     state = await _get_cycle_state(char_id)
     char_name = await _get_char_name(char_id)
+    father_name = await _get_char_name(resolved_father) if resolved_father else None
+    father_part = f" (아버지: {father_name})" if father_name else ""
     ooc_msg = (
-        f"*[시스템] {char_name}이(가) 임신했습니다. (임신 1일째) "
-        f"수동 설정 — 가임기 {state['cycle_day']}일째. "
+        f"*[시스템] {char_name}이(가) 임신했습니다.{father_part} (임신 1일째) "
+        f"강제 설정 — 가임기 {state['cycle_day']}일째. "
         f"임신 13주(91일) 이후 안정기 진입.*"
     )
-    print(f"[PregnancyMgr] {char_id} 수동 임신 설정 완료")
+    print(f"[PregnancyMgr] {char_id} 강제 임신 설정 완료 (father={resolved_father})")
     return ooc_msg
+
+
+async def simulate_internal_ejaculation(
+    mother_ref: str,
+    father_ref: str | None = None,
+    shots: int = 1,
+) -> str | None:
+    """
+    질내사정 N회를 가정해 가임 주기 기반 확률로 임신 여부를 시뮬레이션한다.
+
+    pregManager 자동 감지가 놓친 상황을 위한 수동 보정. cycle_day와
+    누적 사정 횟수(기존 cum_shots + shots)로 누적 확률을 구해 단판 판정한다.
+    임신으로 나오면 상태를 반영하고 father_ref를 아버지로 기록한다.
+    Returns:
+        결과 OOC 메시지(임신/미임신), 엄마를 찾지 못하면 None.
+    """
+    char_id = await _resolve_char_id(mother_ref)
+    if not char_id:
+        return None
+
+    shots = max(1, int(shots))
+    state = await _get_cycle_state(char_id)
+    char_name = await _get_char_name(char_id)
+
+    if not state["has_menstrual_cycle"]:
+        return f"*[시스템] {char_name}은(는) 생리 주기가 없어 임신 시뮬레이션 대상이 아닙니다. (강제 임신을 사용하세요.)*"
+    if state["pregnant"]:
+        return f"*[시스템] {char_name}은(는) 이미 임신 중입니다. (임신 {state['pregnancy_day']}일째)*"
+
+    cycle_day = state["cycle_day"]
+    total_shots = state["cum_shots"] + shots
+    prob = _calc_prob(cycle_day, total_shots)
+    roll = random.random()
+    conceived = roll < prob
+
+    print(
+        f"[PregnancyMgr] simulate {char_id}: cycle_day={cycle_day} | shots={total_shots} | "
+        f"prob={prob:.1%} | roll={roll:.3f} | {'임신!' if conceived else '미임신'}"
+    )
+
+    if not conceived:
+        await update_dynamic_state(char_id, {"cum_shots_this_cycle": total_shots})
+        return (
+            f"*[시스템] {char_name} 임신 시뮬레이션 결과 — 미임신. "
+            f"가임기 {cycle_day}일째, 질내사정 {total_shots}회 누적 (임신 확률 {prob:.0%}).*"
+        )
+
+    pregnancy_updates: dict = {
+        "pregnant":             True,
+        "pregnancy_day":        1,
+        "cum_shots_this_cycle": 0,
+    }
+    resolved_father = await _resolve_char_id(father_ref) if father_ref else None
+    if resolved_father:
+        pregnancy_updates["pregnancy_father_id"] = resolved_father
+    await update_dynamic_state(char_id, pregnancy_updates)
+
+    father_name = await _get_char_name(resolved_father) if resolved_father else None
+    father_part = f" (아버지: {father_name})" if father_name else ""
+    print(f"[PregnancyMgr] {char_id} 시뮬레이션 임신 확정 (father={resolved_father})")
+    return (
+        f"*[시스템] {char_name}이(가) 임신했습니다.{father_part} (임신 1일째) "
+        f"임신 시뮬레이션 — 가임기 {cycle_day}일째, 질내사정 {total_shots}회 누적 (임신 확률 {prob:.0%}). "
+        f"임신 13주(91일) 이후 안정기 진입.*"
+    )
 
 
 async def tick_pregnancy_day(npc_id: str, days_passed: int) -> None:

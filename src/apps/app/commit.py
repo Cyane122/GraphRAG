@@ -5,6 +5,7 @@
 #
 # Functions
 #   - commit_pending_web(pending: dict, state: ConversationState, scheduler: object | None = None) -> dict[str, str] : Commit one pending response.
+#   - _merge_need_hints(scene_need_hints: dict | None, libido_hints: dict | None) -> dict[str, str] : Combine scene-need and libido overflow hints per NPC.
 # ================================
 
 from __future__ import annotations
@@ -27,6 +28,26 @@ _NARRATIVE_COMPRESS_THRESHOLD = 10
 def _completed_stages(pending: dict) -> set[str]:
     """Return completed commit stages from a pending payload."""
     return set(pending.get("completed_stages") or [])
+
+
+def _merge_need_hints(
+    scene_need_hints: dict | None,
+    libido_hints: dict | None,
+) -> dict[str, str]:
+    """씬-욕구 힌트와 libido 힌트를 NPC별로 합쳐 한 채널로 만든다.
+
+    run_needs_update는 비-libido 욕구 과다는 scene_need_hints에, libido 과다는
+    libido_hints에 따로 담아 반환한다. 둘 다 personality로 분기된 행동 힌트이므로
+    프롬프트에는 동일 채널(scene_need_hints)로 주입돼야 한다. 같은 NPC가 두 종류를
+    동시에 넘긴 경우 한쪽이 묻히지 않도록 줄바꿈으로 이어 붙인다.
+    """
+    merged: dict[str, str] = dict(scene_need_hints or {})
+    for npc_id, libido_hint in (libido_hints or {}).items():
+        if not libido_hint:
+            continue
+        existing = merged.get(npc_id)
+        merged[npc_id] = f"{existing}\n{libido_hint}" if existing else libido_hint
+    return merged
 
 
 def _timestamp_from_pending(pending: dict) -> datetime | None:
@@ -107,6 +128,11 @@ def _sync_actor_time_effects(
     if prev_dt:
         elapsed_minutes = max(0.0, (current_dt - prev_dt).total_seconds() / 60)
         days_passed = (current_dt.date() - prev_dt.date()).days
+    # prev_game_time은 OOC 시간 적용 이후 스냅샷이라, OOC로 건너뛴 날짜(*다음 날* 등)는 header 기반
+    # 계산에서 빠진다. 두 구간(OOC 점프 / 점프 후→header)은 disjoint하므로 합산해야 cycle_day·daily
+    # 시스템이 OOC 날짜 점프를 놓치지 않는다. (재커밋 시에도 고정값 합이라 idempotent)
+    ooc_days = int((manager_effects.get("ooc_time_patch") or {}).get("days_passed") or 0)
+    days_passed += ooc_days
     manager_effects["actor_time_patch"] = {
         "time_before": prev_dt.isoformat() if prev_dt else None,
         "time_after": current_dt.isoformat(),
@@ -251,7 +277,10 @@ async def commit_pending_web(
             current_dt=core_result.get("current_dt"),
             scene_chars=pending.get("scene_chars", []),
         )
-        state.scene_need_hints = needs_result.get("scene_need_hints") or {}
+        state.scene_need_hints = _merge_need_hints(
+            needs_result.get("scene_need_hints"),
+            needs_result.get("libido_hints"),
+        )
         _mark_stage_done(pending, state, "manager_auxiliary")
         print(f"[CommitPendingWeb] stage done: manager_auxiliary commit_id={commit_id}")
 

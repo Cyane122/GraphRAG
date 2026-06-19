@@ -11,7 +11,11 @@
 # ================================
 
 import asyncio
+import os
 import threading
+
+# HuggingFace 모델 로딩 진행바(tqdm "Loading weights …")를 끈다. import 전에 설정해야 적용된다.
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 
 import torch
 

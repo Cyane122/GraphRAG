@@ -10,6 +10,7 @@
 #   - delegate_complex_update(actor_response: str, npc_id: str, pc_id: str, initial_changes: dict | None, event_only: bool, world_config: dict | None, scene_chars: list[str] | None) -> None : Delegate complex updates including event-only mode
 # ================================
 import json
+import logging
 import re
 from datetime import datetime
 
@@ -19,6 +20,8 @@ from src.core.embedding.encoder import embed_async
 from src.simulation.systems.memory import ensure_memories_for_event
 from src.simulation.state.apply.audit import _prepare_event_summaries
 from src.simulation.state.importance import IMPORTANCE_RUBRIC
+
+logger = logging.getLogger(__name__)
 
 
 async def _fetch_active_event(npc_id: str, pc_id: str) -> dict | None:
@@ -81,7 +84,7 @@ Return ONLY valid JSON with factual Event text only. Do not add speculation, emo
         if isinstance(result, dict):
             return result
     except Exception as e:
-        print(f"[EventAccum] 압축 실패 (무시): {e}")
+        logger.warning(f"[EventAccum] 압축 실패 (무시): {e}", exc_info=True)
     return {}
 
 
@@ -331,7 +334,7 @@ async def _create_event(
         try:
             embedding = await embed_async(summary)
         except Exception as e:
-            print(f"[Updater] 임베딩 생성 실패 (무시): {e}")
+            logger.warning(f"[Updater] 임베딩 생성 실패 (무시): {e}", exc_info=True)
 
     content = actor_response[:3000] if actor_response else ""
 
@@ -452,7 +455,7 @@ Return ONLY JSON: {{"summary": "..."}}"""
             )
         print(f"[RelationshipNarrative] {npc_id}↔{pc_id} 갱신 완료")
     except Exception as e:
-        print(f"[RelationshipNarrative] 갱신 실패 (무시): {e}")
+        logger.warning(f"[RelationshipNarrative] 갱신 실패 (무시): {e}", exc_info=True)
 
 
 async def delegate_complex_update(
@@ -484,7 +487,7 @@ async def delegate_complex_update(
             )
             participant_ids = [pc_id, npc_id, *resolved_ids]
         except Exception as e:
-            print(f"[WorldBuilder] resolve 실패 (무시): {e}")
+            logger.warning(f"[WorldBuilder] resolve 실패 (무시): {e}", exc_info=True)
 
     plan = await _generate_event_plan(
         input_text      = actor_response,
@@ -514,4 +517,4 @@ async def delegate_complex_update(
                 primary_pair=(npc_id, pc_id),
             )
         except Exception as e:
-            print(f"[WorldBuilder] resolve 실패 (무시): {e}")
+            logger.warning(f"[WorldBuilder] resolve 실패 (무시): {e}", exc_info=True)

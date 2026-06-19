@@ -15,7 +15,8 @@
 #   - _build_conservative_stub_profile(name_kor: str, main_npc_id: str, source_text: str = "", world_config: dict | None = None) -> dict : Build a transient stub from evidence and plausible defaults
 #   - _increment_appearance(char_id: str) -> None : Increment appearance_count
 #   - _link_to_event(char_id: str, event_id: str) -> None : Link a character to an event
-#   - _kor_to_roman_id(name_kor: str) -> str : Hash-based fallback romanization for Korean names
+#   - _romanize_hangul(text: str) -> str : Transliterate Hangul syllables to Roman (Revised Romanization approx.)
+#   - _kor_to_roman_id(name_kor: str) -> str : Build a name-shaped char_id from a Korean name (e.g. '민지' → 'minji')
 # ================================
 import hashlib
 import json
@@ -61,6 +62,11 @@ _SAME_SURNAME_ROLE_SET: frozenset[str] = frozenset({
     "\uc544\ube60",
     "\ud560\uc544\ubc84\uc9c0",
 })
+# family 로 태그할 호칭. 성 공유 여부와 무관하다 — 엄마/어머니는 다른 성이지만 가족이다.
+_FAMILY_ROLE_SET: frozenset[str] = _SAME_SURNAME_ROLE_SET | frozenset({
+    "엄마", "어머니", "할머니",
+})
+
 _FALLBACK_GIVEN_NAMES: tuple[str, ...] = (
     "\ub3c4\uc724",
     "\uc11c\uc900",
@@ -182,14 +188,44 @@ def _resolve_identity(name: str, known: dict[str, str]) -> str | None:
     return None
 
 
+# 한글 음절 → 로마자(개정 로마자 표기 근사치). char_id 가독성용 — 음절 블록을
+# 초성/중성/종성으로 분해해 매핑한다. 충돌은 _unique_char_id 가 처리한다.
+_HANGUL_BASE = 0xAC00
+_HANGUL_INITIALS = [
+    "g", "kk", "n", "d", "tt", "r", "m", "b", "pp",
+    "s", "ss", "", "j", "jj", "ch", "k", "t", "p", "h",
+]
+_HANGUL_MEDIALS = [
+    "a", "ae", "ya", "yae", "eo", "e", "yeo", "ye", "o", "wa", "wae",
+    "oe", "yo", "u", "wo", "we", "wi", "yu", "eu", "ui", "i",
+]
+_HANGUL_FINALS = [
+    "", "k", "k", "k", "n", "n", "n", "t", "l", "k", "m", "l", "l", "l",
+    "p", "l", "m", "p", "p", "t", "t", "ng", "t", "t", "k", "t", "p", "t",
+]
+
+
+def _romanize_hangul(text: str) -> str:
+    """한글 음절을 개정 로마자 근사치로 변환. 영숫자는 소문자로 유지, 그 외는 버린다."""
+    out: list[str] = []
+    for ch in text:
+        code = ord(ch) - _HANGUL_BASE
+        if 0 <= code < 11172:
+            out.append(_HANGUL_INITIALS[code // 588])
+            out.append(_HANGUL_MEDIALS[(code % 588) // 28])
+            out.append(_HANGUL_FINALS[code % 28])
+        elif ch.isascii() and ch.isalnum():
+            out.append(ch.lower())
+    return "".join(out)
+
+
 def _kor_to_roman_id(name_kor: str) -> str:
-    """한국어 이름에서 타임스탬프 기반 영문 char_id를 생성한다."""
-    ts   = datetime.now().strftime("%m%d%H%M%S")
-    safe = re.sub(r'[^a-z0-9]', '', name_kor.encode('ascii', 'ignore').decode())
-    if not safe:
-        safe = "npc"
-    name_hash = hashlib.sha1(name_kor.encode("utf-8")).hexdigest()[:8]
-    return f"{safe}_{name_hash}_{ts}"
+    """한국어 이름을 사람 이름 형태의 char_id 로 변환한다(예: '민지' → 'minji').
+
+    난수/타임스탬프 없이 이름 자체를 쓰고, 중복은 _unique_char_id 가 _2, _3 … 으로
+    해소한다. 한글이 전혀 없으면 마지막 안전장치로 'npc' 를 쓴다.
+    """
+    return _romanize_hangul(name_kor) or "npc"
 
 
 async def _unique_char_id(base_id: str) -> str:
@@ -507,6 +543,18 @@ _SAME_SURNAME_ROLES: frozenset[str] = frozenset({
 })
 
 
+async def _primary_name_for_id(char_id: str) -> str:
+    """char_id 로 캐릭터의 대표 이름을 반환한다. 없으면 빈 문자열."""
+    if not char_id:
+        return ""
+    async with async_driver.session() as session:
+        rec = await session.run(
+            "MATCH (c:Character {id: $cid}) RETURN c.name AS name", cid=char_id
+        )
+        row = await rec.single()
+    return str(row["name"]) if row and row["name"] else ""
+
+
 async def _lookup_surname(name_part: str) -> str:
     """이름 일부로 캐릭터를 찾아 성(첫 글자)을 반환한다. 없으면 빈 문자열."""
     async with async_driver.session() as session:
@@ -628,6 +676,32 @@ def _fallback_given_name(seed_text: str) -> str:
     """Pick a deterministic Korean given name from the descriptor."""
     digest = hashlib.sha1(seed_text.encode("utf-8")).digest()[0]
     return _FALLBACK_GIVEN_NAMES[digest % len(_FALLBACK_GIVEN_NAMES)]
+
+
+_SURNAME_POOL: tuple[str, ...] = tuple(_KOREAN_SURNAME_ROMAN.keys())
+
+# 소유자가 특정되지 않는 일반 역할/직업 호칭. 이름 대신 등장하면 임의의 실제 이름을 만든다.
+_GENERIC_ROLE_TOKENS: frozenset[str] = frozenset({
+    "학생", "여학생", "남학생", "선생님", "교수님", "직원", "종업원", "점원",
+    "알바", "아르바이트", "사장", "점장", "손님", "동료", "동급생", "의사",
+    "간호사", "사서", "코치", "감독", "경호원", "운전기사", "담당", "관리자",
+})
+
+
+def _alt_surname(seed_text: str, exclude: str = "") -> str:
+    """소유자와 다른 성을 결정론적으로 고른다(예: 엄마는 자식과 다른 성)."""
+    pool = [s for s in _SURNAME_POOL if s != exclude] or list(_SURNAME_POOL)
+    digest = hashlib.sha1(seed_text.encode("utf-8")).digest()[1]
+    return pool[digest % len(pool)]
+
+
+def _compose_name(surname: str, seed_text: str) -> tuple[str, str]:
+    """성 + 결정론적 이름으로 (한글 이름, 로마자 id base) 쌍을 만든다."""
+    given = _fallback_given_name(seed_text)
+    surname_roman = _KOREAN_SURNAME_ROMAN.get(surname[0] if surname else "김", "kim")
+    digest = hashlib.sha1(seed_text.encode("utf-8")).digest()[0]
+    given_roman = _FALLBACK_GIVEN_NAMES_ROMAN[digest % len(_FALLBACK_GIVEN_NAMES_ROMAN)]
+    return f"{surname}{given}", f"{surname_roman}_{given_roman}"
 
 
 def _sentence_snippets_for_name(source_text: str, name_kor: str) -> list[str]:
@@ -795,6 +869,13 @@ async def _build_conservative_stub_profile(
 ) -> dict:
     """Build a transient NPC stub from observed text, filling unknowns plausibly."""
     parsed = _parse_relation_descriptor(name_kor)
+    # 소유격 없이 호칭만 등장한 경우(예: '아빠','엄마') → 현재 메인 NPC의 가족으로 간주하고
+    # 그 인물을 소유자로 삼아 이름을 생성한다. 부계 호칭(아빠/형 등)은 같은 성을 쓰고,
+    # 엄마/어머니는 _SAME_SURNAME_ROLE_SET 에서 빠져 있어 자연히 다른 성이 부여된다.
+    if parsed is None and _KINSHIP_DESCRIPTOR_RE.fullmatch(str(name_kor or "")):
+        owner_name = await _primary_name_for_id(main_npc_id)
+        if owner_name:
+            parsed = (owner_name, name_kor)
     related_to, role = parsed if parsed else ("", name_kor)
     snippets = _sentence_snippets_for_name(source_text, name_kor)
     observed_context = " / ".join(snippets[:2])
@@ -805,14 +886,21 @@ async def _build_conservative_stub_profile(
         if role in _SAME_SURNAME_ROLE_SET:
             surname = await _lookup_surname(related_to)
         if not surname:
-            surname = "\uae40"
+            # \uac19\uc740 \uc131\uc774 \uc544\ub2cc \ud638\uce6d(\uc5c4\ub9c8/\uc5b4\uba38\ub2c8 \ub4f1)\uc740 \uc18c\uc720\uc790\uc640 \ub2e4\ub978 \uc131\uc744 \ubd80\uc5ec\ud55c\ub2e4.
+            owner_surname = related_to[0] if related_to and "\uac00" <= related_to[0] <= "\ud7a3" else ""
+            surname = _alt_surname(name_kor, owner_surname)
         generated_name = f"{surname}{_fallback_given_name(name_kor)}"
         surname_roman = _KOREAN_SURNAME_ROMAN.get(surname[0] if surname else "\uae40", "kim")
         digest = hashlib.sha1(name_kor.encode("utf-8")).digest()[0]
         given_roman = _FALLBACK_GIVEN_NAMES_ROMAN[digest % len(_FALLBACK_GIVEN_NAMES_ROMAN)]
         name_roman = f"{surname_roman}_{given_roman}"
         context = f"{related_to}의 {role} 관계로 언급되어 처음 인식된 인물."
-        relation_type = "family" if role in _SAME_SURNAME_ROLE_SET else "acquaintance"
+        relation_type = "family" if role in _FAMILY_ROLE_SET else "acquaintance"
+    elif name_kor in _GENERIC_ROLE_TOKENS:
+        # 소유자 없는 일반 역할 호칭(여학생/선생님 등)은 임의의 실제 이름을 생성한다.
+        generated_name, name_roman = _compose_name(_alt_surname(name_kor), name_kor)
+        context = f"'{name_kor}' role; first appearance."
+        relation_type = "acquaintance"
     else:
         generated_name = name_kor
         name_roman = _kor_to_roman_id(name_kor)

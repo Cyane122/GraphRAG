@@ -4,6 +4,7 @@
 # Write prompt and turn-debug snapshots during Actor execution.
 #
 # Functions
+#   - write_actor_raw_snapshot(full_response: str, raw_thinking: str, visible_text: str, logs_dir: Path, debug_dir: str | None = None) -> None : Save latest Actor raw outputs
 #   - write_turn_debug_snapshot(user_input: str, fixed_prompt: str, genre_prompt: str, dynamic_prompt: str, scene_types: list[str], manager_effects: dict, history: list[dict], world_id: str, pc_id: str, npc_id: str, npc_name: str, logs_dir: Path, turn_debug_dir: Path, actor_model: str | None = None) -> str | None : Save a turn debug snapshot
 # ================================
 import json
@@ -15,6 +16,33 @@ from src.core.logging.prompt_debug import (
     build_prompt_fingerprint,
     format_prompt_fingerprint,
 )
+
+
+def write_actor_raw_snapshot(
+    full_response: str,
+    raw_thinking: str,
+    visible_text: str,
+    logs_dir: Path,
+    debug_dir: str | None = None,
+) -> None:
+    """Save the latest raw Actor full/thinking/visible outputs."""
+    files = {
+        "raw_full.txt": full_response or "",
+        "raw_thinking.txt": raw_thinking or "",
+        "raw_output.txt": visible_text or "",
+    }
+    try:
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        for name, content in files.items():
+            (logs_dir / name).write_text(content, encoding="utf-8")
+
+        if debug_dir:
+            turn_dir = Path(debug_dir)
+            turn_dir.mkdir(parents=True, exist_ok=True)
+            for name, content in files.items():
+                (turn_dir / name).write_text(content, encoding="utf-8")
+    except OSError as e:
+        print(f"[TurnDebug] raw output save failed: {e}")
 
 
 def write_turn_debug_snapshot(

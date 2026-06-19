@@ -11,10 +11,13 @@
 
 import asyncio
 import json
+import logging
 from typing import Any
 
 from src.config import MODEL_COMPLEX_UPDATER as COMPLEX_MODEL
 from src.core.database import async_driver, update_dynamic_information
+
+logger = logging.getLogger(__name__)
 
 
 async def _fetch_dynamic_information(char_id: str) -> dict[str, Any]:
@@ -155,7 +158,7 @@ Scene:
         try:
             response = await model.generate_content_async(prompt, generation_config=_gen_cfg)
         except TimeoutError:
-            print(f"[DynamicInformationUpdater] timeout (attempt {attempt + 1})")
+            logger.warning(f"[DynamicInformationUpdater] timeout (attempt {attempt + 1})")
             return {}
 
         raw_text = get_response_text(response)
@@ -267,7 +270,7 @@ Scene:
         try:
             response = await model.generate_content_async(prompt, generation_config=_gen_cfg)
         except TimeoutError:
-            print(f"[DynamicInformationUpdater] timeout (attempt {attempt + 1})")
+            logger.warning(f"[DynamicInformationUpdater] timeout (attempt {attempt + 1})")
             return {}
         raw_text = get_response_text(response)
         if raw_text.strip():
@@ -323,7 +326,7 @@ async def apply_multi_character_dynamic_information_updates(
     try:
         updates_by_char = await _run_multi_char_dynamic_info_update(actor_response, npcs, scene_context)
     except Exception as exc:
-        print(f"[DynamicInformationUpdater] multi-char update failed and ignored: {exc}")
+        logger.warning(f"[DynamicInformationUpdater] multi-char update failed and ignored: {exc}", exc_info=True)
         return {}
 
     allowed_ids = {npc["char_id"] for npc in npcs}

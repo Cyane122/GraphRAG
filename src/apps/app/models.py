@@ -15,6 +15,9 @@
 #   - OocConfigRequest : Request body for updating thread OOC config.
 #   - UserNoteCreateRequest : Request body for creating a usernote.
 #   - UserNoteUpdateRequest : Request body for updating a usernote.
+#   - AppSettingsRequest : Request body for updating app-wide settings.
+#   - ForcePregnancyRequest : Request body for forcing a pregnancy (mother + optional father).
+#   - SimulatePregnancyRequest : Request body for simulating N internal ejaculations.
 #
 # Functions
 #   - normalize_actor_model(model_name: str | None) -> str : Return a supported Actor model id.
@@ -165,3 +168,24 @@ class UserNoteUpdateRequest(BaseModel):
     name: str | None = None
     content: str | None = None
     enabled: bool | None = None
+
+
+class AppSettingsRequest(BaseModel):
+    """Request body for updating app-wide settings (partial update)."""
+
+    output_repair_enabled: bool | None = None
+
+
+class ForcePregnancyRequest(BaseModel):
+    """Request body for forcing a pregnancy (mother conceives by father)."""
+
+    mother_id: str
+    father_id: str | None = None
+
+
+class SimulatePregnancyRequest(BaseModel):
+    """Request body for simulating N internal ejaculations and applying conception."""
+
+    mother_id: str
+    father_id: str | None = None
+    shots: int = Field(default=1, ge=1, le=999)

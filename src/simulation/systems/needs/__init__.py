@@ -60,7 +60,7 @@ async def run_needs_update(
 
     # 지연 import: agents.resolver가 needs 상수를 import하므로, 모듈 로드 시점에 맞물리면
     # 순환 import가 된다. 실제 사용 시점에 가져와 사이클을 끊는다.
-    from src.agents.resolver import _fetch_valid_locations, resolve_action
+    from src.agents.resolver import _fetch_valid_locations
 
     _scene_set = set(scene_chars or [])
     npcs = await _fetch_all_npcs(exclude_id=pc_id)
@@ -235,6 +235,9 @@ async def _resolve_autonomous_need(
     extra_context: str = "",
 ) -> dict | None:
     """욕구별 장소 후보를 제한해 자율 행동 이벤트를 만들고, 필요하면 실제 위치를 이동합니다."""
+    # 지연 import: agents.resolver ↔ needs 순환을 끊기 위해 호출 시점에 가져온다.
+    from src.agents.resolver import resolve_action
+
     candidates = filter_locations_for_need(need_name, current_location_id, valid_locations)
     if not candidates:
         return None

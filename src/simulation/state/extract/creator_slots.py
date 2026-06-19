@@ -12,11 +12,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from typing import Any
 
 from src.config import MODEL_COMPLEX_UPDATER as COMPLEX_MODEL
 from src.core.database import async_driver
+
+logger = logging.getLogger(__name__)
 
 
 _DEFAULT_TRIGGERS: tuple[str, ...] = (
@@ -274,7 +277,7 @@ Scene:
         try:
             response = await model.generate_content_async(prompt, generation_config=generation_config)
         except TimeoutError:
-            print(f"[DynamicSlotUpdater] timeout (attempt {attempt + 1})")
+            logger.warning(f"[DynamicSlotUpdater] timeout (attempt {attempt + 1})")
             return {}
         raw_text = get_response_text(response)
         if raw_text.strip():
@@ -344,7 +347,7 @@ async def apply_creator_slot_updates(
     try:
         updates_by_char = await _run_dynamic_slot_update(actor_response, rows)
     except Exception as exc:
-        print(f"[DynamicSlotUpdater] update failed and ignored: {exc}")
+        logger.warning(f"[DynamicSlotUpdater] update failed and ignored: {exc}", exc_info=True)
         return {}
 
     rows_by_char_slot = {

@@ -11,12 +11,15 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 from src.config import MODEL_PRO_UPDATER as PRO_MODEL
 from src.core.database import async_driver, update_relationship_fields
+
+logger = logging.getLogger(__name__)
 
 
 _AFFINITY_STEP_CAP = 2  # milestone 구분 없음 — affinity는 항상 소폭 상한
@@ -216,7 +219,7 @@ Scene:
             },
         )
     except TimeoutError:
-        print("[RelationshipUpdater] timeout")
+        logger.warning("[RelationshipUpdater] timeout")
         return RelationshipUpdatePlan()
 
     raw_plan = extract_json_from_llm(response.text, source="relationship_updater")
@@ -297,7 +300,7 @@ async def apply_scene_relationship_updates(
     try:
         plan = await _run_relationship_update(actor_response, targets)
     except Exception as exc:
-        print(f"[RelationshipUpdater] failed and ignored: {exc}")
+        logger.warning(f"[RelationshipUpdater] failed and ignored: {exc}", exc_info=True)
         return []
 
     applied: list[dict[str, Any]] = []

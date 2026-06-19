@@ -19,7 +19,7 @@ import time
 from collections.abc import AsyncIterator
 from time import perf_counter
 
-from anthropic import AsyncAnthropic
+from anthropic import APIStatusError, AsyncAnthropic, AsyncAnthropicVertex, RateLimitError
 from google.genai import types
 
 from src.config import (
@@ -29,20 +29,39 @@ from src.config import (
     ANTHROPIC_CLAUDE_OPUS_4_8_MODEL,
     ANTHROPIC_CLAUDE_OPUS_MODEL,
     ANTHROPIC_CLAUDE_SONNET_MODEL,
+    ANTHROPIC_VERTEX_REGION,
+    GOOGLE_PROJECT_ID,
 )
 from src.core.llm.client import record_llm_latency
 
 _anthropic_client: AsyncAnthropic | None = None
+_anthropic_vertex_client: AsyncAnthropicVertex | None = None
 
 
 def _get_anthropic_client() -> AsyncAnthropic:
-    """Return the module-level Anthropic client, creating it on first use."""
+    """Return the module-level direct Anthropic client, creating it on first use."""
     global _anthropic_client
     if _anthropic_client is None:
         if not ANTHROPIC_API_KEY:
             raise RuntimeError("ANTHROPIC_API_KEY is required for Claude actor models.")
         _anthropic_client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
     return _anthropic_client
+
+
+def _get_anthropic_vertex_client() -> AsyncAnthropicVertex:
+    """Return the module-level Claude-on-Vertex client, creating it on first use.
+
+    Vertex는 ADC(GOOGLE_APPLICATION_CREDENTIALS)로 인증한다 — 별도 키 불필요.
+    """
+    global _anthropic_vertex_client
+    if _anthropic_vertex_client is None:
+        if not GOOGLE_PROJECT_ID:
+            raise RuntimeError("GOOGLE_PROJECT_ID is required for Claude on Vertex AI.")
+        _anthropic_vertex_client = AsyncAnthropicVertex(
+            project_id=GOOGLE_PROJECT_ID,
+            region=ANTHROPIC_VERTEX_REGION,
+        )
+    return _anthropic_vertex_client
 
 
 _HEADER_HOUR_RE = re.compile(
@@ -142,7 +161,7 @@ def _is_claude_model(model_name: str) -> bool:
 
 
 def _resolve_claude_model_name(model_name: str) -> str:
-    """Map UI Claude ids to the configured Anthropic model ids."""
+    """Map UI Claude ids to the configured direct Anthropic model ids."""
     lowered = model_name.lower()
     if "opus-4-6" in lowered:
         return ANTHROPIC_CLAUDE_OPUS_4_6_MODEL
@@ -155,6 +174,29 @@ def _resolve_claude_model_name(model_name: str) -> str:
     if "sonnet" in lowered:
         return ANTHROPIC_CLAUDE_SONNET_MODEL
     return model_name
+
+
+def _claude_sampling_kwargs(resolved_model: str) -> dict:
+    """Return sampling params accepted by the resolved model.
+
+    Opus 4.7/4.8·Fable은 temperature/top_p/top_k를 보내면 400을 반환하므로 제외한다.
+    그 외(Opus 4.6·Sonnet 4.6 등)는 롤플레이 다양성을 위해 temperature=1.0을 유지한다.
+    """
+    lowered = resolved_model.lower()
+    if "opus-4-7" in lowered or "opus-4-8" in lowered or "fable" in lowered:
+        return {}
+    return {"temperature": 1.0}
+
+
+def _is_quota_error(exc: Exception) -> bool:
+    """Vertex 호출이 비용/쿼터/빌링 문제로 실패했는지 판단한다(폴백 트리거).
+
+    429(쿼터 소진)·403(빌링 비활성/권한 거부)을 폴백 대상으로 본다.
+    404(모델 ID 오설정)는 폴백하지 않고 그대로 전파해 설정 오류를 드러낸다.
+    """
+    if isinstance(exc, RateLimitError):
+        return True
+    return isinstance(exc, APIStatusError) and exc.status_code in (403, 429)
 
 
 def _gemini_messages(dynamic_prompt: str, history: list[dict]) -> list[dict]:
@@ -171,15 +213,45 @@ def _gemini_messages(dynamic_prompt: str, history: list[dict]) -> list[dict]:
     return messages
 
 
+def _claude_system_blocks(fixed_prompt: str, genre_prompt: str) -> list[dict]:
+    """Build Anthropic system blocks with cache breakpoints on the stable prefix.
+
+    Fixed는 턴 간 불변이라 항상 캐시 히트하고, Genre는 씬 타입별로 교체되므로
+    별도 breakpoint를 둔다(씬이 바뀌어도 Fixed 블록 prefix는 계속 히트).
+    cache_control이 없으면 Anthropic은 프롬프트 캐싱을 전혀 하지 않는다.
+    """
+    blocks: list[dict] = [
+        {"type": "text", "text": fixed_prompt, "cache_control": {"type": "ephemeral"}}
+    ]
+    if genre_prompt:
+        blocks.append(
+            {"type": "text", "text": genre_prompt, "cache_control": {"type": "ephemeral"}}
+        )
+    return blocks
+
+
 def _claude_messages(dynamic_prompt: str, history: list[dict]) -> list[dict]:
-    """Build Anthropic messages ending with a user turn."""
-    messages = [
+    """Build Anthropic messages ending with a user turn.
+
+    history 마지막 메시지에 cache breakpoint를 둬 턴 간 대화 prefix를 재사용한다.
+    현재 턴(dynamic_prompt)은 매 턴 달라지는 volatile 부분이라 breakpoint 없음.
+    """
+    messages: list[dict] = [
         {
             "role": "assistant" if msg["role"] == "assistant" else "user",
             "content": str(msg["content"]),
         }
         for msg in history
     ]
+    if messages:
+        last = messages[-1]
+        last["content"] = [
+            {
+                "type": "text",
+                "text": last["content"],
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
     messages.append({
         "role": "user",
         "content": f"{dynamic_prompt}\n\nBegin your response with {_PROVIDER_PREFILL}.",
@@ -221,22 +293,50 @@ async def _stream_gemini_text_chunks(
         print(f"[ActorStream] Gemini 응답이 토큰 한도로 잘렸습니다 (finish_reason={finish_reason}).")
 
 
+async def _open_claude_stream(
+    system_blocks: list[dict],
+    messages: list[dict],
+    model_name: str,
+    max_token: int,
+):
+    """Open a Claude stream on Vertex first; fall back to the direct API on quota errors.
+
+    스트림은 await 시점(첫 토큰 전)에 HTTP 요청을 보내므로 비용/쿼터 실패는 여기서 잡혀
+    아직 토큰이 흐르기 전에 다이렉트 API로 폴백할 수 있다.
+    Vertex와 다이렉트 API의 모델 ID는 4.6+/Sonnet 4.6에서 동일해 같은 문자열을 쓴다.
+    """
+    resolved = _resolve_claude_model_name(model_name)
+    kwargs = dict(
+        model=resolved,
+        max_tokens=max_token,
+        system=system_blocks,
+        messages=messages,
+        stream=True,
+        **_claude_sampling_kwargs(resolved),
+    )
+    try:
+        return await _get_anthropic_vertex_client().messages.create(**kwargs)
+    except Exception as exc:
+        if not _is_quota_error(exc):
+            raise
+        print(f"[ActorStream] Vertex Claude 호출이 비용/쿼터/빌링 한도로 실패 → 다이렉트 API로 폴백 ({exc}).")
+        return await _get_anthropic_client().messages.create(**kwargs)
+
+
 async def _stream_claude_text_chunks(
-    system_text: str,
+    fixed_prompt: str,
+    genre_prompt: str,
     dynamic_prompt: str,
     history: list[dict],
     model_name: str,
     max_token: int,
 ) -> AsyncIterator[str]:
     """Yield text chunks from Claude through Anthropic streaming."""
-    client = _get_anthropic_client()
-    stream = await client.messages.create(
-        model=_resolve_claude_model_name(model_name),
-        max_tokens=max_token,
-        temperature=1.0,
-        system=system_text,
-        messages=_claude_messages(dynamic_prompt, history),
-        stream=True,
+    stream = await _open_claude_stream(
+        _claude_system_blocks(fixed_prompt, genre_prompt),
+        _claude_messages(dynamic_prompt, history),
+        model_name,
+        max_token,
     )
     stop_reason = None
     async for event in stream:
@@ -277,7 +377,9 @@ async def _stream_actor_text_chunks(
             yield text
         return
     if _is_claude_model(model_name):
-        async for text in _stream_claude_text_chunks(system_text, dynamic_prompt, history, model_name, max_token):
+        async for text in _stream_claude_text_chunks(
+            fixed_prompt, genre_prompt, dynamic_prompt, history, model_name, max_token
+        ):
             yield text
         return
     raise ValueError(f"Unsupported actor model: {model_name}")

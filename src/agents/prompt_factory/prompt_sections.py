@@ -320,6 +320,7 @@ Close </analyze>, then IMMEDIATELY write the Korean prose scene. The scene is ma
 SCENE: [1 sentence]
 CHARACTERS: [physically present or directly active women first, then other present characters; full-name JSON array; include up to 15]
 STATE: {{state_line}}
+{{cycle_line}}
 EMOTION: Lv[1–10]. Hot→[body:verb]. Cold→[body:verb]. Same axis last turn? [yes→switch/no]
 TONE: {user}=[word]. output=[word]. match=[yes/no]
 CUT: last line=[env/body/action/sfx]. resolved=[yes/no]
@@ -500,6 +501,7 @@ SCENE: [1 sentence]
 CHARACTERS: [physically present or directly active women first, then other present characters; full-name JSON array; include up to 15]
 CHOREOGRAPHY: [목록에 있는 각 캐릭터들이 이 턴에서 보여줄 짧은 행동이나 대사 계획을 각각 10자 내외로 작성]
 STATE: {{state_line}}
+{{cycle_line}}
 CURRENT_POV: {{current_pov_line}}
 EMOTION: Lv[1–10]. Hot→[body:verb]. Cold→[body:verb]. Same axis last turn? [yes→switch/no]
 TONE: {user}=[word]. output=[word]. match=[yes/no]

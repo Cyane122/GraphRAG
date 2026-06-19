@@ -191,13 +191,10 @@ def _render_numeric_state_block(dynamic_state: dict, budget: int) -> str:
     if stress is not None:
         lines.append(f"- stress: {_format_number(stress)} ({_stress_band(stress)})")
 
-    need_parts = []
-    for key in ("hunger", "rest", "social", "fun", "safety", "libido"):
-        value = _as_float(dynamic_state.get(key))
-        if value is not None:
-            need_parts.append(f"{key}={_need_band(value)}")
-    if need_parts:
-        lines.append(f"- needs: {', '.join(need_parts)}")
+    # 욕구 수치(hunger/rest/libido…)는 NeedsState 노드에 저장되며 char_data.dynamic_state에는
+    # 실리지 않는다. 욕구는 오버플로우 순간에만 personality로 분기된 행동 힌트
+    # (scene_need_hints / libido_hints)로 노출하는 것이 설계 의도이므로, 여기서 상시 수치
+    # 밴드로 서술하지 않는다.
 
     if len(lines) == 1:
         return ""
@@ -556,18 +553,6 @@ def _mood_band(mood: str) -> str:
     if lowered in tired:
         return "depleted"
     return "neutral"
-
-
-def _need_band(value: float) -> str:
-    """Map need values to urgency bands."""
-    normalized = value * 100 if 0 <= value <= 1 else _clamp_percent(value)
-    if normalized < 30:
-        return "settled"
-    if normalized < 60:
-        return "noticeable"
-    if normalized < 80:
-        return "pressing"
-    return "urgent"
 
 
 def _percent_band(value: float, low: str, mid: str, high: str, very_high: str, maxed: str) -> str:

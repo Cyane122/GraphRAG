@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from typing import Any
 
@@ -29,6 +30,8 @@ from src.core.database import (
     update_dynamic_state,
 )
 from src.simulation.state.apply.audit import _audit_state_updates, _sanitize_stress_level
+
+logger = logging.getLogger(__name__)
 
 
 _CLOTHING_TERMS_RE = (
@@ -454,7 +457,7 @@ Scene:
             },
         )
     except TimeoutError:
-        print("[MultiStateUpdater] timeout")
+        logger.warning("[MultiStateUpdater] timeout")
         return MultiCharacterStatePlan()
 
     raw_plan = extract_json_from_llm(response.text, source="multi_state_updater")
@@ -512,7 +515,7 @@ async def apply_multi_character_state_updates(
     try:
         plan = await _run_multi_character_state_update(actor_response, targets, world_config)
     except Exception as exc:
-        print(f"[MultiStateUpdater] failed and ignored: {exc}")
+        logger.warning(f"[MultiStateUpdater] failed and ignored: {exc}", exc_info=True)
         return []
     if not plan.character_updates and not plan.exited_character_ids:
         print(

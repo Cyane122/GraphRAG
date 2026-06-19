@@ -121,14 +121,26 @@ Return ONLY JSON:
             "habit_when_thinking": personality_data.get("habit_when_thinking", ""),
             "sample_line":         personality_data.get("sample_line", ""),
         }, ensure_ascii=False)
-        await session.run("""
-            MATCH (c:Character {id: $cid})
-            CREATE (c)-[:HAS_PERSONALITY]->(:Personality {id: $pid, props: $props_json})
+        # 스텁 생성 시 이미 Personality 노드가 있음(graph.py _create_stub) →
+        # 승격 시에는 CREATE가 아니라 기존 노드의 props를 LLM 생성본으로 갱신.
+        # 혹시 누락된 경우를 대비해 없으면 새로 만든다.
+        upd = await session.run("""
+            MATCH (c:Character {id: $cid})-[:HAS_PERSONALITY]->(p:Personality)
+            SET p.props = $props_json
+            RETURN p.id AS pid
         """,
             cid        = char_id,
-            pid        = f"{char_id}_personality",
             props_json = personality_json,
         )
+        if not await upd.single():
+            await session.run("""
+                MATCH (c:Character {id: $cid})
+                CREATE (c)-[:HAS_PERSONALITY]->(:Personality {id: $pid, props: $props_json})
+            """,
+                cid        = char_id,
+                pid        = f"{char_id}_personality",
+                props_json = personality_json,
+            )
 
         await session.run("""
             MATCH (c:Character {id: $cid})

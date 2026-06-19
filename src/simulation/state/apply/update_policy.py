@@ -12,16 +12,8 @@
 
 from __future__ import annotations
 
-import re
-
 from src.simulation.state.extract.creator_slots import has_dynamic_slot_signal
-
-
-_ORGANIC_SIGNAL_RE = re.compile(
-    r"(질내사정|안에\s*(?:싸|쌌|사정)|속에\s*(?:싸|쌌|사정)|"
-    r"콘돔\s*(?:찢|터지|파열)|안에\s*싸도|came\s+inside|cum(?:med)?\s+inside|condom\s*(?:broke|split|tore))",
-    re.IGNORECASE,
-)
+from src.simulation.systems.world_dynamics.organic import has_pregnancy_risk_signal
 
 
 def _safe_importance(context_plan: dict | None) -> int:
@@ -43,8 +35,13 @@ def _query_focus(context_plan: dict | None) -> set[str]:
 
 
 def _has_organic_signal(actor_response: str) -> bool:
-    """Return whether the response contains pregnancy-system routing signals."""
-    return bool(_ORGANIC_SIGNAL_RE.search(actor_response or ""))
+    """Return whether the response contains pregnancy-system routing signals.
+
+    임신 감지기(_EJAC_RE)와 동일 기준을 재사용한다. 과거엔 더 좁은 별도 정규식을 써서,
+    intimate/physical로 분류되지 않은 씬의 일부 사정 표현(예: '정액을 쏟았다', 'filled her womb')에서
+    게이트가 안 열려 process_ejaculation이 호출되지 않던 문제가 있었다.
+    """
+    return has_pregnancy_risk_signal(actor_response)
 
 
 def has_event_signal(

@@ -21,6 +21,7 @@
 # ================================
 import asyncio
 import json
+import logging
 import re
 from datetime import datetime
 from pathlib import Path
@@ -79,6 +80,8 @@ from src.simulation.state.apply.update_policy import (
 )
 from src.simulation.state.extract.primary import _run_primary_update
 
+logger = logging.getLogger(__name__)
+
 
 # Primary and auxiliary LLM workers for accepted response updates.
 
@@ -114,7 +117,7 @@ async def _run_auxiliary_character_updates(
     labels = ("multi-character state", "dynamic information", "creator slots")
     for label, result in zip(labels, results):
         if isinstance(result, Exception):
-            print(f"[StateUpdater] auxiliary {label} update failed (ignored): {result}")
+            logger.warning(f"[StateUpdater] auxiliary {label} update failed (ignored): {result}", exc_info=result)
 
 
 async def _await_relationship_task(relationship_task) -> None:
@@ -128,7 +131,7 @@ async def _await_relationship_task(relationship_task) -> None:
     try:
         await relationship_task
     except Exception as e:
-        print(f"[RelationshipUpdater] secondary update failed (ignored): {e}")
+        logger.warning(f"[RelationshipUpdater] secondary update failed (ignored): {e}", exc_info=True)
 
 
 def _should_run_auxiliary_character_updates_with_log(
@@ -201,7 +204,7 @@ def _write_updater_diff_snapshot(
             encoding="utf-8",
         )
     except OSError as e:
-        print(f"[StateAudit] updater_diff 저장 실패: {e}")
+        logger.warning(f"[StateAudit] updater_diff 저장 실패: {e}", exc_info=True)
 
 
 def _fmt_state_diff(state_candidates: list[dict]) -> str:
@@ -376,13 +379,13 @@ async def process_actor_response(
             )
             participant_ids = list(dict.fromkeys([pc_id, npc_id, *resolved_ids]))
         except Exception as e:
-            print(f"[WorldBuilder] early resolve failed (ignored): {e}")
+            logger.warning(f"[WorldBuilder] early resolve failed (ignored): {e}", exc_info=True)
 
     if npc_id != pc_id:
         try:
             await ensure_scene_relationships(participant_ids)
         except Exception as e:
-            print(f"[RelationshipUpdater] primary relationship ensure failed (ignored): {e}")
+            logger.warning(f"[RelationshipUpdater] primary relationship ensure failed (ignored): {e}", exc_info=True)
 
     event_owner_id = _select_event_owner_id(npc_id, pc_id, participant_ids)
 
@@ -392,7 +395,7 @@ async def process_actor_response(
         try:
             active_event = await _fetch_active_event(event_owner_id, pc_id)
         except Exception as _ae_err:
-            print(f"[EventAccum] active_event fetch failed (ignored): {_ae_err}")
+            logger.warning(f"[EventAccum] active_event fetch failed (ignored): {_ae_err}", exc_info=True)
 
     event_allowed = bool(event_owner_id) and has_event_signal(
         actor_response,
@@ -489,7 +492,7 @@ async def process_actor_response(
             if state:
                 await update_dynamic_state(npc_id, state)
         except Exception as e:
-            print(f"[StateUpdater] NPC=PC DynamicState update failed (continuing): {e}")
+            logger.warning(f"[StateUpdater] NPC=PC DynamicState update failed (continuing): {e}", exc_info=True)
         if event_allowed and event_owner_id:
             try:
                 event_plan = await _run_primary_update(
@@ -517,7 +520,7 @@ async def process_actor_response(
                         commit_id=commit_id or "",
                     )
             except Exception as e:
-                print(f"[StateUpdater] NPC=PC event update failed (continuing): {e}")
+                logger.warning(f"[StateUpdater] NPC=PC event update failed (continuing): {e}", exc_info=True)
         if should_run_secondary_relationship_updates(participant_ids):
             try:
                 await apply_scene_relationship_updates(
@@ -526,7 +529,7 @@ async def process_actor_response(
                     primary_pair=None,
                 )
             except Exception as e:
-                print(f"[WorldBuilder] resolve failed (continuing): {e}")
+                logger.warning(f"[WorldBuilder] resolve failed (continuing): {e}", exc_info=True)
         if should_run_life_depth_system(
             "organic", actor_response, context_plan, 0, 0, scene_types
         ):
@@ -541,7 +544,7 @@ async def process_actor_response(
                 write_extractor_shadow_diff(thread_id, commit_id, turn_facts, state_plan, extractor_metrics)
                 return organic_message
             except Exception as e:
-                print(f"[PregnancyMgr] processing failed (continuing): {e}")
+                logger.warning(f"[PregnancyMgr] processing failed (continuing): {e}", exc_info=True)
         write_extractor_shadow_diff(thread_id, commit_id, turn_facts, state_plan, extractor_metrics)
         return None
 
@@ -595,7 +598,7 @@ async def process_actor_response(
                 allow_event=event_allowed,
             )
     except Exception as e:
-        print(f"[StateUpdater] primary update failed (ignored): {e}")
+        logger.warning(f"[StateUpdater] primary update failed (ignored): {e}", exc_info=True)
         try:
             if auxiliary_task:
                 await auxiliary_task
@@ -635,7 +638,7 @@ async def process_actor_response(
         if state:
             await update_dynamic_state(npc_id, state)
     except Exception as e:
-        print(f"[StateUpdater] DynamicState update failed (ignored): {e}")
+        logger.warning(f"[StateUpdater] DynamicState update failed (ignored): {e}", exc_info=True)
 
     # Apply relationship affinity delta.
     try:
@@ -653,7 +656,7 @@ async def process_actor_response(
                 await update_relationship_affinity(npc_id, pc_id, d, tx=tx)
                 await update_relationship_affinity(pc_id, npc_id, d, tx=tx)
     except Exception as e:
-        print(f"[StateUpdater] relationship update failed (ignored): {e}")
+        logger.warning(f"[StateUpdater] relationship update failed (ignored): {e}", exc_info=True)
 
     # Apply optional TS/North acceptance scores.
     if world_config and world_config.get("ts_scoring_enabled"):
@@ -664,7 +667,7 @@ async def process_actor_response(
                 _safe_int(plan.get("northern_attachment_delta"), 0),
             )
         except Exception as e:
-            print(f"[StateUpdater] TS scoring update failed (ignored): {e}")
+            logger.warning(f"[StateUpdater] TS scoring update failed (ignored): {e}", exc_info=True)
 
     # Create/continue/close Event based on action.
     new_event: dict | None = None
@@ -685,7 +688,7 @@ async def process_actor_response(
                 commit_id=commit_id or "",
             )
     except Exception as e:
-        print(f"[StateUpdater] event creation failed (ignored): {e}")
+        logger.warning(f"[StateUpdater] event creation failed (ignored): {e}", exc_info=True)
 
     # 2차 관계 업데이트는 위에서 relationship_task로 병렬 실행·await 완료됨(순차 호출 제거).
 
@@ -710,7 +713,7 @@ async def process_actor_response(
                 source_event_id    = new_event.get("id"),
             )
         except Exception as e:
-            print(f"[Updater] gossip propagation failed (ignored): {e}")
+            logger.warning(f"[Updater] gossip propagation failed (ignored): {e}", exc_info=True)
 
     # Large relationship swings immediately distort shared memories.
     if abs(_d) >= 10:
@@ -719,9 +722,9 @@ async def process_actor_response(
             distort_report = await distort_on_affinity_change(npc_id, pc_id, _d, _depth_dt)
             # 호감도는 이미 커밋됐는데 재해석이 실패하면 기억이 옛 관계 상태에 머문다 → 가시화.
             if distort_report.llm_failed:
-                print(f"[Updater] affinity-distort LLM failed for {npc_id} (Δ={_d:+d}); shared memories left stale")
+                logger.warning(f"[Updater] affinity-distort LLM failed for {npc_id} (Δ={_d:+d}); shared memories left stale")
         except Exception as e:
-            print(f"[Updater] memory distortion failed (ignored): {e}")
+            logger.warning(f"[Updater] memory distortion failed (ignored): {e}", exc_info=True)
 
     # Personality drift check (micro / macro).
     if should_run_life_depth_system("personality", actor_response, context_plan, _imp, _d, scene_types):
@@ -735,7 +738,7 @@ async def process_actor_response(
                 current_game_time  = _depth_dt,
             )
         except Exception as e:
-            print(f"[Updater] personality drift failed (ignored): {e}")
+            logger.warning(f"[Updater] personality drift failed (ignored): {e}", exc_info=True)
 
     # Life-depth postprocessors keep long-running goals, meaningful objects,
     # and conditional secrets in step with the accepted actor response.
@@ -752,7 +755,7 @@ async def process_actor_response(
                 event_id       = _event_id,
             )
         except Exception as e:
-            print(f"[LifeDepth] goal update failed (ignored): {e}")
+            logger.warning(f"[LifeDepth] goal update failed (ignored): {e}", exc_info=True)
 
     if should_run_life_depth_system("items", actor_response, context_plan, _imp, _d, scene_types):
         try:
@@ -766,7 +769,7 @@ async def process_actor_response(
                 event_id       = _event_id,
             )
         except Exception as e:
-            print(f"[LifeDepth] item update failed (ignored): {e}")
+            logger.warning(f"[LifeDepth] item update failed (ignored): {e}", exc_info=True)
 
     if should_run_life_depth_system("secrets", actor_response, context_plan, _imp, _d, scene_types):
         try:
@@ -780,11 +783,11 @@ async def process_actor_response(
                 event_id       = _event_id,
             )
         except Exception as e:
-            print(f"[LifeDepth] secret update failed (ignored): {e}")
+            logger.warning(f"[LifeDepth] secret update failed (ignored): {e}", exc_info=True)
 
     if should_run_life_depth_system("organic", actor_response, context_plan, _imp, _d, scene_types):
         try:
             return await process_ejaculation(npc_id, actor_response, scene_char_ids=scene_chars, father_id=pc_id)
         except Exception as e:
-            print(f"[PregnancyMgr] processing failed (ignored): {e}")
+            logger.warning(f"[PregnancyMgr] processing failed (ignored): {e}", exc_info=True)
     return None

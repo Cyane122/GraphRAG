@@ -29,6 +29,7 @@ tmp_test
 tmp_cdp_*.py
 tmp_*.log
 *.tmp
+*.bak
 
 *.zip
 *.json

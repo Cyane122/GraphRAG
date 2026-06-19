@@ -11,6 +11,7 @@
 
 import re
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from src.config import MODEL_STATE_UPDATER as OOC_MODEL
 from src.core.database import update_dynamic_state, ensure_location, move_location, async_driver
@@ -30,127 +31,25 @@ _DESTINATION_MOVE_RE = re.compile(
 _DESTINATION_CLAUSE_SPLIT_RE = re.compile(r".*(?:라서|이라서|라|이라|때문에|니까|이니|라며)\s*")
 _EXIT_LOCATION_RE = re.compile(r"(?:나온|나오|걸어\s*나온|걸어\s*나오|돌아온|돌아오|복귀)")
 _EXIT_LOCATION_NEG_RE = re.compile(r"(?:나오|돌아오|복귀)\s*지\s*(?:못|않|않았|못했)")
+# OOC 텍스트에 실제 이동 의도 단서가 있는지 substring으로 확인하는 키워드 목록.
+# LLM이 단서 없이 location_id를 환각해도 위치 이동을 적용하지 않도록 막는 데 쓴다.
+_MOVEMENT_CUES = (
+    "이동", "이사", "간다", "갔", "가자", "가서", "향한", "향했", "향하",
+    "들어가", "들어와", "들어섰", "나간", "나가", "나와", "나온", "나오",
+    "돌아간", "돌아온", "돌아와", "복귀", "도착", "올라가", "내려가",
+    "따라가", "따라와", "옮긴", "옮겨", "옮겼",
+    "move", "enter", "leave", "arrive", "follow", "head to", "go to", "walk to",
+)
 
-_SYSTEM_PROMPT = """\
-Extract world-state changes from Korean OOC text.
-OOC text = scene direction inside *asterisks*.
-Reference time = {current_time}
 
-## Current Location Chain (innermost → outermost)
-{current_location_chain}
+def _has_movement_cue(text: str) -> bool:
+    """OOC 텍스트에 이동 의도 단서가 있으면 True. 영어 키워드는 소문자로 비교한다."""
+    lowered = text.lower()
+    return any(cue in lowered for cue in _MOVEMENT_CUES)
 
-## Available Location IDs
-{locations_str}
-
-## Known Characters
-{characters_str}
-
-## Schedule Context
-{schedule_block}
-
-## World / Scenario Context
-{world_context_block}
-
-## Interpretation
-
-World / Scenario Context constrains inference.
-ordinary / expected / remapped / non-alarming action -> no inferred shock / fear / anger / stress / injury.
-lasting state change requires explicit OOC evidence.
-
-## Time
-
-new_datetime = "YYYY-MM-DDTHH:MM:00" | null.
-Compute from Reference time.
-No requested time change -> null.
-
-"2026년 5월 15일" -> replace date + keep current hour.
-"며칠 후" -> +3~5 days + keep current hour.
-"다음날 아침" -> next date T08:00:00.
-"3시간 후" -> +3h.
-"30분 후" -> +30m.
-"아침" / "저녁" / "자정" -> same date T08:00 / T18:30 / T00:00.
-
-Schedule-relative time:
-named schedule event + offset -> use Schedule Context start_time/end_time ± offset.
-"수업 시작 5분 후" -> class.start_time + 5m.
-"수업 끝나고 10분 후" -> class.end_time + 10m.
-"수업 30분 전" -> class.start_time - 30m.
-
-time_delta_minutes = legacy fallback int, default 0.
-time_set = legacy fallback "HH:MM" | null.
-Prefer new_datetime.
-
-## Location
-
-location_id = exact existing ID | new lowercase snake_case ID | null.
-
-destination matches Available Location IDs -> exact ID.
-short alias inside Current Location Chain -> matching child/sibling ID.
-match by name / alias / tag.
-existing match > new ID.
-clear destination + no existing match -> new stable ID.
-no clear different location node -> null.
-
-follow / lead / accompany / enter / leave / arrive + destination -> location change.
-"A를 따라 복도로 이동" -> destination = hallway/corridor if available or concrete.
-Kitchen / bathroom / bedroom within current home/room -> null unless Available Location IDs contains a distinct node.
-
-new_location = null iff existing location or no location change.
-new_location object iff location_id is new.
-shape = {"name": "...", "aliases": ["..."], "description": "...", "prompt_hint": "...", "parent_location_id": "existing_parent_id_or_null", "tags": ["dynamic"], "prompt_priority": 8}
-inside / adjacent to current chain -> parent_location_id = innermost relevant current-chain ID.
-otherwise parent_location_id = null.
-
-## DynamicState
-
-state_changes = JSON object: character name -> DynamicState updates.
-Use character name exactly as listed in Known Characters.
-Include character iff explicitly subject of physical/emotional state change.
-observed / mentioned / acting-on-other only -> omit.
-
-Allowed keys only:
-mood, mental_condition, stress_level, physical_condition, injury_detail, emotional_state
-
-mood = calm | happy | sad | angry | anxious | tired | annoyed | excited
-mental_condition = stable | stressed | anxious | depressed | exhausted
-stress_level = integer 0..10, never string.
-physical_condition = healthy | fatigued | injured | ill | hospitalized
-emotional_state = short Korean phrase.
-injury_detail = body part + injury type.
-past-tense injury/fatigue -> current state now.
-
-## DynamicState Examples
-
-Input: "*잘 자네.*"
-state_changes: {}
-
-Input: "*박시안은 좀 화난 듯하다.*"
-state_changes: {"박시안": {"mood": "angry"}}
-
-Input: "*유람이 뛰어왔다. 박시안은 걱정스럽다.*"
-state_changes: {"유람": {"physical_condition": "fatigued"}, "박시안": {"mood": "anxious"}}
-
-Input: "*박시안은 허리를 삐끗했다.*"
-state_changes: {"박시안": {"physical_condition": "injured", "injury_detail": "허리 염좌"}}
-
-Input: "*유람이 박시안을 바라본다.*"
-state_changes: {}
-
-summary = one-line Korean change summary. no change -> "변경 없음".
-
-## Output
-
-Return ONLY this JSON. No explanation. No markdown.
-{
-  "new_datetime": null,
-  "time_delta_minutes": 0,
-  "time_set": null,
-  "location_id": null,
-  "new_location": null,
-  "state_changes": {},
-  "summary": "no change"
-}
-"""
+_SYSTEM_PROMPT = (
+    Path(__file__).resolve().parent / "prompts" / "ooc" / "system.md"
+).read_text(encoding="utf-8")
 
 
 def _compact_prompt_text(text: object, limit: int) -> str:
@@ -930,6 +829,12 @@ async def parse_ooc(
             npc_id,
             pc_id,
         )
+    # 이동 단서가 전혀 없는 OOC에서는 위치 변경을 적용하지 않는다.
+    # 목적지 추출·퇴장 추론 경로(inferred_move_targets 설정)는 이미 이동 동사를 요구하므로,
+    # 이 가드는 LLM이 plan.location_id를 단서 없이 환각해 캐릭터를 멋대로 이동시키던 문제를 막는다.
+    if inferred_location and inferred_move_targets is None and not _has_movement_cue(text):
+        inferred_location = None
+        inferred_location_meta = {}
     new_location = inferred_location
     if new_location and not await _location_exists(new_location):
         loc_meta = plan.get("new_location") if isinstance(plan.get("new_location"), dict) else {}

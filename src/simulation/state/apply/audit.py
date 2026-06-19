@@ -17,11 +17,14 @@
 #   - _write_state_audit_snapshot(actor_response: str, npc_id: str, pc_id: str, guard: dict, state_candidates: list[dict] | None, relationship_candidate: dict | None, event_candidate: dict | None, feasibility_audit: dict | None) -> None : Save an audit snapshot
 # ================================
 import json
+import logging
 import re
 from datetime import datetime
 from pathlib import Path
 
 from src.core.state_normalization import normalize_stress_level
+
+logger = logging.getLogger(__name__)
 
 # ════════════════════════════════════════════════════════════
 # 분류 게이트
@@ -404,4 +407,4 @@ def _write_state_audit_snapshot(
             encoding="utf-8",
         )
     except OSError as e:
-        print(f"[StateAudit] 저장 실패: {e}")
+        logger.warning(f"[StateAudit] 저장 실패: {e}", exc_info=True)
