@@ -1,6 +1,4 @@
 .env
-AGENTS.md
-CLAUDE.md
 
 src/assets/worlds/*/
 !src/assets/worlds/default/
@@ -13,7 +11,7 @@ scripts/
 chat/
 tests/
 .junie/
-docs/
+docs/codex_tmp/
 
 .chainlit/
 .claude/

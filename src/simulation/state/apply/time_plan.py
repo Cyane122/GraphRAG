@@ -9,7 +9,7 @@
 #   - parse_prose_header_datetime(actor_response: str) -> datetime | None : Parse the accepted Actor header time
 #   - commit_time_from_prose_header(actor_response: str, fallback_time: object = None) -> datetime | None : Commit accepted Actor header time without rollback
 #   - apply_time_updates(plan: dict, base_time: datetime, pc_id: str, npc_id: str) -> datetime : Build and commit a time plan
-#   - reconcile_location_with_prose(actor_response: str, pc_id: str, npc_id: str, companion_ids: list[str] | None = None) -> str | None : Override committed location when Actor prose header disagrees
+#   - reconcile_location_with_prose(actor_response: str, pc_id: str, npc_id: str, companion_ids: list[str] | None = None, user_input: str = "") -> str | None : Override committed location only when the player input referenced the destination
 # ================================
 import re
 from datetime import datetime, timedelta
@@ -203,6 +203,15 @@ async def commit_time_from_prose_header(
             f"{header_dt.strftime('%Y-%m-%d %H:%M')} < {fallback_dt.strftime('%Y-%m-%d %H:%M')}"
         )
         return fallback_dt
+    # 하드 가드: Actor가 산문 헤더에서 임의로 날짜(달력일)를 바꾸는 것을 막는다. 의도적 날짜 점프는
+    # OOC(*다음날 아침* 등)로만 허용되며, 그 경우 fallback_time(OOC 적용 후 스냅샷)이 이미 그 날짜다.
+    # 따라서 헤더가 fallback과 다른 날짜를 가리키면 모델이 멋대로 점프한 것 → 현재 날짜를 유지한다.
+    if fallback_dt and header_dt.date() != fallback_dt.date():
+        print(
+            "[ActorHeaderTime] rejected unauthorized date jump "
+            f"{header_dt.strftime('%Y-%m-%d %H:%M')} (keep {fallback_dt.strftime('%Y-%m-%d %H:%M')})"
+        )
+        return fallback_dt
 
     safe_value = _esc(header_dt.isoformat())
     async with async_driver.session() as session:
@@ -256,16 +265,30 @@ async def _fetch_location_name_index() -> tuple[dict[str, str], str | None]:
     return name_to_id, (str(current_id) if current_id else None)
 
 
+def _user_referenced_location(user_input: str, matched_name: str, resolved_id: str) -> bool:
+    """플레이어 입력이 해당 장소를 언급했는지 substring으로 판정한다(대소문자 무시)."""
+    text = (user_input or "").lower()
+    if not text:
+        return False
+    for token in (matched_name, resolved_id):
+        token = str(token or "").strip().lower()
+        if token and token in text:
+            return True
+    return False
+
+
 async def reconcile_location_with_prose(
     actor_response: str,
     pc_id: str,
     npc_id: str,
     companion_ids: list[str] | None = None,
+    user_input: str = "",
 ) -> str | None:
-    """Actor 산문 헤더의 장소가 Manager 사전판정과 다르면 산문 우선으로 위치를 보정한다.
+    """Actor 산문 헤더의 장소가 현재 위치와 다르면 산문 우선으로 위치를 보정한다.
 
-    헤더 장소명이 알려진 Location과 정확히 매칭되고 현재 currentLocationId와 다를 때만
-    GlobalState와 등장 캐릭터(PC·주NPC·동행) 위치를 보정한다. 모호/미상이면 Manager 값 유지(보수적).
+    하드 가드: Actor가 멋대로 장소를 옮기는 것을 막기 위해, **사용자 입력이 그 장소(이름 또는 id)를
+    실제로 언급했을 때만** 보정한다. 플레이어가 주도하지 않은 모델 임의 이동은 무시한다(보수적).
+    헤더 장소명이 알려진 Location과 정확히 매칭되고 현재 currentLocationId와 다를 때만 적용된다.
     반환: 보정된 location_id (보정 없으면 None).
     """
     header_name = _parse_prose_header_location(actor_response)
@@ -278,12 +301,22 @@ async def reconcile_location_with_prose(
 
     # 헤더 전체 이름 또는 첫 콤마 이전 토큰을 알려진 Location 이름과 정확 매칭한다.
     resolved_id: str | None = None
+    matched_name: str = ""
     for candidate in (header_name, header_name.split(",")[0].strip()):
         resolved_id = name_to_id.get(candidate.lower())
         if resolved_id:
+            matched_name = candidate
             break
 
     if not resolved_id or resolved_id == current_id:
+        return None
+
+    # 플레이어가 입력에서 목적지를 언급하지 않았다면 모델이 임의로 이동한 것 → 보정하지 않는다.
+    if not _user_referenced_location(user_input, matched_name, resolved_id):
+        print(
+            "[LocationReconcile] skipped model-initiated move "
+            f"{current_id} -> {resolved_id} ('{header_name}') — not referenced in player input"
+        )
         return None
 
     async with async_driver.session() as session:

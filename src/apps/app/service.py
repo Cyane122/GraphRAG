@@ -77,6 +77,13 @@ _STATUS_TEXTS = [
 ]
 
 
+def _strip_reasoning_blocks(value: str) -> str:
+    """Remove <analyze> CoT and <ooc> blocks, keeping visible prose (header included)."""
+    text = re.sub(r"<analyze>[\s\S]*?</analyze>", "", value or "", flags=re.IGNORECASE)
+    text = re.sub(r"<ooc>[\s\S]*?</ooc>", "", text, flags=re.IGNORECASE)
+    return text.strip()
+
+
 def preview_text(value: str) -> str:
     """Build a compact preview from assistant output."""
     text = re.sub(r"<analyze>[\s\S]*?</analyze>", "", value or "", flags=re.IGNORECASE)
@@ -91,6 +98,23 @@ def _social_media_features(state: ConversationState) -> dict:
     return resolve_social_media_features(state.world_config, {})
 
 
+def _build_thread_id(world_id: str, scenario_id: str, store: ConversationStore) -> str:
+    """Build a human-readable, filesystem-safe thread id from world/scenario/first-chat time.
+
+    Format: ``{world_id}__{scenario_id}__{YYYYMMDD_HHMMSS}``. Used as both the JSON
+    filename (``data/threads/<id>.json``) and the per-thread Kuzu directory name, so it
+    must contain no path separators. A numeric suffix is appended on collision.
+    """
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    base = f"{world_id}__{scenario_id}__{stamp}"
+    thread_id = base
+    suffix = 1
+    while store.exists(thread_id):
+        thread_id = f"{base}_{suffix}"
+        suffix += 1
+    return thread_id
+
+
 def create_conversation(
     world_id: str,
     scenario_id: str | None,
@@ -99,7 +123,10 @@ def create_conversation(
     ooc_config: str = "",
 ) -> ConversationState:
     """Create and persist a standalone web conversation."""
-    state = initialize_conversation(ConversationState(world_id=world_id, scenario_id=scenario_id or "default"))
+    thread_id = _build_thread_id(world_id, scenario_id or "default", store)
+    state = initialize_conversation(
+        ConversationState(thread_id=thread_id, world_id=world_id, scenario_id=scenario_id or "default")
+    )
     state.actor_model = normalize_actor_model(actor_model or state.actor_model)
     state.ooc_config = str(ooc_config or "")
     opening_scene = (
@@ -424,7 +451,10 @@ async def _run_generation_events(
         {"role": "assistant", "content": full_response, "msg_id": assistant_msg.id},
     ]
     del state.history[:-MAX_HISTORY_TURNS * 2]
-    state.recent_responses.append(full_response[:1500])
+    # recent_story로 다음 턴에 되먹이는 값은 가시 prose만 담는다. <analyze> CoT를 그대로 넣으면
+    # 모델이 직전 추론(예: "8주 전 14번 사정")을 매 턴 복붙해 시간이 흘러도 수치가 고정된다.
+    recent_text = (final_event.get("visible_text") or "").strip() or _strip_reasoning_blocks(full_response)
+    state.recent_responses.append(recent_text[:1500])
     state.recent_responses = state.recent_responses[-RECENT_STORY_TURNS:]
     state.prev_cot = str(final_event.get("raw_thinking") or "")
     state.preview = preview_text(display_response)

@@ -41,9 +41,6 @@ def build_prompt_parts(
     turn_ooc_directives: str = "",
 ) -> PromptParts:
     """Render Fixed, Genre, and Dynamic prompt segments from prepared context."""
-    rendered_world_context = dict(world_context)
-    rendered_world_context["scene_state"] = context.scene_state
-    rendered_world_context["context_plan"] = context.context_plan
     recall_events = _format_recall_events_for_prompt(context)
     current_pov = build_current_pov_context(
         context,
@@ -59,17 +56,12 @@ def build_prompt_parts(
         scene_types=scene_plan.scene_types,
         char_data=context.char_data,
         user_data=context.user_data,
-        relationship=context.relationship,
-        events=context.recent_events,
-        recall_events=recall_events,
         recent_story=recent_story,
         user_input=user_input,
         location=context.location_name,
         location_nodes=context.location_nodes,
         npcs=context.active_npcs,
         dt=scene_plan.current_dt,
-        memory_conflicts=context.memory_conflicts,
-        world_context=rendered_world_context,
         current_pov=current_pov,
         scene_need_hints=scene_need_hints or {},
         rendered_context=build_rendered_dynamic_context(

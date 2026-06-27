@@ -10,6 +10,12 @@
 #   - _invalidate_cache() -> None : Invalidate the current session's character cache
 #   - _resolve_identity(name: str, known: dict[str, str]) -> str | None : Resolve a name to char_id
 #   - _create_stub(name_kor: str, main_npc_id: str, pc_id: str, world_config: dict, allow_existing_alias_match: bool = True, source_text: str = "") -> str | None : Create a conservative transient NPC
+#   - _is_female_sex(value: object) -> bool : Return whether a sex label should track a menstrual cycle
+#   - _initial_cycle_day(seed_text: str) -> int : Return a deterministic initial menstrual cycle day
+#   - _coerce_int(value: object) -> int | None : Parse an integer-like value
+#   - _normalize_reference_kind(value: object) -> str : Normalize transient source-token classification
+#   - _requires_generated_name(reference_kind: str) -> bool : Return whether display name must differ from the source token
+#   - _fallback_identity_for_reference(source_token: str) -> tuple[str, str] : Generate fallback identity for non-name tokens
 #   - _is_stub_candidate(name_kor: str) -> bool : Return whether text is concrete enough to create a stub
 #   - _normalize_relation_descriptor_for_family(name_kor: str) -> str | None : Validate sibling descriptors against StaticProfile.family
 #   - _build_conservative_stub_profile(name_kor: str, main_npc_id: str, source_text: str = "", world_config: dict | None = None) -> dict : Build a transient stub from evidence and plausible defaults
@@ -125,6 +131,73 @@ _ROLE_MARKERS: tuple[str, ...] = (
     "동료", "가족", "남동생", "여동생", "동생", "언니", "누나", "오빠", "형",
     "아버지", "어머니", "엄마", "아빠", "담당", "관리자", "경호원", "운전기사",
 )
+
+_FEMALE_SEX_MARKERS: tuple[str, ...] = (
+    "female",
+    "woman",
+    "girl",
+    "여성",
+    "여자",
+)
+
+_MALE_SEX_MARKERS: tuple[str, ...] = (
+    "male",
+    "man",
+    "boy",
+    "남성",
+    "남자",
+)
+
+_REFERENCE_KINDS: frozenset[str] = frozenset({
+    "proper_name",
+    "role_title",
+    "kinship_descriptor",
+    "generic_person",
+})
+
+
+def _is_female_sex(value: object) -> bool:
+    """Return whether a sex label should track a menstrual cycle."""
+    text = str(value or "").strip().lower()
+    if not text:
+        return False
+    if any(marker in text for marker in _FEMALE_SEX_MARKERS):
+        return True
+    if any(marker in text for marker in _MALE_SEX_MARKERS):
+        return False
+    return False
+
+
+def _initial_cycle_day(seed_text: str) -> int:
+    """Return a deterministic initial menstrual cycle day."""
+    digest = hashlib.sha1(str(seed_text or "").encode("utf-8")).digest()[2]
+    return (digest % 28) + 1
+
+
+def _coerce_int(value: object) -> int | None:
+    """Parse an integer-like value, returning None when it is not usable."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    match = re.search(r"-?\d+", str(value or ""))
+    return int(match.group(0)) if match else None
+
+
+def _normalize_reference_kind(value: object) -> str:
+    """Normalize transient source-token classification."""
+    kind = str(value or "").strip().lower()
+    return kind if kind in _REFERENCE_KINDS else "proper_name"
+
+
+def _requires_generated_name(reference_kind: str) -> bool:
+    """Return whether display name must differ from the source token."""
+    return reference_kind in {"role_title", "generic_person", "kinship_descriptor"}
+
+
+def _fallback_identity_for_reference(source_token: str) -> tuple[str, str]:
+    """Generate fallback identity for source tokens that are not proper names."""
+    return _compose_name(_alt_surname(source_token), source_token)
 
 def _cache_key() -> str:
     """캐릭터 이름 캐시 키 = 현재 활성 Kuzu DB 경로(스레드/대화별 격리). 활성 드라이버 없으면 '__global__'."""
@@ -275,24 +348,30 @@ async def _create_stub(
 
     stub = await _build_conservative_stub_profile(name_kor, main_npc_id, source_text, world_config)
 
-    # 관계 서술어는 고유 이름만 생성하고, 인물 설정은 명시된 정보만 보존한다.
+    reference_kind = _normalize_reference_kind(stub.get("reference_kind"))
+    source_token = str(stub.get("source_token") or name_kor).strip()
+    # 관계/역할 서술어는 고유 이름만 표시 이름으로 쓰고, 원문 토큰은 별칭/맥락에 남긴다.
     generated = (stub.get("name_kor") or "").strip()
-    if _is_usable_generated_name(generated, name_kor):
+    if (
+        _is_usable_generated_name(generated, name_kor)
+        and not (_requires_generated_name(reference_kind) and generated == source_token)
+    ):
         display_name = generated
     else:
-        fallback_stub = await _build_conservative_stub_profile(name_kor, main_npc_id, source_text, world_config)
-        display_name = fallback_stub["name_kor"]
-        # display_name이 fallback이면 name_roman도 fallback 것을 유지해 id-name 불일치를 방지
-        stub = {**fallback_stub, **{k: v for k, v in stub.items() if v and k not in ("name_kor", "name_roman")}}
+        display_name, fallback_roman = _fallback_identity_for_reference(source_token)
+        stub = {**stub, "name_kor": display_name, "name_roman": fallback_roman}
     # 서술어('유람의 남동생')와 실제 이름이 다를 때 서술어를 aliases에 보관 (다음 턴 재인식용)
     aliases = []
-    for alias in (original_name_kor, name_kor):
+    for alias in (original_name_kor, name_kor, source_token):
         if alias and alias != display_name and alias not in aliases:
             aliases.append(alias)
 
     # LLM 제공 name_roman 우선, 없으면 hash fallback
     raw_roman = (stub.get("name_roman") or "").strip().lower()
     raw_roman = re.sub(r'[^a-z0-9_]', '', raw_roman)
+    source_roman = _kor_to_roman_id(source_token)
+    if _requires_generated_name(reference_kind) and raw_roman == source_roman:
+        raw_roman = _kor_to_roman_id(display_name)
     base_id = raw_roman if raw_roman else _kor_to_roman_id(display_name)
     char_id = await _unique_char_id(base_id)
     timestamp = datetime.now().isoformat()
@@ -302,14 +381,31 @@ async def _create_stub(
             CREATE (:Character {id: $id, name: $name, aliases: $aliases, type: "transient"})
         """, id=char_id, name=display_name, aliases=aliases)
 
-        # StaticProfile
+        biological_sex = stub.get("biological_sex", "")
+        has_menstrual_cycle = _is_female_sex(biological_sex)
+        cycle_day = _initial_cycle_day(char_id) if has_menstrual_cycle else None
+        age_int = _coerce_int(stub.get("age", ""))
+
+        # StaticProfile is the durable record for transient NPCs. Heavy runtime nodes
+        # are reserved for named promotion.
         profile_json = json.dumps({
             "name_kor":              display_name,
             "type":                  "transient",
             "context":               stub.get("context", ""),
             "role":                  stub.get("relation_type", "acquaintance"),
-            "biological_sex":        stub.get("biological_sex", ""),
+            "source_token":          source_token,
+            "reference_kind":        reference_kind,
+            "promotion_eligible":    bool(stub.get("promotion_eligible", True)),
+            "biological_sex":        biological_sex,
             "age":                   stub.get("age", ""),
+            "height":                stub.get("height", ""),
+            "weight":                stub.get("weight", ""),
+            "measurements":          stub.get("measurements", ""),
+            "physique":              stub.get("physique", ""),
+            "appearance":            stub.get("appearance", ""),
+            "initial_mood":          stub.get("initial_mood", ""),
+            "personality":           stub.get("personality", ""),
+            "speech_style":          stub.get("speech_style", ""),
             "family":                stub.get("family", ""),
             "formative_background":  stub.get("formative_background", ""),
             "first_seen":            timestamp,
@@ -319,44 +415,24 @@ async def _create_stub(
         }, ensure_ascii=False)
         await session.run("""
             MATCH (c:Character {id: $cid})
-            CREATE (c)-[:HAS_PROFILE]->(:StaticProfile {id: $pid, props: $props_json})
+            CREATE (c)-[:HAS_PROFILE]->(:StaticProfile {
+                id: $pid,
+                props: $props_json,
+                age: $age,
+                gender: $gender,
+                role: $role
+            })
         """,
             cid        = char_id,
             pid        = f"{char_id}_static",
             props_json = profile_json,
+            age        = age_int,
+            gender     = biological_sex,
+            role       = stub.get("relation_type", "acquaintance"),
         )
 
-        # Personality
-        personality_json = json.dumps({
-            "core_traits": stub.get("personality", "unknown"),
-            "speech_style": stub.get("speech_style", ""),
-        }, ensure_ascii=False)
-        await session.run("""
-            MATCH (c:Character {id: $cid})
-            CREATE (c)-[:HAS_PERSONALITY]->(:Personality {id: $pid, props: $props_json})
-        """,
-            cid        = char_id,
-            pid        = f"{char_id}_personality",
-            props_json = personality_json,
-        )
-
-        # DynamicInformation — stub에서 얻은 물리 정보 취합 (helpers.DYNAMIC_INFORMATION_FIELDS 화이트리스트 내)
-        info_props = json.dumps({
-            "age":            stub.get("age", ""),
-            "height":         stub.get("height", ""),
-            "weight":         stub.get("weight", ""),
-            "measurements":   stub.get("measurements", ""),
-            "biological_sex": stub.get("biological_sex", ""),
-            "appearance":     stub.get("appearance", ""),
-            "summary":        stub.get("context") or "No durable dynamic information recorded yet.",
-        }, ensure_ascii=False)
-        await session.run("""
-            MATCH (c:Character {id: $cid})
-            WHERE NOT (c)-[:HAS_INFO]->()
-            CREATE (c)-[:HAS_INFO]->(:DynamicInformation {id: $info_id, props: $props})
-        """, cid=char_id, info_id=f"{char_id}_info", props=info_props)
-
-        # DynamicState — stub initial_mood 반영
+        # DynamicState remains lightweight turn context. Personality, DynamicInformation,
+        # and NeedsState are created only after promotion to named NPC.
         initial_mood = stub.get("initial_mood") or "calm"
         await session.run("""
             MATCH (c:Character {id: $cid})
@@ -367,21 +443,29 @@ async def _create_stub(
                 mental_condition:   "stable",
                 stress_level:       0,
                 mood:               $mood,
-                cycle_day:          1,
+                cycle_day:          $cycle_day,
                 location_id:        "",
                 workplace_stress_level: 0,
-                outfit:             "",
+                outfit:             $outfit,
                 injury_marks:       "",
-                has_menstrual_cycle: false,
+                has_menstrual_cycle: $has_menstrual_cycle,
                 pregnant:           false,
                 pregnancy_day:      0,
                 cum_shots_this_cycle: 0,
-                emotional_state:    ""
+                emotional_state:    "",
+                physique:           $physique,
+                age:                $age
             })
-        """, cid=char_id, state_id=f"{char_id}_state", mood=initial_mood)
-
-        # safety net: 이미 생성된 노드는 WHERE NOT 조건으로 건드리지 않음
-        await _ensure_runtime_nodes_in_session(session, char_id)
+        """,
+            cid=char_id,
+            state_id=f"{char_id}_state",
+            mood=initial_mood,
+            cycle_day=cycle_day,
+            outfit=stub.get("appearance", ""),
+            has_menstrual_cycle=has_menstrual_cycle,
+            physique=stub.get("physique", ""),
+            age=age_int,
+        )
 
     # 인라인 CREATE 가 다루지 않는 파생 DynamicState 컬럼을 초기화한다.
     # update_dynamic_state 가 스키마 타입에 맞춰 정규화(age→INT)하고 비정상 값은 버린다.
@@ -512,12 +596,20 @@ async def ensure_scene_relationships(participant_ids: list[str]) -> None:
     if len(participants) < 2:
         return
 
-    for char_id in participants:
+    char_types = await _fetch_character_types(participants)
+    durable_participants = [
+        char_id
+        for char_id in participants
+        if char_types.get(char_id, "") != "transient"
+    ]
+    if len(durable_participants) < 2:
+        return
+
+    for char_id in durable_participants:
         await ensure_character_runtime_nodes(char_id)
 
-    char_types = await _fetch_character_types(participants)
-    for source_id in participants:
-        for target_id in participants:
+    for source_id in durable_participants:
+        for target_id in durable_participants:
             if source_id == target_id:
                 continue
             seed = _initial_relationship_for_pair(
@@ -680,13 +772,6 @@ def _fallback_given_name(seed_text: str) -> str:
 
 _SURNAME_POOL: tuple[str, ...] = tuple(_KOREAN_SURNAME_ROMAN.keys())
 
-# 소유자가 특정되지 않는 일반 역할/직업 호칭. 이름 대신 등장하면 임의의 실제 이름을 만든다.
-_GENERIC_ROLE_TOKENS: frozenset[str] = frozenset({
-    "학생", "여학생", "남학생", "선생님", "교수님", "직원", "종업원", "점원",
-    "알바", "아르바이트", "사장", "점장", "손님", "동료", "동급생", "의사",
-    "간호사", "사서", "코치", "감독", "경호원", "운전기사", "담당", "관리자",
-})
-
 
 def _alt_surname(seed_text: str, exclude: str = "") -> str:
     """소유자와 다른 성을 결정론적으로 고른다(예: 엄마는 자식과 다른 성)."""
@@ -757,15 +842,27 @@ async def _fill_plausible_stub_fields(
     from src.core.llm.client import extract_json_from_llm, get_model
 
     observed = " / ".join(snippets) if snippets else "(no direct descriptive sentence)"
-    # 키/몸무게/3-size 는 성별·나이·체형이 정해져야 개연성이 생기므로, 그 둘을 먼저 확정하도록 지시한다.
+    # 원문 토큰의 종류와 성별/나이를 먼저 확정해야 이름·신체값이 함께 일관된다.
     prompt = f"""Create minimal plausible defaults for a newly mentioned transient NPC.
 
 Anchoring rules (decide in this order):
-1. Determine biological_sex and age first — these anchor every physical value.
-2. Derive height (cm), weight (kg), measurements, and physique so they are mutually
+1. Classify the source token:
+   - proper_name: an actual person name already (e.g. "서윤", "박민지")
+   - role_title: a job/title/role label, not a name (e.g. "검사관", "접수원", "직원")
+   - kinship_descriptor: a relational description (e.g. "유빈의 남동생", "엄마")
+   - generic_person: a generic unnamed person label (e.g. "여학생", "손님")
+2. Choose name_kor:
+   - proper_name: preserve the token as name_kor.
+   - role_title / generic_person / kinship_descriptor: generate a plausible full Korean name.
+     Never use the role/title itself as name_kor.
+3. Set promotion_eligible:
+   - role_title and generic_person default false unless evidence clearly identifies a recurring named person.
+   - proper_name and kinship_descriptor default true.
+4. Determine biological_sex and age — these anchor every physical value.
+5. Derive height (cm), weight (kg), measurements, and physique so they are mutually
    consistent and realistic for that sex, age, and build (e.g. a slender teenage girl
    and a heavyset middle-aged man must not share the same numbers).
-3. measurements: for female use "B-W-H" in cm (e.g. "84-60-88"); for male use chest/waist
+6. measurements: for female use "B-W-H" in cm (e.g. "84-60-88"); for male use chest/waist
    in cm or leave blank if unnatural to state. physique: one short build descriptor
    (e.g. "마른", "보통", "탄탄한", "통통한").
 
@@ -788,6 +885,11 @@ World/scenario context:
 
 Return ONLY JSON with optional fields:
 {{
+  "reference_kind": "proper_name | role_title | kinship_descriptor | generic_person",
+  "source_token": "{name_kor}",
+  "name_kor": "",
+  "name_roman": "",
+  "promotion_eligible": true,
   "biological_sex": "",
   "age": "",
   "height": "",
@@ -835,6 +937,23 @@ Return ONLY JSON with optional fields:
         return stub
 
     merged = dict(stub)
+    reference_kind = _normalize_reference_kind(defaults.reference_kind or merged.get("reference_kind"))
+    merged["reference_kind"] = reference_kind
+    if defaults.source_token:
+        merged["source_token"] = defaults.source_token[:120]
+    if defaults.name_kor:
+        candidate_name = defaults.name_kor.strip()
+        if _is_usable_generated_name(candidate_name, name_kor):
+            merged["name_kor"] = candidate_name[:40]
+    if defaults.name_roman:
+        roman = re.sub(r"[^a-z0-9_]", "", defaults.name_roman.strip().lower())
+        if roman:
+            merged["name_roman"] = roman[:80]
+    if defaults.promotion_eligible is not None:
+        merged["promotion_eligible"] = bool(defaults.promotion_eligible)
+    elif reference_kind in {"role_title", "generic_person"}:
+        merged["promotion_eligible"] = False
+
     for key in (
         "biological_sex",
         "age",
@@ -896,22 +1015,23 @@ async def _build_conservative_stub_profile(
         name_roman = f"{surname_roman}_{given_roman}"
         context = f"{related_to}의 {role} 관계로 언급되어 처음 인식된 인물."
         relation_type = "family" if role in _FAMILY_ROLE_SET else "acquaintance"
-    elif name_kor in _GENERIC_ROLE_TOKENS:
-        # 소유자 없는 일반 역할 호칭(여학생/선생님 등)은 임의의 실제 이름을 생성한다.
-        generated_name, name_roman = _compose_name(_alt_surname(name_kor), name_kor)
-        context = f"'{name_kor}' role; first appearance."
-        relation_type = "acquaintance"
+        reference_kind = "kinship_descriptor"
+        promotion_eligible = True
     else:
         generated_name = name_kor
         name_roman = _kor_to_roman_id(name_kor)
         context = f"{name_kor}로 명시적으로 언급되어 처음 인식된 인물."
         relation_type = "acquaintance"
+        reference_kind = "proper_name"
+        promotion_eligible = True
     if observed_context:
         context = f"{context} Observed evidence: {observed_context}"
 
     stub = {
         "name_kor":             generated_name,
         "name_roman":           name_roman,
+        "reference_kind":       reference_kind,
+        "source_token":         name_kor,
         "biological_sex":       "",
         "age":                  "",
         "height":               "",
@@ -928,6 +1048,7 @@ async def _build_conservative_stub_profile(
         "relation_type":        relation_type,
         "relation_status":      role_evidence,
         "initial_affinity":     0,
+        "promotion_eligible":   promotion_eligible,
     }
     return await _fill_plausible_stub_fields(name_kor, stub, snippets, world_config)
 

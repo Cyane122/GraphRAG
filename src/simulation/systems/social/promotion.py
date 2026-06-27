@@ -4,7 +4,7 @@
 # Decide whether a transient NPC should be promoted to a named NPC.
 #
 # Functions
-#   - check_and_promote(char_id: str, main_npc_id: str, event_importance: int) -> bool : Promote to named NPC based on appearance and importance
+#   - check_and_promote(char_id: str, main_npc_id: str, event_importance: int) -> bool : Promote eligible transient NPCs based on appearance and importance
 # ================================
 import json
 
@@ -22,7 +22,7 @@ async def check_and_promote(
     main_npc_id:      str,
     event_importance: int,
 ) -> bool:
-    """승격 기준 충족 시 Transient → Named NPC로 승격한다."""
+    """승격 가능한 transient가 기준을 충족하면 Named NPC로 승격한다."""
     async with async_driver.session() as session:
         rec = await session.run("""
             MATCH (c:Character {id: $cid})-[:HAS_PROFILE]->(sp:StaticProfile)
@@ -37,6 +37,8 @@ async def check_and_promote(
                 props = json.loads(row["props_json"])
             except (ValueError, TypeError):
                 pass
+        if props.get("promotion_eligible") is False:
+            return False
         count = props.get("appearance_count", 0)
 
     async with async_driver.session() as session:

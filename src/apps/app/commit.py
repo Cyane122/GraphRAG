@@ -220,6 +220,7 @@ async def commit_pending_web(
             state.pc_id,
             state.npc_id,
             companion_ids=manager_effects.get("scene_npc_ids") or [],
+            user_input=pending.get("user_input", ""),
         )
         _mark_stage_done(pending, state, "location_reconcile")
         completed = _completed_stages(pending)

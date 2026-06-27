@@ -31,13 +31,8 @@ from src.agents.prompt_factory.renderers import (
     build_genre_section,
     join_rendered_context,
     render_active_characters_section,
-    render_events_section,
     render_header,
     render_location_context,
-    render_npc_section,
-    render_recall_events_section,
-    render_relationship_section,
-    render_world_section,
 )
 from src.agents.context.scene_keys import normalize_scene_type
 
@@ -261,8 +256,6 @@ class PromptBuilder:
         self,
         scene_types: list[str],
         char_data: dict,
-        relationship: dict,
-        events: list[dict],
         recent_story: str,
         user_input: str,
         location: str,
@@ -270,9 +263,6 @@ class PromptBuilder:
         genres: Optional[list[str]] = None,
         npcs: Optional[list[dict]] = None,
         user_data: dict | None = None,
-        recall_events: Optional[list[dict]] = None,
-        memory_conflicts: Optional[list[str]] = None,
-        world_context: Optional[dict] = None,
         rendered_context: Optional[dict[str, str]] = None,
         current_pov: Optional[dict] = None,
         location_nodes: Optional[list[dict]] = None,
@@ -295,15 +285,7 @@ class PromptBuilder:
             self.char_name,
             self.user_name,
         )
-        context_block = self._build_context_block(
-            relationship,
-            events,
-            npcs or [],
-            recall_events or [],
-            memory_conflicts or [],
-            world_context or {},
-            rendered_context,
-        )
+        context_block = join_rendered_context(rendered_context or {})
         need_hints_block = _render_scene_need_hints(scene_need_hints or {})
         characters_block = render_active_characters_section(char_data, user_data or {}, npcs or [], scene_types)
         dynamic_prompt = "\n\n".join(
@@ -324,8 +306,11 @@ class PromptBuilder:
                 (
                     "Fill out the <analyze> template from the checklist above. "
                     "Close </analyze>, then IMMEDIATELY write the Korean prose scene. "
-                    "Begin the final prose with a Korean date/time/location header based on the current header above; "
-                    "advance time naturally when the scene implies elapsed time, and never move it backward. "
+                    "Begin the final prose with a Korean date/time/location header. "
+                    "KEEP the date and location IDENTICAL to the current header above unless the Player Input "
+                    "(or an OOC directive) explicitly moves time or place; do not invent date jumps or location "
+                    "changes on your own. Within the same scene you may advance only minutes/hours on the SAME "
+                    "calendar day, and never move time backward. "
                     "The scene is mandatory; do not stop after </analyze>."
                 ),
             ]
@@ -355,32 +340,6 @@ class PromptBuilder:
         )
         char_id = str(char_data.get("id") or "").strip()
         return blacklists.get(char_id) or blacklists.get(str(self.char_name or "").strip()) or ""
-
-    def _build_context_block(
-        self,
-        relationship: dict,
-        events: list[dict],
-        npcs: list[dict],
-        recall_events: list[dict],
-        memory_conflicts: list[str],
-        world_context: dict,
-        rendered_context: dict[str, str] | None,
-    ) -> str:
-        """Build dynamic context either from the budget renderer or legacy renderers."""
-        if rendered_context:
-            return join_rendered_context(rendered_context)
-        return "\n\n".join(
-            part
-            for part in (
-                render_relationship_section(relationship),
-                render_npc_section(npcs, self.char_name),
-                render_events_section(events, self.char_name, self.user_name),
-                render_recall_events_section(recall_events, memory_conflicts),
-                render_world_section(world_context),
-            )
-            if part
-        )
-
 
 def _format_prompt_vars(text: str, *, char_name: str, user_name: str, for_add: str = "") -> str:
     """Apply common prompt variables while preserving unknown placeholders."""

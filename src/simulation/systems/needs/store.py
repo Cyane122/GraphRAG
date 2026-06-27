@@ -5,7 +5,7 @@
 #
 # Functions
 #   - _apply_safety_decay(npc_id: str, old_safety: float, elapsed_min: float, current_time: datetime) -> float : Apply safety decay
-#   - _fetch_all_npcs(exclude_id: str) -> list[dict] : Fetch all NPCs excluding the PC (includes aliases)
+#   - _fetch_all_npcs(exclude_id: str) -> list[dict] : Fetch non-transient NPCs excluding the PC (includes aliases)
 #   - _fetch_needs(npc_id: str) -> dict : Fetch NPC need state
 #   - _fetch_profile_props(npc_id: str) -> dict : Fetch StaticProfile props
 #   - _write_needs(npc_id: str, updates: dict) -> None : Update NeedsState
@@ -85,13 +85,13 @@ async def _fetch_all_characters(exclude_id: str | None = None) -> list[dict]:
 
 
 async def _fetch_all_npcs(exclude_id: str) -> list[dict]:
-    """모든 NPC (PC 제외) 반환. aliases 포함."""
+    """모든 비-transient NPC (PC 제외) 반환. aliases 포함."""
     async with async_driver.session() as session:
         # libido_excluded는 StaticProfile 스키마에 정의되지 않아 Kuzu Binder 오류 발생
-        # → 필터 없이 모든 NPC 반환 (PC 제외)
+        # → StaticProfile 필터 대신 Character.type 으로 임시 인물을 제외한다.
         rec = await session.run("""
             MATCH (c:Character)
-            WHERE c.id <> $exclude
+            WHERE c.id <> $exclude AND c.type <> "transient"
             RETURN c.id AS id, c.name AS name, c.type AS type, c.aliases AS aliases
         """, exclude=exclude_id)
         rows = await rec.data()
