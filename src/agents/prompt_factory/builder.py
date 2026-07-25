@@ -34,7 +34,10 @@ from src.agents.prompt_factory.renderers import (
     render_header,
     render_location_context,
 )
-from src.agents.context.scene_keys import normalize_scene_type
+from src.agents.context.scene_keys import (
+    normalize_prompt_scene_type,
+    normalize_prompt_scene_types,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -138,11 +141,11 @@ class PromptBuilder:
         for scene_type in scene_types:
             examples = examples_db.get(scene_type)
             if not examples:
-                # scene_types는 이미 canonical(예: bonding→emotional)이지만 월드의 few-shot은
-                # raw 라벨(bonding)로 키잉돼 있을 수 있다. canonical로 정규화되는 raw 키를 찾아 매칭한다.
+                # scene_types는 prompt asset key지만 월드 few-shot은 classifier나
+                # legacy 라벨로 키잉될 수 있어 같은 prompt key로 정규화해 찾는다.
                 examples = next(
                     (ex for key, ex in examples_db.items()
-                     if normalize_scene_type(key) == scene_type),
+                     if normalize_prompt_scene_type(key) == scene_type),
                     None,
                 )
             if not examples:
@@ -270,6 +273,7 @@ class PromptBuilder:
         turn_ooc_directives: str = "",
     ) -> tuple[str, str, str]:
         """Return fixed, genre, and dynamic prompt sections for the current turn."""
+        scene_types = normalize_prompt_scene_types(scene_types)
         fixed_prompt = self.build_fixed_section()
         genre_prompt = build_genre_section(
             self.infer_genres(scene_types) if genres is None else genres,

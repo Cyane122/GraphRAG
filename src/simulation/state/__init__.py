@@ -1,19 +1,27 @@
 # ================================
 # src/simulation/state/__init__.py
 #
-# simulation.state 패키지 공개 인터페이스.
+# Graph/Wiki 공용 accepted-turn Updater와 상태 보조 API를 제공합니다.
+#
+# Classes
+#   - GraphTurnUpdateRequest : Graph 상태 반영 요청
+#   - WikiTurnUpdateRequest : Wiki commit 계획·보류 요청
+#   - TurnUpdateResult : mode-aware 상태 반영 결과
+#
+# Functions
+#   - update_accepted_turn(request: GraphTurnUpdateRequest | WikiTurnUpdateRequest) -> TurnUpdateResult : mode에 맞는 상태 반영을 실행합니다.
 # ================================
 
-from src.simulation.state.extract.dynamic_information import (
-    apply_multi_character_dynamic_information_updates,
+from src.simulation.state.models import (
+    GraphTurnUpdateRequest,
+    TurnUpdateResult,
+    WikiTurnUpdateRequest,
 )
-from src.simulation.state.updater import (
-    process_actor_response,
-    apply_time_updates,
-    delegate_complex_update,
-)
+from src.simulation.state.updater import update_accepted_turn
 
 __all__ = [
-    "apply_multi_character_dynamic_information_updates",
-    "process_actor_response", "apply_time_updates", "delegate_complex_update",
+    "GraphTurnUpdateRequest",
+    "TurnUpdateResult",
+    "WikiTurnUpdateRequest",
+    "update_accepted_turn",
 ]

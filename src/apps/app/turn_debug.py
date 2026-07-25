@@ -149,6 +149,29 @@ def write_turn_debug_snapshot(
             json.dumps(manager_effects.get("pending_effects", []), ensure_ascii=False, indent=2),
             "```",
         ]
+        if manager_effects.get("engine") == "wiki":
+            summary.extend([
+                "",
+                "## Wiki Context",
+                "",
+                "```json",
+                json.dumps(
+                    manager_effects.get("wiki_context", {}),
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                "```",
+                "",
+                "## Wiki Updater Documents",
+                "",
+                "```json",
+                json.dumps(
+                    manager_effects.get("updater_documents", []),
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                "```",
+            ])
         (turn_dir / "summary.md").write_text("\n".join(summary), encoding="utf-8")
         return str(turn_dir)
     except OSError as e:

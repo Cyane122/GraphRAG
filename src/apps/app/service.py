@@ -6,7 +6,7 @@
 #
 # Functions
 #   - preview_text(value: str) -> str : Build a compact sidebar preview from assistant output.
-#   - create_conversation(world_id: str, scenario_id: str | None, store: ConversationStore, actor_model: str | None = None, ooc_config: str = "") -> ConversationState : Create a persisted conversation.
+#   - create_conversation(world_id: str, scenario_id: str | None, store: ConversationStore, actor_model: str | None = None, ooc_config: str = "", world_mode: WorldMode = "graph") -> ConversationState : Create a persisted conversation in one engine mode.
 #   - _should_parse_ooc(content: str) -> bool : Decide whether input contains actionable OOC spans.
 #   - _prepare_generation_input(state: ConversationState, content: str, include_pending_ooc: bool = True) -> tuple[str, dict | None] : Split OOC parsing from Actor scene input.
 #   - _append_ooc_display_block(content: str, ooc_result: dict | None) -> str : Append OOC display metadata to assistant content.
@@ -39,7 +39,7 @@ from src.simulation.systems.world_dynamics.organic import (
     set_pregnant_manual,
     simulate_internal_ejaculation,
 )
-from src.config import MAX_TOKEN, MODEL_OUTPUT_REPAIR
+from src.config import MAX_TOKEN, MODEL_OUTPUT_REPAIR, WIKI_VAULT_ROOT
 from src.core.llm.client import get_client
 from src.apps.app.input_routing import TurnInputType, route_user_input
 from src.apps.app.output_guard import find_forbidden_terms, find_pov_violations
@@ -53,7 +53,7 @@ from src.apps.app.turn_debug import write_actor_raw_snapshot, write_turn_debug_s
 from src.apps.app.actor import stream_actor_events
 from src.apps.app.analysis_tools import render_database_tool
 from src.apps.app.commit import commit_pending_web
-from src.apps.app.models import ChatMessage, ConversationState, normalize_actor_model
+from src.apps.app.models import ChatMessage, ConversationState, WorldMode, normalize_actor_model
 from src.apps.app.runtime import (
     ActiveConversation,
     initialize_conversation,
@@ -61,7 +61,9 @@ from src.apps.app.runtime import (
     sync_conversation_perspective,
 )
 from src.apps.app.storage import ConversationStore
+from src.apps.app.wiki_service import stream_wiki_turn
 from src.apps.graph_viewer.server import ensure_graph_server, update_graph_snapshot
+from src.wiki import WikiContextError, initialize_wiki_conversation
 
 logger = logging.getLogger(__name__)
 
@@ -121,18 +123,55 @@ def create_conversation(
     store: ConversationStore,
     actor_model: str | None = None,
     ooc_config: str = "",
+    world_mode: WorldMode = "graph",
 ) -> ConversationState:
-    """Create and persist a standalone web conversation."""
-    thread_id = _build_thread_id(world_id, scenario_id or "default", store)
-    state = initialize_conversation(
-        ConversationState(thread_id=thread_id, world_id=world_id, scenario_id=scenario_id or "default")
-    )
+    """Create and persist a conversation without crossing engine modes."""
+    resolved_scenario_id = scenario_id or "default"
+    thread_id = _build_thread_id(world_id, resolved_scenario_id, store)
+    if world_mode == "wiki":
+        try:
+            setup = initialize_wiki_conversation(
+                WIKI_VAULT_ROOT,
+                world_id,
+                resolved_scenario_id,
+                thread_id,
+            )
+        except WikiContextError as exc:
+            raise ValueError(str(exc)) from exc
+        state = ConversationState(
+            thread_id=thread_id,
+            world_mode=world_mode,
+            world_id=setup.world_id,
+            scenario_id=setup.scenario_id,
+            title=f"{setup.world_id}/{setup.scenario_id}",
+            pc_id=setup.pc_id,
+            npc_id=setup.npc_id,
+            npc_name_kor=setup.npc_name,
+            perspective=setup.perspective,
+            world_config={
+                "pc_name": setup.pc_name,
+                "npc_name": setup.npc_name,
+                "pov_mode": setup.pov_mode,
+                "rating": setup.rating,
+            },
+        )
+        opening_scene = setup.opening_scene
+    else:
+        state = initialize_conversation(
+            ConversationState(
+                thread_id=thread_id,
+                world_mode=world_mode,
+                world_id=world_id,
+                scenario_id=resolved_scenario_id,
+            )
+        )
+        opening_scene = (
+            str(state.world_config.get("opening_scene") or "")
+            or str(state.world_config.get("prompt", {}).get("sections", {}).get("opening_scene") or "")
+        ).strip()
     state.actor_model = normalize_actor_model(actor_model or state.actor_model)
     state.ooc_config = str(ooc_config or "")
-    opening_scene = (
-        str(state.world_config.get("opening_scene") or "")
-        or str(state.world_config.get("prompt", {}).get("sections", {}).get("opening_scene") or "")
-    ).strip()
+    state.usernotes = store.load_world_usernotes(state)
     if opening_scene:
         state.messages.append(
             ChatMessage(
@@ -141,6 +180,8 @@ def create_conversation(
                 content=opening_scene,
             )
         )
+        if world_mode == "wiki":
+            state.recent_responses.append(opening_scene[:1500])
     return store.save(state)
 
 
@@ -510,6 +551,7 @@ def _message_payload(message: ChatMessage) -> dict:
         "edited": message.edited,
         "actorModel": message.actor_model,
         "oocConfig": getattr(message, "ooc_config", ""),
+        "wikiCommitId": message.wiki_commit_id,
         "variants": [
             {
                 "id": variant.id,
@@ -531,6 +573,19 @@ async def append_user_and_stream(
     actor_model: str | None = None,
 ) -> AsyncIterator[dict]:
     """Commit previous pending, append user input, and stream Actor output."""
+    if state.world_mode == "wiki":
+        try:
+            async for event in stream_wiki_turn(
+                state,
+                content,
+                client_message_id=client_message_id,
+                actor_model=actor_model,
+            ):
+                yield event
+        finally:
+            store.refresh_out_of_band_fields(state)
+            store.save(state)
+        return
     if not state.pc_id or not state.npc_id:
         initialize_conversation(state)
     async with ActiveConversation(state):
@@ -563,6 +618,9 @@ async def append_user_and_stream(
             ):
                 yield event
         finally:
+            # 스트리밍 중 사용자가 편집한 유저노트/OOC 설정을 디스크에서 다시 읽어와,
+            # 턴 시작 시점의 오래된 스냅샷 저장이 그 편집을 덮어쓰지 않도록 한다.
+            store.refresh_out_of_band_fields(state)
             store.save(state)
 
 
@@ -656,6 +714,9 @@ async def _collect_generation(
         if event["type"] == "complete":
             final = event
     if persist:
+        # reroll/edit도 서버측 생성이 오래 걸려, 그 사이 편집된 유저노트/OOC 설정이
+        # 오래된 스냅샷 저장에 덮이지 않도록 디스크 최신값을 다시 읽어온다.
+        store.refresh_out_of_band_fields(state)
         store.save(state)
     if final is None:
         raise RuntimeError("Generation completed without final response.")

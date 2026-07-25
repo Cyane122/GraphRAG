@@ -11,7 +11,7 @@
 from datetime import datetime
 
 from src.simulation.events import evaluate_all as evaluate_static_events
-from src.simulation.state.updater import commit_time_plan
+from src.simulation.state.apply.time_plan import commit_time_plan
 from src.simulation.systems.memory import run_decay
 from src.simulation.systems.needs import run_needs_update
 from src.simulation.systems.world_dynamics.organic import tick_all_cycles

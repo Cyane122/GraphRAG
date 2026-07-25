@@ -216,6 +216,8 @@ def _render_current_pov_line(current_pov: dict) -> str:
     if not selected:
         return "unknown -> keep narrator as current primary character."
     name = str(selected.get("name") or selected.get("id") or "unknown").strip()
+    if selected.get("hide_metadata") is True:
+        return name
     char_id = str(selected.get("id") or "").strip()
     source = str(selected.get("source") or "unknown").strip()
     label = f"{name}({char_id})" if char_id and char_id != name else name

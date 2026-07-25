@@ -26,24 +26,12 @@ from src.core.llm.client import (
     get_response_text,
     log_empty_response_diagnostics,
 )
+from src.simulation.systems.world_dynamics.organic_models import (
+    calculate_pregnancy_probability,
+)
 
-# ── 확률 파라미터 ─────────────────────────────────────────
-BASE_FERTILE    = 0.27   # 가임기 단발 기준 확률
-BASE_INFERTILE  = 0.01   # 비가임기 희박 확률
-PROB_CAP        = 0.45   # 한 주기 최대 임신 확률
 _EJAC_CLASSIFIER_OUTPUT_TOKENS = 128
 _EJAC_CLASSIFIER_RETRY_OUTPUT_TOKENS = 256
-
-DAY_WEIGHT: dict[int, float] = {
-    10: 0.30,
-    11: 0.50,
-    12: 0.70,
-    13: 0.90,
-    14: 1.00,  # 배란 피크
-    15: 0.80,
-    16: 0.30,
-    17: 0.10,
-}
 
 # ── 사정·절정 표현 prefilter/fallback ─────────────────────
 # LLM 호출 전 명시적 사정 묘사가 있는 턴만 통과시키고,
@@ -174,19 +162,6 @@ Input: "민지가 그의 사정을 받아냈고 소라는 옆에서 지켜봤다
 Output: {"current_ejaculation": true, "vaginal": true, "condom_protected": false, "recipient_refs": ["민지"]}
 
 Output schema: {"current_ejaculation": true, "vaginal": true, "condom_protected": false, "recipient_refs": []}"""
-
-
-def _calc_prob(cycle_day: int, count: int) -> float:
-    """누적 확률 계산.
-    p = 1 - (1 - base * weight)^count, capped at PROB_CAP.
-    """
-    if 10 <= cycle_day <= 17:
-        weight = DAY_WEIGHT.get(cycle_day, 0.1)
-        base   = BASE_FERTILE * weight
-    else:
-        base   = BASE_INFERTILE
-
-    return min(1 - (1 - base) ** count, PROB_CAP)
 
 
 async def _classify_ejaculation(actor_response: str) -> dict:
@@ -486,7 +461,7 @@ async def process_ejaculation(
 
         await update_dynamic_state(char_id, {"cum_shots_this_cycle": new_count})
 
-        prob = _calc_prob(cycle_day, new_count)
+        prob = calculate_pregnancy_probability(cycle_day, new_count)
         roll = random.random()
 
         print(
@@ -595,7 +570,7 @@ async def simulate_internal_ejaculation(
 
     cycle_day = state["cycle_day"]
     total_shots = state["cum_shots"] + shots
-    prob = _calc_prob(cycle_day, total_shots)
+    prob = calculate_pregnancy_probability(cycle_day, total_shots)
     roll = random.random()
     conceived = roll < prob
 

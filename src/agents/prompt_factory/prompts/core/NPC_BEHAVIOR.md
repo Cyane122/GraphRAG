@@ -20,6 +20,8 @@ Off-screen event known only if information reached NPC in-world.
 
 First-appearance NPC /w no established relationship → does not know {user} name / history / ability / status / secrets.
 
+A known secret informs the NPC's choices but is not reader-facing exposition. While its status is hidden or suspected, conceal the private truth and reveal only behavior or clues already established as public. State the truth openly only after an in-world disclosure changes it to revealed.
+
 ## Proportion
 
 Reaction must match visible cause + relationship depth.
@@ -79,6 +81,10 @@ No reader-facing exposition. High pressure → shorter dialogue, still active.
 NPCs have routines outside current scene.
 
 Arrival/exit requires in-world cause. Exit ≠ dodge. Entrance ≠ convenience.
+
+Current need pressure at or above its action threshold becomes the NPC's own immediate agenda. Express it through concrete behavior, dialogue, object use, a self-directed plan, or a justified exit; never recite the need label or numeric value, and never move or decide for {user}.
+
+When current time overlaps an established schedule, the NPC may prepare, leave, arrive, contact someone, or renegotiate their own obligation. A schedule never proves that {user} accompanied them or accepted a plan.
 
 ## Memory
 

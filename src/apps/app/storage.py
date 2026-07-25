@@ -4,19 +4,23 @@
 # JSON persistence for standalone web UI conversations.
 #
 # Classes
-#   - ConversationStore : Load, save, list, and delete standalone conversation state.
+#   - ConversationStore : Persist conversations and mode-scoped, world-shared usernotes.
 #
 # Functions
 #   - _parse_datetime(value: object) -> datetime : Parse a stored timestamp.
 #   - _strip_ui_markers(value: str) -> str : Remove invisible UI markers from stored message content.
 #   - _preview(value: str) -> str : Build a compact preview string.
+#   - _safe_scope_part(value: str) -> str : Normalize a mode or world id for storage paths.
 # ================================
 
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
+from threading import Lock
+from typing import Any
 
 from src.config import WORLD_ID
 from src.apps.app.models import ChatMessage, ConversationState
@@ -57,12 +61,20 @@ def _preview(value: str) -> str:
     return text[:25] + "..." if len(text) > 26 else text or "새 대화"
 
 
+def _safe_scope_part(value: str) -> str:
+    """Normalize a mode or world id for a storage path segment."""
+    normalized = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "")).strip("._")
+    return normalized or "default"
+
+
 class ConversationStore:
     """JSON-backed standalone conversation store."""
 
     def __init__(self, root: Path | str = Path("data") / "threads") -> None:
         """Create a store rooted at the given directory."""
         self.root = Path(root)
+        self.world_root = self.root.parent / "worlds"
+        self._world_usernotes_lock = Lock()
 
     def _path(self, thread_id: str) -> Path:
         """Return the JSON path for a thread id."""
@@ -83,13 +95,160 @@ class ConversationStore:
         )
         return state
 
+    def delete(self, thread_id: str) -> None:
+        """Delete exactly one modern conversation JSON record."""
+        root = self.root.resolve()
+        path = self._path(thread_id).resolve()
+        if path.parent != root:
+            raise ValueError("Conversation path escapes the storage root")
+        if not path.is_file():
+            raise FileNotFoundError(thread_id)
+        path.unlink()
+
+    def refresh_out_of_band_fields(self, state: ConversationState) -> None:
+        """Reload fields that are edited through independent endpoints into `state`.
+
+        A streaming generation loads a snapshot at turn start and re-persists the whole
+        state in its `finally` block. That save can run many seconds later, so any usernote
+        or thread-level OOC config the user edited while the response was streaming would be
+        clobbered by the stale snapshot. The generation path never writes these fields, so
+        re-reading the current on-disk values just before that save prevents the lost update.
+        """
+        state.usernotes = self.load_world_usernotes(state)
+        path = self._path(state.thread_id)
+        if not path.exists():
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        if isinstance(payload.get("ooc_config"), str):
+            state.ooc_config = payload["ooc_config"]
+
     def load(self, thread_id: str) -> ConversationState:
         """Load a conversation state or raise FileNotFoundError."""
         path = self._path(thread_id)
         if not path.exists():
-            return sync_conversation_perspective(self._load_legacy(thread_id))
+            state = self._load_legacy(thread_id)
+        else:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            state = ConversationState.model_validate(payload)
+        state.usernotes = self.load_world_usernotes(state)
+        return sync_conversation_perspective(state)
+
+    def load_world_usernotes(self, state: ConversationState) -> list[dict[str, Any]]:
+        """Load usernotes shared by every thread in the same mode and world."""
+        with self._world_usernotes_lock:
+            return self._ensure_world_usernotes_unlocked(state)
+
+    def add_world_usernote(
+        self,
+        state: ConversationState,
+        note: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Append one usernote to a mode-scoped world and return the updated list."""
+        with self._world_usernotes_lock:
+            notes = self._ensure_world_usernotes_unlocked(state)
+            notes.append(note)
+            self._write_world_usernotes_unlocked(state, notes)
+            return notes
+
+    def update_world_usernote(
+        self,
+        state: ConversationState,
+        note_id: str,
+        changes: dict[str, Any],
+    ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+        """Update one world-shared usernote and return it with the full list."""
+        with self._world_usernotes_lock:
+            notes = self._ensure_world_usernotes_unlocked(state)
+            note = next((item for item in notes if item.get("id") == note_id), None)
+            if note is None:
+                return None, notes
+            note.update(changes)
+            self._write_world_usernotes_unlocked(state, notes)
+            return note, notes
+
+    def delete_world_usernote(
+        self,
+        state: ConversationState,
+        note_id: str,
+    ) -> tuple[bool, list[dict[str, Any]]]:
+        """Delete one world-shared usernote and return whether it existed."""
+        with self._world_usernotes_lock:
+            notes = self._ensure_world_usernotes_unlocked(state)
+            remaining = [item for item in notes if item.get("id") != note_id]
+            if len(remaining) == len(notes):
+                return False, notes
+            self._write_world_usernotes_unlocked(state, remaining)
+            return True, remaining
+
+    def _world_usernotes_path(self, state: ConversationState) -> Path:
+        """Return the shared usernote file for one incompatible world namespace."""
+        return (
+            self.world_root
+            / _safe_scope_part(state.world_mode)
+            / _safe_scope_part(state.world_id)
+            / "usernotes.json"
+        )
+
+    def _ensure_world_usernotes_unlocked(self, state: ConversationState) -> list[dict[str, Any]]:
+        """Load shared notes, migrating legacy thread notes on first access."""
+        path = self._world_usernotes_path(state)
+        if path.exists():
+            return self._read_world_usernotes_unlocked(path)
+        notes = self._legacy_usernotes_for_world(state)
+        self._write_world_usernotes_unlocked(state, notes)
+        return notes
+
+    def _read_world_usernotes_unlocked(self, path: Path) -> list[dict[str, Any]]:
+        """Read a world usernote file while the caller holds the store lock."""
         payload = json.loads(path.read_text(encoding="utf-8"))
-        return sync_conversation_perspective(ConversationState.model_validate(payload))
+        notes = payload.get("usernotes", []) if isinstance(payload, dict) else []
+        return [dict(note) for note in notes if isinstance(note, dict)]
+
+    def _legacy_usernotes_for_world(self, state: ConversationState) -> list[dict[str, Any]]:
+        """Collect legacy per-thread notes once when creating a shared world file."""
+        notes_by_id: dict[str, dict[str, Any]] = {}
+        if self.root.exists():
+            for path in sorted(self.root.glob("*.json")):
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                payload_mode = str(payload.get("world_mode") or "graph")
+                if payload_mode != state.world_mode or str(payload.get("world_id") or "") != state.world_id:
+                    continue
+                for note in payload.get("usernotes") or []:
+                    if isinstance(note, dict) and note.get("id"):
+                        notes_by_id.setdefault(str(note["id"]), dict(note))
+        for note in state.usernotes:
+            if isinstance(note, dict) and note.get("id"):
+                notes_by_id.setdefault(str(note["id"]), dict(note))
+        return list(notes_by_id.values())
+
+    def _write_world_usernotes_unlocked(
+        self,
+        state: ConversationState,
+        notes: list[dict[str, Any]],
+    ) -> None:
+        """Atomically persist mode-scoped world usernotes while holding the lock."""
+        path = self._world_usernotes_path(state)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps(
+                {
+                    "world_mode": state.world_mode,
+                    "world_id": state.world_id,
+                    "usernotes": notes,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        temporary.replace(path)
 
     def exists(self, thread_id: str) -> bool:
         """Return whether a conversation file exists."""

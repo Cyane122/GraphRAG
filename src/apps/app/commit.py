@@ -17,7 +17,8 @@ from src.agents.context.scene_state import update_scene_state_after_response
 from src.agents.manager.effects import commit_manager_auxiliary_effects
 from src.core.logging.conversation_logger import append_turn
 from src.simulation.state.apply.time_plan import commit_time_from_prose_header, reconcile_location_with_prose
-from src.simulation.state.updater import process_actor_response
+from src.simulation.state.models import GraphTurnUpdateRequest
+from src.simulation.state.updater import update_accepted_turn
 from src.simulation.systems.kakao import commit_kakao_effects
 from src.apps.app.pending_store import discard_pending_commit, update_pending_status
 from src.apps.app.models import ConversationState
@@ -233,23 +234,25 @@ async def commit_pending_web(
         print(f"[CommitPendingWeb] stage done: kakao_effects commit_id={commit_id}")
 
     if "actor_response" not in completed:
-        ooc_from_pregnancy = await process_actor_response(
-            pending["ai_response"],
-            state.npc_id,
-            state.pc_id,
-            scene_types=pending.get("scene_types"),
-            scene_chars=pending.get("scene_chars", []),
-            world_config=state.world_config,
-            manager_effects=manager_effects,
-            history_snapshot=pending.get("history_snapshot", []),
-            recent_snapshot=pending.get("recent_snapshot", []),
-            thread_id=pending.get("thread_id"),
-            commit_id=pending.get("commit_id"),
-            user_input=pending.get("user_input", ""),
+        update_result = await update_accepted_turn(
+            GraphTurnUpdateRequest(
+                actor_response=pending["ai_response"],
+                npc_id=state.npc_id,
+                pc_id=state.pc_id,
+                scene_types=pending.get("scene_types"),
+                scene_chars=pending.get("scene_chars", []),
+                world_config=state.world_config,
+                manager_effects=manager_effects,
+                history_snapshot=pending.get("history_snapshot", []),
+                recent_snapshot=pending.get("recent_snapshot", []),
+                thread_id=pending.get("thread_id"),
+                commit_id=pending.get("commit_id"),
+                user_input=pending.get("user_input", ""),
+            )
         )
         # 임신/유기 시스템이 만든 OOC는 다음 턴 입력 앞에 주입한다(service.append_user_and_stream).
-        if ooc_from_pregnancy:
-            state.pending_ooc = ooc_from_pregnancy
+        if update_result.ooc_message:
+            state.pending_ooc = update_result.ooc_message
         _mark_stage_done(pending, state, "actor_response")
         completed = _completed_stages(pending)
         print(f"[CommitPendingWeb] stage done: actor_response commit_id={commit_id}")

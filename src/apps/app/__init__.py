@@ -39,6 +39,9 @@ def create_app() -> "FastAPI":
 def run(host: str = "127.0.0.1", port: int = 8000, open_browser: bool = False) -> None:
     """Run the standalone web UI with uvicorn."""
     _ensure_utf8_stdio()
+    from src.apps.app.live_console import configure_live_console
+
+    configure_live_console()
     # 모듈 로거(logger.warning 등)가 stderr lastResort 대신 포맷·타임스탬프·트레이스백을
     # 갖도록 루트 로거를 구성한다. uvicorn.run 이전에 호출해야 앱 로거에 핸들러가 붙는다.
     import logging

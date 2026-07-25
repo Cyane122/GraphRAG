@@ -8,18 +8,28 @@
 #   - extract_scene_chars(raw_thinking: str, visible_text: str = "") -> list[str] : Extract visible secondary character names.
 #   - _build_generation_config(model_name: str, system_text: str, max_token: int) -> types.GenerateContentConfig : Build a model-compatible generation config.
 #   - _stream_actor_text_chunks(fixed_prompt: str, genre_prompt: str, dynamic_prompt: str, history: list[dict], genai_client: object, model_name: str, max_token: int) -> AsyncIterator[str] : Yield provider text chunks.
+#   - _stream_actor_text_chunks_resilient(fixed_prompt: str, genre_prompt: str, dynamic_prompt: str, history: list[dict], genai_client: object, model_name: str, max_token: int) -> AsyncIterator[str] : Yield provider text chunks, retrying the whole stream on pre-first-token network blips.
 #   - stream_actor_events(fixed_prompt: str, genre_prompt: str, dynamic_prompt: str, history: list[dict], genai_client: object, model_name: str, max_token: int) -> AsyncIterator[dict] : Yield token events and a final event.
 # ================================
 
 from __future__ import annotations
 
+import asyncio
 import json
+import random
 import re
 import time
 from collections.abc import AsyncIterator
 from time import perf_counter
 
-from anthropic import APIStatusError, AsyncAnthropic, AsyncAnthropicVertex, RateLimitError
+import httpx
+from anthropic import (
+    APIConnectionError,
+    APIStatusError,
+    AsyncAnthropic,
+    AsyncAnthropicVertex,
+    RateLimitError,
+)
 from google.genai import types
 
 from src.config import (
@@ -28,14 +38,20 @@ from src.config import (
     ANTHROPIC_CLAUDE_OPUS_4_7_MODEL,
     ANTHROPIC_CLAUDE_OPUS_4_8_MODEL,
     ANTHROPIC_CLAUDE_OPUS_MODEL,
+    ANTHROPIC_CLAUDE_SONNET_5_MODEL,
     ANTHROPIC_CLAUDE_SONNET_MODEL,
     ANTHROPIC_VERTEX_REGION,
+    DEEPSEEK_API_KEY,
+    DEEPSEEK_BASE_URL,
+    DEEPSEEK_V4_PRO_MODEL,
     GOOGLE_PROJECT_ID,
+    LLM_MAX_RETRIES_429,
 )
-from src.core.llm.client import record_llm_latency
+from src.core.llm.client import is_rate_limit_error, record_llm_latency
 
 _anthropic_client: AsyncAnthropic | None = None
 _anthropic_vertex_client: AsyncAnthropicVertex | None = None
+_deepseek_client: AsyncAnthropic | None = None
 
 
 def _get_anthropic_client() -> AsyncAnthropic:
@@ -64,6 +80,19 @@ def _get_anthropic_vertex_client() -> AsyncAnthropicVertex:
     return _anthropic_vertex_client
 
 
+def _get_deepseek_client() -> AsyncAnthropic:
+    """Return the module-level DeepSeek Anthropic-compatible client."""
+    global _deepseek_client
+    if _deepseek_client is None:
+        if not DEEPSEEK_API_KEY:
+            raise RuntimeError("DEEPSEEK_API_KEY is required for DeepSeek actor models.")
+        _deepseek_client = AsyncAnthropic(
+            api_key=DEEPSEEK_API_KEY,
+            base_url=DEEPSEEK_BASE_URL,
+        )
+    return _deepseek_client
+
+
 _HEADER_HOUR_RE = re.compile(
     r"\*{1,2}\d{4}년\s*\d{1,2}월\s*\d{1,2}일\s*[월화수목금토일]요일\s*(\d{2})시\s*\d{2}분"
 )
@@ -71,6 +100,15 @@ _HEADER_SPLIT_RE = re.compile(r"(?=\*\*\d{4}년)")
 _PREFILL = "<analyze>\n"
 _PROVIDER_PREFILL = _PREFILL.rstrip()
 _ANALYZE_TAG_RE = re.compile(r"</?analyze>", re.IGNORECASE)
+
+# 스트리밍 중 끊길 수 있는 일시적 네트워크 오류(재시도/우아한 종료 대상).
+# httpx.TransportError는 ReadError/ReadTimeout/RemoteProtocolError/ConnectError 등의 베이스.
+_STREAM_TRANSIENT_ERRORS = (httpx.TransportError, APIConnectionError)
+_ACTOR_STREAM_MAX_ATTEMPTS = 3  # 첫 토큰 전 네트워크 블립 시 전체 스트림 재시도 횟수
+_ACTOR_STREAM_BACKOFF_SEC = 0.5  # 네트워크 재시도 간 백오프 기준(시도 순번에 비례)
+# 첫 토큰 전 429(주로 Gemini Actor)일 때 exponential backoff 재시도. Actor는 사용자가
+# 기다리는 foreground 호출이라 대기 상한을 updater보다 짧게 잡는다.
+_ACTOR_STREAM_RATE_LIMIT_CAP_SEC = 15
 _META_LINE_RE = re.compile(
     r"^\s*(?:"
     r"CHARACTERS|STYLE|PLAN|CHECK|STATE|RELATIONSHIP|EVENT|LOCATION|TIME|SCENE|"
@@ -160,9 +198,16 @@ def _is_claude_model(model_name: str) -> bool:
     return model_name.lower().startswith("claude")
 
 
+def _is_deepseek_model(model_name: str) -> bool:
+    """Return whether the selected Actor model should use the DeepSeek API."""
+    return model_name.lower().startswith("deepseek")
+
+
 def _resolve_claude_model_name(model_name: str) -> str:
     """Map UI Claude ids to the configured direct Anthropic model ids."""
     lowered = model_name.lower()
+    if "sonnet-5" in lowered:
+        return ANTHROPIC_CLAUDE_SONNET_5_MODEL
     if "opus-4-6" in lowered:
         return ANTHROPIC_CLAUDE_OPUS_4_6_MODEL
     if "opus-4-7" in lowered:
@@ -176,11 +221,19 @@ def _resolve_claude_model_name(model_name: str) -> str:
     return model_name
 
 
+def _resolve_deepseek_model_name(model_name: str) -> str:
+    """Map UI DeepSeek ids to the configured DeepSeek model ids."""
+    lowered = model_name.lower()
+    if "v4-pro" in lowered:
+        return DEEPSEEK_V4_PRO_MODEL
+    return model_name
+
+
 def _claude_sampling_kwargs(resolved_model: str) -> dict:
     """Return sampling params accepted by the resolved model.
 
     Opus 4.7/4.8·Fable은 temperature/top_p/top_k를 보내면 400을 반환하므로 제외한다.
-    그 외(Opus 4.6·Sonnet 4.6 등)는 롤플레이 다양성을 위해 temperature=1.0을 유지한다.
+    그 외(Opus 4.6·Sonnet 4.6·Sonnet 5 등)는 롤플레이 다양성을 위해 temperature=1.0을 유지한다.
     """
     lowered = resolved_model.lower()
     if "opus-4-7" in lowered or "opus-4-8" in lowered or "fable" in lowered:
@@ -200,7 +253,7 @@ def _is_quota_error(exc: Exception) -> bool:
 
 
 def _gemini_messages(dynamic_prompt: str, history: list[dict]) -> list[dict]:
-    """Build Google GenAI chat-style contents with the Actor prefill."""
+    """Build Google GenAI contents ending with a user turn and prefill instruction."""
     messages = [
         {
             "role": "model" if msg["role"] == "assistant" else "user",
@@ -208,8 +261,10 @@ def _gemini_messages(dynamic_prompt: str, history: list[dict]) -> list[dict]:
         }
         for msg in history
     ]
-    messages.append({"role": "user", "parts": [{"text": dynamic_prompt}]})
-    messages.append({"role": "model", "parts": [{"text": _PROVIDER_PREFILL}]})
+    messages.append({
+        "role": "user",
+        "parts": [{"text": f"{dynamic_prompt}\n\nBegin your response with {_PROVIDER_PREFILL}."}],
+    })
     return messages
 
 
@@ -236,6 +291,43 @@ def _claude_messages(dynamic_prompt: str, history: list[dict]) -> list[dict]:
     history 마지막 메시지에 cache breakpoint를 둬 턴 간 대화 prefix를 재사용한다.
     현재 턴(dynamic_prompt)은 매 턴 달라지는 volatile 부분이라 breakpoint 없음.
     """
+    messages: list[dict] = [
+        {
+            "role": "assistant" if msg["role"] == "assistant" else "user",
+            "content": str(msg["content"]),
+        }
+        for msg in history
+    ]
+    if messages:
+        last = messages[-1]
+        last["content"] = [
+            {
+                "type": "text",
+                "text": last["content"],
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+    messages.append({
+        "role": "user",
+        "content": f"{dynamic_prompt}\n\nBegin your response with {_PROVIDER_PREFILL}.",
+    })
+    return messages
+
+
+def _deepseek_system_blocks(fixed_prompt: str, genre_prompt: str) -> list[dict]:
+    """Build DeepSeek Anthropic-compatible system blocks with cache breakpoints."""
+    blocks: list[dict] = [
+        {"type": "text", "text": fixed_prompt, "cache_control": {"type": "ephemeral"}}
+    ]
+    if genre_prompt:
+        blocks.append(
+            {"type": "text", "text": genre_prompt, "cache_control": {"type": "ephemeral"}}
+        )
+    return blocks
+
+
+def _deepseek_messages(dynamic_prompt: str, history: list[dict]) -> list[dict]:
+    """Build DeepSeek Anthropic-compatible messages with a history cache breakpoint."""
     messages: list[dict] = [
         {
             "role": "assistant" if msg["role"] == "assistant" else "user",
@@ -303,7 +395,7 @@ async def _open_claude_stream(
 
     스트림은 await 시점(첫 토큰 전)에 HTTP 요청을 보내므로 비용/쿼터 실패는 여기서 잡혀
     아직 토큰이 흐르기 전에 다이렉트 API로 폴백할 수 있다.
-    Vertex와 다이렉트 API의 모델 ID는 4.6+/Sonnet 4.6에서 동일해 같은 문자열을 쓴다.
+    Vertex와 다이렉트 API의 모델 ID는 4.6+/Sonnet 5에서 동일해 같은 문자열을 쓴다.
     """
     resolved = _resolve_claude_model_name(model_name)
     kwargs = dict(
@@ -359,6 +451,62 @@ async def _stream_claude_text_chunks(
         print(f"[ActorStream] Claude 응답이 토큰 한도로 잘렸습니다 (stop_reason={stop_reason}).")
 
 
+async def _open_deepseek_stream(
+    system_blocks: list[dict],
+    messages: list[dict],
+    model_name: str,
+    max_token: int,
+):
+    """Open a DeepSeek stream with thinking enabled at high effort."""
+    return await _get_deepseek_client().messages.create(
+        model=_resolve_deepseek_model_name(model_name),
+        max_tokens=max_token,
+        system=system_blocks,
+        messages=messages,
+        stream=True,
+        temperature=1.3,
+        extra_body={
+            "thinking": {"type": "enabled"},
+            "output_config": {"effort": "high"},
+        },
+    )
+
+
+async def _stream_deepseek_text_chunks(
+    fixed_prompt: str,
+    genre_prompt: str,
+    dynamic_prompt: str,
+    history: list[dict],
+    model_name: str,
+    max_token: int,
+) -> AsyncIterator[str]:
+    """Yield text chunks from DeepSeek through its Anthropic-compatible stream."""
+    stream = await _open_deepseek_stream(
+        _deepseek_system_blocks(fixed_prompt, genre_prompt),
+        _deepseek_messages(dynamic_prompt, history),
+        model_name,
+        max_token,
+    )
+    stop_reason = None
+    async for event in stream:
+        etype = getattr(event, "type", "")
+        if etype == "message_delta":
+            delta = getattr(event, "delta", None)
+            sr = getattr(delta, "stop_reason", None) if delta is not None else None
+            if sr:
+                stop_reason = sr
+            continue
+        if etype != "content_block_delta":
+            continue
+        delta = getattr(event, "delta", None)
+        text = getattr(delta, "text", "") if delta is not None else ""
+        if text:
+            yield text
+
+    if stop_reason == "max_tokens":
+        print(f"[ActorStream] DeepSeek 응답이 토큰 한도로 잘렸습니다 (stop_reason={stop_reason}).")
+
+
 async def _stream_actor_text_chunks(
     fixed_prompt: str,
     genre_prompt: str,
@@ -382,7 +530,85 @@ async def _stream_actor_text_chunks(
         ):
             yield text
         return
+    if _is_deepseek_model(model_name):
+        async for text in _stream_deepseek_text_chunks(
+            fixed_prompt, genre_prompt, dynamic_prompt, history, model_name, max_token
+        ):
+            yield text
+        return
     raise ValueError(f"Unsupported actor model: {model_name}")
+
+
+async def _stream_actor_text_chunks_resilient(
+    fixed_prompt: str,
+    genre_prompt: str,
+    dynamic_prompt: str,
+    history: list[dict],
+    genai_client: object,
+    model_name: str,
+    max_token: int,
+) -> AsyncIterator[str]:
+    """Actor 텍스트 청크를 스트리밍하되 첫 토큰 전 일시 오류는 전체 스트림을 재시도한다.
+
+    재시도 대상(모두 첫 토큰 방출 전에만):
+    - 네트워크 블립(_STREAM_TRANSIENT_ERRORS): 시도 순번에 비례한 짧은 백오프.
+    - 429 RESOURCE_EXHAUSTED(주로 Gemini Actor): exponential backoff + jitter.
+    아직 사용자에게 어떤 토큰도 방출하지 않은 상태에서만 재시도한다(재시도가 이미 보낸
+    출력을 중복시키지 않도록). 한 번이라도 방출한 뒤 끊기면 그대로 전파해 호출자가
+    부분 응답으로 마무리하거나 오류를 드러내게 한다.
+    """
+    last_error: BaseException | None = None
+    network_attempts = 0
+    rate_limit_attempts = 0
+    while True:
+        yielded_any = False
+        retry_delay: float | None = None
+        try:
+            async for text in _stream_actor_text_chunks(
+                fixed_prompt=fixed_prompt,
+                genre_prompt=genre_prompt,
+                dynamic_prompt=dynamic_prompt,
+                history=history,
+                genai_client=genai_client,
+                model_name=model_name,
+                max_token=max_token,
+            ):
+                yielded_any = True
+                yield text
+            return
+        except _STREAM_TRANSIENT_ERRORS as exc:
+            # 이미 토큰을 보냈으면 재시도 불가(중복) → 전파해 부분 종료.
+            if yielded_any:
+                raise
+            last_error = exc
+            network_attempts += 1
+            if network_attempts < _ACTOR_STREAM_MAX_ATTEMPTS:
+                retry_delay = _ACTOR_STREAM_BACKOFF_SEC * network_attempts
+                print(
+                    f"[ActorStream] transient stream error before first token, "
+                    f"retry {network_attempts}/{_ACTOR_STREAM_MAX_ATTEMPTS - 1} "
+                    f"({type(exc).__name__}: {exc})"
+                )
+        except Exception as exc:
+            # 429는 첫 토큰 전에만 재시도한다(스트리밍 중 429는 드물고 안전 재시작 불가).
+            if not is_rate_limit_error(exc) or yielded_any:
+                raise
+            last_error = exc
+            rate_limit_attempts += 1
+            if rate_limit_attempts <= LLM_MAX_RETRIES_429:
+                retry_delay = min(
+                    2 ** rate_limit_attempts, _ACTOR_STREAM_RATE_LIMIT_CAP_SEC
+                ) + random.uniform(0, 1)
+                print(
+                    f"[ActorStream 429:{model_name}] RESOURCE_EXHAUSTED "
+                    f"retry {rate_limit_attempts}/{LLM_MAX_RETRIES_429} in {retry_delay:.1f}s"
+                )
+        # 재시도 예산이 없으면(retry_delay 미설정) 마지막 오류를 전파한다.
+        if retry_delay is None:
+            if last_error is not None:
+                raise last_error
+            return
+        await asyncio.sleep(retry_delay)
 
 
 async def stream_actor_events(
@@ -406,8 +632,9 @@ async def stream_actor_events(
     start_epoch_ms = int(time.time() * 1000)
     started = perf_counter()
     status = "ok"
+    got_text = False
     try:
-        async for text in _stream_actor_text_chunks(
+        async for text in _stream_actor_text_chunks_resilient(
             fixed_prompt=fixed_prompt,
             genre_prompt=genre_prompt,
             dynamic_prompt=dynamic_prompt,
@@ -416,6 +643,7 @@ async def stream_actor_events(
             model_name=model_name,
             max_token=max_token,
         ):
+            got_text = True
             raw += text
 
             if thinking_done:
@@ -432,6 +660,18 @@ async def stream_actor_events(
                     token = tail.lstrip()
                     visible_parts.append(token)
                     yield {"type": "token", "content": token}
+    except _STREAM_TRANSIENT_ERRORS as exc:
+        # 스트림 중간에 끊긴 경우: 부분 응답이라도 있으면 500 대신 우아하게 마무리한다
+        # (deferred commit이라 pending으로 저장되어 사용자가 reroll/edit 가능).
+        # 아무 텍스트도 못 받았으면 복구할 게 없으므로 그대로 전파한다.
+        if not got_text:
+            status = "error"
+            raise
+        status = "partial_stream_error"
+        print(
+            f"[ActorStream] stream interrupted after partial output, finalizing "
+            f"({type(exc).__name__}: {exc})"
+        )
     except Exception:
         status = "error"
         raise

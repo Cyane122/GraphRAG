@@ -5,6 +5,7 @@
 #
 # Functions
 #   - _try_rule_based(user_input: str, recent_story: str = "") -> dict | None : Fast-path classification for short inputs
+#   - classify_scene_types(user_input: str, recent_story: str, scene_descriptions: dict[str, str] | None = None) -> list[str] : 공용 rule/LLM 장면 분류를 수행합니다.
 #   - _classify_scene_only(user_input: str, recent_story: str, scene_descriptions: dict[str, str] | None = None) -> dict : LLM-based scene classification without time parsing
 #   - _classify_and_parse_time(user_input: str, recent_story: str, global_state: dict, allowed_locs: str, scene_descriptions: dict[str, str] | None = None, schedule_context: dict | None = None) -> dict : LLM-based scene and time parsing
 #   - _generate_classifier_text(model: Any, prompt: str) -> str : Generate classifier JSON text with larger-budget retry
@@ -24,6 +25,7 @@ import re
 from datetime import datetime
 from typing import Any
 
+from src.assets.worlds.base import World
 from src.config import MODEL_CLASSIFIER as CLASSIFIER_MODEL
 from src.core.llm.client import (
     extract_json_from_llm,
@@ -171,7 +173,7 @@ async def _classify_and_parse_time(
 ) -> dict:
     current_time    = datetime.fromisoformat(global_state["currentTime"])
     context_snippet = recent_story[-800:] if recent_story else ""
-    _scenes = scene_descriptions or {"daily": "Everyday life with no significant conflict"}
+    _scenes = scene_descriptions or World.SCENE_TYPES
     scene_types_block = "\n".join(f"  - {name}: {desc}" for name, desc in _scenes.items())
     schedule_block = _render_schedule_context_for_classifier(schedule_context or {})
 
@@ -236,6 +238,28 @@ new_weather: Clear/Cloudy/Foggy/Drizzle/Rain/Heavy Rain/Thunderstorm/Snow/Heavy 
         return _fallback_classification()
 
 
+async def classify_scene_types(
+    user_input: str,
+    recent_story: str,
+    scene_descriptions: dict[str, str] | None = None,
+) -> list[str]:
+    """공용 rule shortcut과 scene-only LLM fallback으로 raw 장면 라벨을 반환합니다."""
+    rule_result = _try_rule_based(user_input, recent_story)
+    if rule_result:
+        rule_scene_types = rule_result.get("scene_types") or ["daily"]
+        if rule_scene_types != ["daily"]:
+            return [str(scene_type) for scene_type in rule_scene_types]
+    classified = await _classify_scene_only(
+        user_input,
+        recent_story,
+        scene_descriptions or World.SCENE_TYPES,
+    )
+    return [
+        str(scene_type)
+        for scene_type in classified.get("scene_types") or ["daily"]
+    ]
+
+
 async def _classify_scene_only(
     user_input: str,
     recent_story: str,
@@ -243,7 +267,7 @@ async def _classify_scene_only(
 ) -> dict:
     """Classify scene types without asking the LLM to plan time or location."""
     context_snippet = recent_story[-800:] if recent_story else ""
-    scenes = scene_descriptions or {"daily": "Everyday life with no significant conflict"}
+    scenes = scene_descriptions or World.SCENE_TYPES
     scene_types_block = "\n".join(f"  - {name}: {desc}" for name, desc in scenes.items())
     allowed_scene_list = list(scenes) or ["daily"]
     fallback_scene = "daily" if "daily" in allowed_scene_list else allowed_scene_list[0]

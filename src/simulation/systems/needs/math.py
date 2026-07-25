@@ -13,17 +13,9 @@
 from typing import Optional
 
 from src.simulation.state.apply.audit import _sanitize_stress_level
+from src.simulation.systems.needs.models import NEED_BASE_RATES
 
 THRESHOLD = 0.8
-
-NEED_BASE_RATES: dict[str, float] = {
-    "hunger": 0.0033,
-    "rest": 0.0011,
-    "social": 0.00035,
-    "fun": 0.00069,
-    "safety": 0.001,
-    "libido": 0.00017,
-}
 
 AUTONOMOUS_NEEDS = {"hunger", "rest", "social", "fun"}
 

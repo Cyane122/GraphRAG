@@ -7,10 +7,10 @@
 #   - ActiveConversation : Async context manager for one conversation's Kuzu driver.
 #
 # Functions
-#   - discover_world_profiles() -> list[dict] : Discover selectable worlds and scenarios.
+#   - discover_world_profiles(world_mode: WorldMode = "graph") -> list[dict] : Discover selectable worlds and scenarios for one engine mode.
 #   - initialize_conversation(state: ConversationState) -> ConversationState : Populate world config fields.
 #   - sync_conversation_perspective(state: ConversationState) -> ConversationState : Keep persisted POV fields aligned.
-#   - resolve_opening_scene(world_id: str, scenario_id: str | None) -> str : Resolve a world/scenario opening scene.
+#   - resolve_opening_scene(world_id: str, scenario_id: str | None, world_mode: WorldMode = "graph") -> str : Resolve a Graph or Wiki opening scene.
 #   - conversation_db_path(thread_id: str) -> str : Resolve the per-conversation Kuzu path.
 #   - snapshot_game_time() -> str | None : Read current in-world time from active Kuzu.
 #   - restore_game_time(value: str | None) -> None : Restore current in-world time on active Kuzu.
@@ -25,15 +25,24 @@ from pathlib import Path
 from types import TracebackType
 
 from src.agents.manager import load_world_instance
+from src.config import WIKI_VAULT_ROOT
 from src.core.database import KuzuAsyncDriver
 from src.core.database.driver import reset_active_driver, set_active_driver
-from src.apps.app.models import ConversationState
+from src.apps.app.models import ConversationState, WorldMode
+from src.wiki import WikiContextError, resolve_wiki_opening_scene
 
 _ACTIVE_DRIVERS: dict[str, KuzuAsyncDriver] = {}
 
 
-def discover_world_profiles() -> list[dict]:
-    """Discover selectable worlds and scenarios from schema modules."""
+def discover_world_profiles(world_mode: WorldMode = "graph") -> list[dict]:
+    """Discover selectable worlds and scenarios for one incompatible engine mode."""
+    if world_mode == "wiki":
+        return _discover_wiki_world_profiles()
+    return _discover_graph_world_profiles()
+
+
+def _discover_graph_world_profiles() -> list[dict]:
+    """Discover graph worlds from Python schema modules."""
     worlds_dir = Path("src/assets/worlds")
     worlds: list[dict] = []
     for schema_path in sorted(worlds_dir.glob("*/schema.py")):
@@ -69,6 +78,31 @@ def discover_world_profiles() -> list[dict]:
             {
                 "id": world_id,
                 "label": world_id,
+                "mode": "graph",
+                "runtime_ready": True,
+                "scenarios": scenarios or [{"id": "default", "label": "default"}],
+            }
+        )
+    return worlds
+
+
+def _discover_wiki_world_profiles() -> list[dict]:
+    """Discover Wiki V2 worlds without importing graph world modules."""
+    worlds_dir = WIKI_VAULT_ROOT / "worlds"
+    worlds: list[dict] = []
+    for world_file in sorted(worlds_dir.glob("*/world.md")):
+        world_id = world_file.parent.name
+        scenarios_dir = world_file.parent / "scenarios"
+        scenarios = [
+            {"id": scenario_file.parent.name, "label": scenario_file.parent.name}
+            for scenario_file in sorted(scenarios_dir.glob("*/scenario.md"))
+        ]
+        worlds.append(
+            {
+                "id": world_id,
+                "label": world_id,
+                "mode": "wiki",
+                "runtime_ready": True,
                 "scenarios": scenarios or [{"id": "default", "label": "default"}],
             }
         )
@@ -77,6 +111,8 @@ def discover_world_profiles() -> list[dict]:
 
 def initialize_conversation(state: ConversationState) -> ConversationState:
     """Populate world-derived fields on a conversation state."""
+    if state.world_mode != "graph":
+        raise ValueError("Wiki 월드는 Graph 런타임으로 초기화할 수 없습니다.")
     scenario_id = state.scenario_id or "default"
     world = load_world_instance(state.world_id, scenario_id)
     perspective = world.get_default_perspective()
@@ -96,6 +132,8 @@ def initialize_conversation(state: ConversationState) -> ConversationState:
 
 def sync_conversation_perspective(state: ConversationState) -> ConversationState:
     """Align persisted perspective fields with the configured prompt POV."""
+    if state.world_mode != "graph":
+        return state
     if not state.world_config:
         return initialize_conversation(state)
     perspective = _configured_perspective(state.world_config, state.perspective)
@@ -119,8 +157,22 @@ def _configured_perspective(world_config: dict, fallback: int) -> int:
     return fallback
 
 
-def resolve_opening_scene(world_id: str, scenario_id: str | None) -> str:
-    """Resolve a world/scenario opening scene without creating a conversation."""
+def resolve_opening_scene(
+    world_id: str,
+    scenario_id: str | None,
+    world_mode: WorldMode = "graph",
+) -> str:
+    """Resolve an opening scene from the selected engine namespace."""
+    if world_mode == "wiki":
+        try:
+            return resolve_wiki_opening_scene(
+                WIKI_VAULT_ROOT,
+                world_id,
+                scenario_id or "default",
+            )
+        except (FileNotFoundError, WikiContextError) as exc:
+            print(f"[WebApp] Wiki opening scene unavailable for {world_id}/{scenario_id}: {exc}")
+            return ""
     try:
         state = initialize_conversation(ConversationState(world_id=world_id, scenario_id=scenario_id or "default"))
     except (FileNotFoundError, RuntimeError, KeyError) as exc:

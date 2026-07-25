@@ -15,6 +15,11 @@
 #   - OocConfigRequest : Request body for updating thread OOC config.
 #   - UserNoteCreateRequest : Request body for creating a usernote.
 #   - UserNoteUpdateRequest : Request body for updating a usernote.
+#   - WikiCommitSkipRequest : Request body for discarding a pending Wiki commit.
+#   - WikiCommitStatusResponse : Current Wiki updater and deferred commit state.
+#   - WikiBranchResult : 안전한 과거 턴 분기로 만든 대화와 재입력 초안.
+#   - WikiConversationRenameRequest : Wiki 대화 이름 변경 요청.
+#   - WikiConversationArchiveRequest : Wiki 대화 보관 또는 복원 요청.
 #   - AppSettingsRequest : Request body for updating app-wide settings.
 #   - ForcePregnancyRequest : Request body for forcing a pregnancy (mother + optional father).
 #   - SimulatePregnancyRequest : Request body for simulating N internal ejaculations.
@@ -31,12 +36,18 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+WorldMode = Literal["graph", "wiki"]
+WikiUpdateStatus = Literal["idle", "queued", "failed", "applied", "skipped"]
+
 SUPPORTED_ACTOR_MODELS = {
     "gemini-3.1-pro-preview": "Gemini 3.1 Pro Preview",
+    "gemini-3.6-flash": "Gemini 3.6 Flash",
+    "claude-sonnet-5": "Claude Sonnet 5",
     "claude-sonnet-4-6": "Claude Sonnet 4.6",
     "claude-opus-4-6": "Claude Opus 4.6",
     "claude-opus-4-7": "Claude Opus 4.7",
     "claude-opus-4-8": "Claude Opus 4.8",
+    "deepseek-v4-pro": "DeepSeek V4 Pro",
     "gemini-3.5-flash": "Gemini 3.5 Flash",
     "gemini-3-flash-preview": "Gemini 3 Flash Preview",
 }
@@ -75,12 +86,14 @@ class ChatMessage(BaseModel):
     actor_model: str | None = None
     variants: list[MessageVariant] = Field(default_factory=list)
     ooc_config: str = ""
+    wiki_commit_id: str | None = None
 
 
 class ConversationState(BaseModel):
     """Persisted standalone UI conversation state."""
 
     thread_id: str = Field(default_factory=lambda: uuid4().hex)
+    world_mode: WorldMode = "graph"
     world_id: str
     scenario_id: str | None = None
     title: str = "새 대화"
@@ -104,12 +117,38 @@ class ConversationState(BaseModel):
     npc_id: str = ""
     npc_name_kor: str = ""
     perspective: int = 3
+    archived: bool = False
+    wiki_update_status: WikiUpdateStatus = "idle"
+    wiki_update_error: str = ""
+    wiki_pending_commit_id: str | None = None
+
+
+class WikiBranchResult(BaseModel):
+    """A newly reconstructed Wiki branch and the selected user input draft."""
+
+    conversation: ConversationState
+    draft: str
+    source_thread_id: str
+    source_user_message_id: str
+
+
+class WikiConversationRenameRequest(BaseModel):
+    """Request body for changing a Wiki conversation's display title."""
+
+    title: str = Field(min_length=1, max_length=120)
+
+
+class WikiConversationArchiveRequest(BaseModel):
+    """Request body for archiving or restoring a Wiki conversation."""
+
+    archived: bool
 
 
 class ConversationCreateRequest(BaseModel):
     """Request body for creating a standalone conversation."""
 
     world_id: str
+    world_mode: WorldMode = "graph"
     scenario_id: str | None = None
     actor_model: str | None = None
     ooc_config: str = ""
@@ -168,6 +207,22 @@ class UserNoteUpdateRequest(BaseModel):
     name: str | None = None
     content: str | None = None
     enabled: bool | None = None
+
+
+class WikiCommitSkipRequest(BaseModel):
+    """Request body for discarding a pending Wiki commit without applying it."""
+
+    reason: str = Field(default="", max_length=500)
+
+
+class WikiCommitStatusResponse(BaseModel):
+    """Current Wiki updater state plus the filesystem-authoritative commit payload."""
+
+    update_status: WikiUpdateStatus
+    update_error: str = ""
+    commit: dict[str, Any] | None = None
+    wiki_thread_generation: Literal["current", "legacy", "missing"] = "missing"
+    wiki_thread_diagnostic: str = ""
 
 
 class AppSettingsRequest(BaseModel):

@@ -6,7 +6,9 @@
 # Functions
 #   - build_time_plan(plan: dict, base_time: datetime) -> dict : Build a DB-write-ready time plan
 #   - commit_time_plan(time_plan: dict, pc_id: str, npc_id: str, companion_ids: list[str] | None = None) -> datetime : Commit a prepared time plan to the DB
+#   - parse_prose_header_text(actor_response: str) -> str | None : Return the first accepted prose header text.
 #   - parse_prose_header_datetime(actor_response: str) -> datetime | None : Parse the accepted Actor header time
+#   - parse_prose_header_location(actor_response: str) -> str | None : Parse the accepted Actor header location.
 #   - commit_time_from_prose_header(actor_response: str, fallback_time: object = None) -> datetime | None : Commit accepted Actor header time without rollback
 #   - apply_time_updates(plan: dict, base_time: datetime, pc_id: str, npc_id: str) -> datetime : Build and commit a time plan
 #   - reconcile_location_with_prose(actor_response: str, pc_id: str, npc_id: str, companion_ids: list[str] | None = None, user_input: str = "") -> str | None : Override committed location only when the player input referenced the destination
@@ -137,7 +139,7 @@ def _visible_prose(actor_response: str) -> str:
     return _ANALYZE_BLOCK_RE.sub("", actor_response or "").strip()
 
 
-def _first_prose_header(actor_response: str) -> str | None:
+def parse_prose_header_text(actor_response: str) -> str | None:
     """Return the first bold prose header outside analyze blocks."""
     match = _BOLD_HEADER_RE.search(_visible_prose(actor_response))
     return match.group("header").strip() if match else None
@@ -155,7 +157,7 @@ def _coerce_header_hour(hour: int, ampm: str | None) -> int:
 
 def parse_prose_header_datetime(actor_response: str) -> datetime | None:
     """Parse the accepted Actor prose header into a datetime, if present."""
-    header = _first_prose_header(actor_response)
+    header = parse_prose_header_text(actor_response)
     if not header:
         return None
     date_match = _HEADER_DATE_RE.search(header)
@@ -222,9 +224,9 @@ async def commit_time_from_prose_header(
     return header_dt
 
 
-def _parse_prose_header_location(actor_response: str) -> str | None:
+def parse_prose_header_location(actor_response: str) -> str | None:
     """Actor 산문 첫머리 헤더(**...분, 장소**)에서 장소명을 추출한다. 없으면 None."""
-    header = _first_prose_header(actor_response)
+    header = parse_prose_header_text(actor_response)
     if header:
         date_match = _HEADER_DATE_RE.search(header)
         if date_match:
@@ -291,7 +293,7 @@ async def reconcile_location_with_prose(
     헤더 장소명이 알려진 Location과 정확히 매칭되고 현재 currentLocationId와 다를 때만 적용된다.
     반환: 보정된 location_id (보정 없으면 None).
     """
-    header_name = _parse_prose_header_location(actor_response)
+    header_name = parse_prose_header_location(actor_response)
     if not header_name:
         return None
 
