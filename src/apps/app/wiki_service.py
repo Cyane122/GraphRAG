@@ -19,12 +19,23 @@ from uuid import uuid4
 from src.agents.prompt_factory.usernote import build_usernotes_block
 from src.agents.manager.classifier import classify_scene_types
 from src.apps.app.actor import stream_actor_events
-from src.apps.app.models import ChatMessage, ConversationState, normalize_actor_model
+from src.apps.app.models import (
+    ChatMessage,
+    ConversationState,
+    normalize_actor_model,
+    resolve_wiki_systems,
+)
 from src.apps.app.output_guard import find_forbidden_terms, find_pov_violations
 from src.apps.app.output_repair import repair_actor_output
 from src.apps.app.settings import load_settings
 from src.apps.app.turn_debug import write_actor_raw_snapshot, write_turn_debug_snapshot
-from src.config import MAX_TOKEN, MODEL_OUTPUT_REPAIR, MODEL_PRO_UPDATER, WIKI_VAULT_ROOT
+from src.config import (
+    MAX_TOKEN,
+    MODEL_OUTPUT_REPAIR,
+    MODEL_PRO_UPDATER,
+    WIKI_VAULT_ROOT,
+    wiki_system_defaults,
+)
 from src.core.llm.client import get_client
 from src.simulation.state.models import WikiTurnUpdateRequest
 from src.simulation.state.updater import update_accepted_turn
@@ -350,13 +361,17 @@ async def stream_wiki_turn(
                     user_input=content,
                     actor_response=full_response,
                     model_name=MODEL_PRO_UPDATER,
-                    max_attempts=3,
-                    player_profile_id=setup.pc_id,
-                    actor_profile_id=setup.npc_id,
-                    user_message_id=user_message.id,
-                    assistant_message_id=assistant_message.id,
-                )
+                max_attempts=3,
+                player_profile_id=setup.pc_id,
+                actor_profile_id=setup.npc_id,
+                user_message_id=user_message.id,
+                assistant_message_id=assistant_message.id,
+                wiki_systems=resolve_wiki_systems(
+                    state.wiki_system_overrides,
+                    wiki_system_defaults(),
+                ),
             )
+        )
             pending = update_result.pending_wiki_commit
             if pending is None:
                 raise RuntimeError("Wiki Updater returned no pending commit")

@@ -7,6 +7,7 @@
 # Functions
 #   - _embedding_dim(raw: str | None) -> int | None : 임베딩 차원 환경변수를 검증·파싱합니다.
 #   - _validate_hf_token(raw: str | None) -> str | None : Hugging Face 토큰을 정규화합니다.
+#   - wiki_system_defaults() -> dict[str, bool] : Wiki gated postprocessor의 현재 기본값 표를 반환합니다.
 # ================================
 
 import os
@@ -37,6 +38,12 @@ WIKI_MEMORY_DISTORTION = os.getenv("WIKI_MEMORY_DISTORTION", "false").strip().lo
 WIKI_GOSSIP = os.getenv("WIKI_GOSSIP", "false").strip().lower() == "true"
 WIKI_PERSONALITY_DRIFT = os.getenv("WIKI_PERSONALITY_DRIFT", "false").strip().lower() == "true"
 WIKI_PREGNANCY = os.getenv("WIKI_PREGNANCY", "false").strip().lower() == "true"
+WIKI_SYSTEM_KEYS = (
+    "memory_distortion",
+    "gossip",
+    "personality_drift",
+    "pregnancy",
+)
 HOSTED_UI_ORIGINS = tuple(
     origin.strip()
     for origin in os.getenv(
@@ -90,6 +97,16 @@ DEEPSEEK_V4_PRO_MODEL = os.getenv("DEEPSEEK_V4_PRO_MODEL", "deepseek-v4-pro")
 ANTHROPIC_VERTEX_REGION = os.getenv("ANTHROPIC_VERTEX_REGION", GOOGLE_CLOUD_LOCATION)
 
 # ── 임베딩 ──────────────────────────────────────────────────
+def wiki_system_defaults() -> dict[str, bool]:
+    """Wiki gated postprocessor의 현재 기본값 표를 반환합니다."""
+    return {
+        "memory_distortion": WIKI_MEMORY_DISTORTION,
+        "gossip": WIKI_GOSSIP,
+        "personality_drift": WIKI_PERSONALITY_DRIFT,
+        "pregnancy": WIKI_PREGNANCY,
+    }
+
+
 def _embedding_dim(raw: str | None) -> int | None:
     """EMBEDDING_DIM을 파싱한다.
 

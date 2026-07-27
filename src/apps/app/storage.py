@@ -23,7 +23,11 @@ from threading import Lock
 from typing import Any
 
 from src.config import WORLD_ID
-from src.apps.app.models import ChatMessage, ConversationState
+from src.apps.app.models import (
+    ChatMessage,
+    ConversationState,
+    normalize_wiki_system_overrides,
+)
 from src.apps.app.runtime import sync_conversation_perspective
 
 _INDEX_FILE = Path("data") / "index.json"
@@ -87,6 +91,9 @@ class ConversationStore:
     def save(self, state: ConversationState) -> ConversationState:
         """Persist and return a conversation state."""
         sync_conversation_perspective(state)
+        state.wiki_system_overrides = normalize_wiki_system_overrides(
+            state.wiki_system_overrides
+        )
         state.updated_at = datetime.now()
         self.root.mkdir(parents=True, exist_ok=True)
         self._path(state.thread_id).write_text(
@@ -110,9 +117,10 @@ class ConversationStore:
 
         A streaming generation loads a snapshot at turn start and re-persists the whole
         state in its `finally` block. That save can run many seconds later, so any usernote
-        or thread-level OOC config the user edited while the response was streaming would be
-        clobbered by the stale snapshot. The generation path never writes these fields, so
-        re-reading the current on-disk values just before that save prevents the lost update.
+        or thread-level OOC config or Wiki system override the user edited while the response
+        was streaming would be clobbered by the stale snapshot. The generation path never
+        writes these fields, so re-reading the current on-disk values just before that save
+        prevents the lost update.
         """
         state.usernotes = self.load_world_usernotes(state)
         path = self._path(state.thread_id)
@@ -124,6 +132,9 @@ class ConversationStore:
             return
         if isinstance(payload.get("ooc_config"), str):
             state.ooc_config = payload["ooc_config"]
+        state.wiki_system_overrides = normalize_wiki_system_overrides(
+            payload.get("wiki_system_overrides")
+        )
 
     def load(self, thread_id: str) -> ConversationState:
         """Load a conversation state or raise FileNotFoundError."""

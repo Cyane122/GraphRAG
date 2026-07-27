@@ -24,6 +24,7 @@ from pathlib import Path
 PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
 
 _PROMPT_HIDDEN_STATE_KEYS: frozenset[str] = frozenset({
+    "contraception",
     "ts_acceptance",
 })
 

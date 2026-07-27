@@ -663,7 +663,7 @@ async def _check_postprocess() -> None:
         "### Personality Change Ledger\n\n"
         "- No durable personality change has occurred since the story began.\n\n"
         "### Reproductive State\n\n"
-        "- Menstrual cycle: enabled\n- Cycle day: 14\n- Pregnant: no\n"
+        "- Menstrual cycle: enabled\n- Contraception: none\n- Cycle day: 14\n- Pregnant: no\n"
         "- Pregnancy day: 0\n- Internal ejaculation count this cycle: 0\n"
         "- Other parent: unknown\n"
     )
@@ -785,22 +785,253 @@ async def _check_postprocess() -> None:
         not in drift_patches[0].replacement_markdown
     )
 
-    organic_response = "캐릭터 A의 몸 안에 피임 없이 사정했다."
-    with patch(
+    organic_response = "캐릭터 A의 몸 안에 질내사정했다."
+    with (
+        patch(
             "src.wiki.character_postprocess.calculate_pregnancy_probability",
             return_value=1.0,
-        ):
+        ) as probability_mock,
+        patch("src.wiki.character_postprocess.get_model") as contraception_model,
+    ):
         organic_patches, ooc_message = await plan_organic_state(
             needs_documents,
             organic_response,
             trigger_pending,
             "character_profile:character_a",
             "character_profile:player",
+            "test-updater",
         )
+    assert contraception_model.call_count == 0
+    assert probability_mock.call_args.kwargs["contraception"] == "none"
     assert len(organic_patches) == 1
+    assert "- Contraception: none" in organic_patches[0].replacement_markdown
     assert "- Pregnant: yes" in organic_patches[0].replacement_markdown
     assert organic_patches[0].evidence == organic_response
     assert ooc_message is not None and "임신 상태" in ooc_message
+
+    with (
+        patch(
+            "src.wiki.character_postprocess.calculate_pregnancy_probability",
+            return_value=1.0,
+        ) as condom_probability_mock,
+        patch("src.wiki.character_postprocess.get_model") as condom_contraception_model,
+    ):
+        condom_patches, condom_ooc = await plan_organic_state(
+            needs_documents,
+            (
+                "캐릭터 A의 몸 안에 질내사정했다.\n\n"
+                "<ooc>\n- Protection: condom\n</ooc>"
+            ),
+            trigger_pending,
+            "character_profile:character_a",
+            "character_profile:player",
+            "test-updater",
+        )
+    assert condom_contraception_model.call_count == 0
+    assert condom_probability_mock.call_count == 0
+    assert condom_patches == []
+    assert condom_ooc is None
+
+    with (
+        patch(
+            "src.wiki.character_postprocess.calculate_pregnancy_probability",
+            return_value=1.0,
+        ) as ooc_none_probability_mock,
+        patch("src.wiki.character_postprocess.get_model") as ooc_none_contraception_model,
+    ):
+        ooc_none_patches, ooc_none_message = await plan_organic_state(
+            needs_documents,
+            (
+                "안에 사정했다.\n\n"
+                "<ooc>\n- Protection: none\n</ooc>"
+            ),
+            trigger_pending,
+            "character_profile:character_a",
+            "character_profile:player",
+            "test-updater",
+        )
+    assert ooc_none_contraception_model.call_count == 0
+    assert ooc_none_probability_mock.call_args.kwargs["contraception"] == "none"
+    assert len(ooc_none_patches) == 1
+    assert "- Pregnant: yes" in ooc_none_patches[0].replacement_markdown
+    assert ooc_none_patches[0].evidence == "안에 사정했다."
+    assert ooc_none_message is not None and "임신 상태" in ooc_none_message
+
+    with (
+        patch(
+            "src.wiki.character_postprocess.calculate_pregnancy_probability",
+            return_value=1.0,
+        ) as fallback_probability_mock,
+        patch("src.wiki.character_postprocess.get_model") as fallback_contraception_model,
+    ):
+        fallback_patches, fallback_ooc = await plan_organic_state(
+            needs_documents,
+            "안에 사정했다.",
+            trigger_pending,
+            "character_profile:character_a",
+            "character_profile:player",
+            "test-updater",
+        )
+    assert fallback_contraception_model.call_count == 0
+    assert fallback_probability_mock.call_count == 0
+    assert fallback_patches == []
+    assert fallback_ooc is None
+
+    with (
+        patch(
+            "src.wiki.character_postprocess.calculate_pregnancy_probability",
+            return_value=1.0,
+        ) as malformed_probability_mock,
+        patch("src.wiki.character_postprocess.get_model") as malformed_contraception_model,
+    ):
+        malformed_patches, malformed_ooc = await plan_organic_state(
+            needs_documents,
+            (
+                "안에 사정했다.\n\n"
+                "<ooc>\n- Protection: maybe\n</ooc>"
+            ),
+            trigger_pending,
+            "character_profile:character_a",
+            "character_profile:player",
+            "test-updater",
+        )
+    assert malformed_contraception_model.call_count == 0
+    assert malformed_probability_mock.call_count == 0
+    assert malformed_patches == []
+    assert malformed_ooc is None
+
+    contraception_model = Mock()
+    contraception_model.generate_content_async = AsyncMock(
+        return_value=SimpleNamespace(
+            text=json.dumps(
+                {
+                    "state_change_established": True,
+                    "new_contraception": "oral",
+                    "emergency_contraception_taken": False,
+                    "evidence_quote": "캐릭터 A는 먹는 피임약을 계속 복용 중이라고 분명히 말했다.",
+                },
+                ensure_ascii=False,
+            )
+        )
+    )
+    with (
+        patch(
+            "src.wiki.character_postprocess.get_model",
+            return_value=contraception_model,
+        ),
+        patch(
+            "src.wiki.character_postprocess.calculate_pregnancy_probability",
+            return_value=0.0,
+        ) as protected_probability_mock,
+    ):
+        protected_patches, protected_ooc = await plan_organic_state(
+            needs_documents,
+            "캐릭터 A는 먹는 피임약을 계속 복용 중이라고 분명히 말했다.",
+            trigger_pending,
+            "character_profile:character_a",
+            "character_profile:player",
+            "test-updater",
+        )
+    assert protected_probability_mock.call_count == 0
+    assert protected_ooc is None
+    assert len(protected_patches) == 1
+    assert "- Contraception: oral" in protected_patches[0].replacement_markdown
+    assert protected_patches[0].evidence == (
+        "캐릭터 A는 먹는 피임약을 계속 복용 중이라고 분명히 말했다."
+    )
+
+    passing_model = Mock()
+    passing_model.generate_content_async = AsyncMock(
+        return_value=SimpleNamespace(
+            text=json.dumps(
+                {
+                    "state_change_established": False,
+                    "new_contraception": "none",
+                    "emergency_contraception_taken": False,
+                    "evidence_quote": "",
+                },
+                ensure_ascii=False,
+            )
+        )
+    )
+    with patch(
+        "src.wiki.character_postprocess.get_model",
+        return_value=passing_model,
+    ):
+        passing_patches, passing_ooc = await plan_organic_state(
+            needs_documents,
+            "캐릭터 A는 친구가 피임약을 먹는다는 말을 들었다.",
+            trigger_pending,
+            "character_profile:character_a",
+            "character_profile:player",
+            "test-updater",
+        )
+    assert passing_model.generate_content_async.await_count == 1
+    assert passing_patches == []
+    assert passing_ooc is None
+
+    emergency_documents = [
+        needs_documents[0].model_copy(
+            update={
+                "content": needs_character_content.replace(
+                    "- Internal ejaculation count this cycle: 0",
+                    "- Internal ejaculation count this cycle: 2",
+                ),
+                "revision": document_revision(
+                    needs_character_content.replace(
+                        "- Internal ejaculation count this cycle: 0",
+                        "- Internal ejaculation count this cycle: 2",
+                    )
+                ),
+                "metadata": parse_frontmatter(
+                    needs_character_content.replace(
+                        "- Internal ejaculation count this cycle: 0",
+                        "- Internal ejaculation count this cycle: 2",
+                    )
+                ),
+            }
+        ),
+        needs_documents[1],
+    ]
+    emergency_model = Mock()
+    emergency_model.generate_content_async = AsyncMock(
+        return_value=SimpleNamespace(
+            text=json.dumps(
+                {
+                    "state_change_established": False,
+                    "new_contraception": "none",
+                    "emergency_contraception_taken": True,
+                    "evidence_quote": "캐릭터 A는 사후피임약을 바로 복용했다.",
+                },
+                ensure_ascii=False,
+            )
+        )
+    )
+    with (
+        patch(
+            "src.wiki.character_postprocess.get_model",
+            return_value=emergency_model,
+        ),
+        patch(
+            "src.wiki.character_postprocess.calculate_pregnancy_probability",
+            return_value=0.0,
+        ) as emergency_probability_mock,
+    ):
+        emergency_patches, emergency_ooc = await plan_organic_state(
+            emergency_documents,
+            "캐릭터 A는 사후피임약을 바로 복용했다.",
+            trigger_pending,
+            "character_profile:character_a",
+            "character_profile:player",
+            "test-updater",
+        )
+    assert emergency_probability_mock.call_count == 0
+    assert emergency_ooc is None
+    assert len(emergency_patches) == 1
+    assert "- Internal ejaculation count this cycle: 0" in (
+        emergency_patches[0].replacement_markdown
+    )
+    assert emergency_patches[0].evidence == "캐릭터 A는 사후피임약을 바로 복용했다."
 
     protected_payload = {
         "summary": "runtime section 침범",

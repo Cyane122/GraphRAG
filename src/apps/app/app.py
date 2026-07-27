@@ -8,8 +8,8 @@
 #   - _load_or_404(store: ConversationStore, thread_id: str) -> ConversationState : 스레드 로드 또는 HTTP 404.
 #   - _require_graph_mode(state: ConversationState) -> None : Reject graph-only tools for Wiki threads.
 #   - _require_wiki_mode(state: ConversationState) -> None : Reject Wiki controls for Graph threads.
-#   - _conversation_summary(state) -> dict : 대화 목록 메타데이터 반환.
-#   - _conversation_payload(state) -> dict : 대화 전체 페이로드 반환.
+#   - _conversation_summary(state: ConversationState) -> dict[str, object] : 대화 목록 메타데이터 반환.
+#   - _conversation_payload(state: ConversationState) -> dict[str, object] : 대화 전체 페이로드 반환.
 # ================================
 
 from __future__ import annotations
@@ -45,6 +45,7 @@ from src.apps.app.models import (
     WikiCommitSkipRequest,
     WikiConversationArchiveRequest,
     WikiConversationRenameRequest,
+    WikiSystemsPatchRequest,
     WorldMode,
 )
 from src.apps.app.conversation_lifecycle import (
@@ -81,12 +82,14 @@ from src.apps.app.wiki_controls import (
     get_wiki_diagnostics,
     get_wiki_document_list,
     get_wiki_manual_audit,
+    get_wiki_systems,
     get_wiki_thread_migration,
     plan_wiki_commit_inverse,
     regenerate_wiki_update,
     record_wiki_manual_audit,
     retry_wiki_update,
     skip_wiki_commit,
+    update_wiki_systems,
 )
 from src.apps.app.wiki_message_ops import (
     activate_wiki_variant,
@@ -328,6 +331,28 @@ def create_app() -> FastAPI:
                 for summary in get_wiki_document_list(state)
             ]
         }
+
+    @app.get("/api/conversations/{thread_id}/wiki/systems")
+    def api_wiki_systems(thread_id: str) -> dict:
+        """Return effective Wiki system toggles and authored cycle-ready characters."""
+        state = _load_or_404(store, thread_id)
+        _require_wiki_mode(state)
+        return get_wiki_systems(state).model_dump(mode="json")
+
+    @app.patch("/api/conversations/{thread_id}/wiki/systems")
+    def api_update_wiki_systems(
+        thread_id: str,
+        body: WikiSystemsPatchRequest,
+    ) -> dict:
+        """Update per-conversation Wiki system overrides and return the resolved state."""
+        state = _load_or_404(store, thread_id)
+        _require_wiki_mode(state)
+        try:
+            return update_wiki_systems(state, store, body.systems).model_dump(
+                mode="json"
+            )
+        except ValueError as exc:
+            raise HTTPException(400, detail=str(exc)) from exc
 
     @app.get("/api/conversations/{thread_id}/wiki/migration")
     def api_wiki_thread_migration(thread_id: str) -> dict:
@@ -753,7 +778,7 @@ def _require_wiki_mode(state: ConversationState) -> None:
 
 
 
-def _conversation_summary(state) -> dict:
+def _conversation_summary(state: ConversationState) -> dict[str, object]:
     """Return compact conversation list metadata."""
     return {
         "thread_id": state.thread_id,
@@ -768,7 +793,7 @@ def _conversation_summary(state) -> dict:
     }
 
 
-def _conversation_payload(state) -> dict:
+def _conversation_payload(state: ConversationState) -> dict[str, object]:
     """Return full conversation payload for the frontend."""
     return {
         **_conversation_summary(state),

@@ -108,6 +108,7 @@ async def update_accepted_turn(
         request.actor_profile_id,
         request.player_profile_id,
         request.model_name,
+        request.wiki_systems,
     )
     queue = WikiCommitQueue(
         WikiStore(request.vault_root / "threads" / request.thread_id)

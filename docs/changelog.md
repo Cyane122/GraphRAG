@@ -28,17 +28,10 @@
 
 ## 2026-04-21
 - 출력 잘림 현상 완화
-- 메인 프롬프트 `promptBuilder.py` 동적 모듈화 완료.
-  - `schemaBuilder.py`는 더 이상 바베대학교 세계관 스키마를 만들지 않음
-  - `graph.world.*`에서 세계관 설정 프롬프트, 세계관 스키마를 제작함
-  - `promptBuilder.py`에서 모든 'Eun-seo', 'Sian' 텍스트를 {char}, {user}로 변환함
 - `default.py`: `build_schema()` 함수는 이제 GlobalState 노드를 생성함
   - `build_schema()` 함수를 상속받아 현재 시작 위치와 날씨를 지정할 수 있음
 - `time_manager.py`: 이제 AI가 시간을 계산하여 GlobalState 노드에 저장함
 - `ooc_parser`: 더 이상 현재 시간과 장소를 계산하지 않음
-- `promptBuilder.py`, `babe_univ.py`: 이제 세계관과 범용 프롬프트를 완전히 구분함.
-- 이제 `manager_agent.py`가 `run_manager.py`에서 `world_id`를 변수로 사용함.
-
 ## 2026-04-22
 - `complex_updater.py`, `expression_classifier.py`, `ooc_parser.py`, `state_updater.py`, `time_manager.py` 리팩토링 및 중복된 기능 삭제
 - `actor_agent.py`, `manager_agent.py` 리팩토링
@@ -46,8 +39,6 @@
 - `utils/db_utils.py`, `utils.llm_utils.py` 추가
 
 ## 2026-04-23
-- 모든 `datetime.now()`를 별도 세계관별 `start_time` 변수로 전환함
-  - `app.py`의 로깅용 변수 하나는 제외함
 - `complex_updater.py`, `manager_agent.py`, `time_manager.py`, `app.py`: `async` 관련 비동기 문제점 수정 및 하드코딩 제거
 - `manager_agent.py`: 오타 수정
 - `app.py`: `response_msg` 이중 호출 문제 수정. 이제 `run_manager.py`의 지연 커밋 로직과 중복되지 않으며, 하드코딩 제거됨
@@ -64,20 +55,15 @@
   - `needs_manager.py`
   - `traits_initializer.py`
   - `action_resolver.py`
-- [신규] 스키마 대응 추가
-  - `babe_univ.py`: `sexual_tendency`, `libido_drive_modifer`, `libido_excluded` 추가. `trait_*` 필드 추가
 - `manager_agent.py`, `time_manager.py`, `state_updater.py`, `app.py`: LLM 호출 최적화.
 - `app.py`: 코드 간결화 및 리팩토링. 이제 `calculate_and_update_time` 함수를 사용하지 않음. (`manager_agent.py`로 이관)
 
 ## 2026-04-25
-- [신규] 신규 캐릭터 추가 기능
-  - `world/world_builder.py`: 이제 챗봇이 새로운 캐릭터의 노드를 생성함
 - `embedder.py`: 원하는 임베딩 모델 사용 가능하도록 개선
 - LLM 호출 최적화: `state_updater.py`, `complex_updater.py`
 - [신규] 기억 왜곡 기능 추가
   - `decay_manager.py`: 이제 중요하지 않은 기억은 점차 NPC에게 유리하게 변질되어 기억됨
   - `promptBuilder.py`: 이제 왜곡된 기억이라는 사실을 LLM에게 전달함
-- `promptBuilder.py`, `babe_univ.py`: 긍정형 프롬프트로 수정.
 - `app.py`: 재구조화. 이제 더 깔끔하게 출력됨.
 - [신규] 대화 리롤 기능 추가
 - `db_utils.py`: 중복 함수 삭제.
@@ -87,7 +73,6 @@
 
 ## 2026-04-26
 - [신규] 테마 설정 완료
-- `promptBuilder.py`, `babe_univ.py`: 프롬프트 개선
 - `count_tokens.py`, `test_connection.py`: 이제 `GraphRAG\script`에 위치함
 - `llm_utils.py`: `extract_json_from_llm`이 haiku의 불안정한 응답에도 강건하도록 수정함
 - `app.py`: 대화 로그 저장 기능 추가
@@ -104,19 +89,7 @@
 ## 2026-05-05
 - [리팩토링] 전면 리팩토링.
 - [변경] Graph 아키텍처 `neo4j` -> `kuzu`로 변경.
-- [변경] Graph DB 저장 경로 변경: `data/{world_id}.kuzu` → `graph/{world_id}`
-  - `src/core/database/driver.py`, `src/core/database/schema_builder.py` 수정
-- [신규] `src/core/database/helpers.py`: `load_graph_info()` 함수 추가
-  - `.env`의 `WORLD_ID`를 자동으로 읽어 해당 그래프의 전역 상태·캐릭터·장소·관계를 dict로 반환
-- [정리] `.gitignore`에 명시된 파일들을 git tracking에서 제거
-  - `.chainlit/`, `.claude/`, `logs/`, `graph/sses.backup`, `project-*.json` (총 36개)
-
 ## 2026-05-06
-- `src/assets/worlds/base.py`
-  - 이제 `Memory` 노드 스키마가 실제 코드와 일치함
-  - `REMEMBERS` 노드 스키마가 실제 코드와 일치하도록 변경
-  - 통일되어 있지 않았던 벡터 인덱스 이름이 통일되도록 변경
-  - `Event` 노드의 필드명을 `timestamp`로 변경.
 - `src/simulation/systems/memory.py`
   - [추가] `ensure_memories_for_event()`: Memory 노드 생성 후 `OF_EVENT` 엣지 추가.
 - `src/simulation/state/updater.py`
@@ -124,47 +97,16 @@
   - 스키마에 필요없는 필드 3개 제거.
 - `src/core/database/schema_builder.py`
   - 이제 DB 삭제 로직을 파일과 폴더 양쪽에서 처리함
-- `src/assets/worlds/.../schema.py`
-  - Location 노드 CREATE 쿼리에서 `$desc` 파라미터가 Kuzu 파서 오류를 일으키던 문제 수정
 - `src/agents/manager.py`
   - `fetch_recent_events()`: 이제 `pc_id`도 받아 NPC·PC 양쪽의 Memory를 함께 조회함
   - `builder.build()` 호출부: `events`에 `npc_memory`, `pc_memory` 포함한 전체 dict 전달
-- `src/agents/prompt_factory/builder.py`
-  - `build_events_section()`: `@staticmethod` → 인스턴스 메서드로 전환
-  - 이제 각 Event 아래에 NPC·PC의 주관적 기억(`Memory.summary`)을 함께 렌더링함
-  - 출력 형식: `└ {캐릭터명}의 기억: {memory_summary}` (Memory가 없으면 생략)
-  - [신규] `_DEFAULT_STATE_FIELDS`, `_render_state_line()`: DynamicState 핵심 필드를 `<analyze>` 체크리스트의 `STATE:` 라인으로 렌더링하는 레지스트리 기반 시스템 추가
-    - 기본 필드: `mood`, `physical_condition`, `mental_condition`, `stress_level`, `outfit`, `injury_marks`
-    - `injury_marks`가 `"없음"`이거나 `outfit`이 미설정이면 자동 생략
-    - `world_config["extra_state_fields"]`에 `(key, label, frozenset(skip_values))` 목록을 추가하면 세계별 커스텀 필드가 STATE 라인에 자동 포함됨 (코드 수정 불필요)
-  - `_CHECKLIST_3P`, `_CHECKLIST_1P`: `STATE: {state_line}` 라인 추가. LLM이 씬 생성 전 현재 의상·컨디션·부상 상태를 명시적으로 인식하도록 강제함
 - [정리] `scripts/`를 git tracking에서 제거 (로컬 파일은 유지, `.gitignore` 이미 설정되어 있었음)
-- [리팩토링] 환경변수 참조 `src/config.py`로 중앙화
-  - [신규] `src/config.py`: 모든 `.env` 환경변수를 한 곳에서 읽어 타입 변환 후 상수로 제공
-  - 19개 파일에서 `os.getenv` / `load_dotenv` 직접 호출 제거, `from src.config import ...`로 교체
-    - `src/core/database/driver.py`, `src/core/database/schema_builder.py`
-    - `src/core/llm/client.py`, `src/core/embedding/encoder.py`
-    - `src/agents/actor.py`, `src/agents/manager.py`, `src/agents/resolver.py`
-    - `src/agents/prompt_factory/builder.py`, `src/agents/prompt_factory/ooc_handler.py`
-    - `src/simulation/state/updater.py`, `src/simulation/state/classifier.py`
-    - `src/simulation/systems/memory.py`, `src/simulation/systems/needs.py`, `src/simulation/systems/social.py`
-    - `src/assets/worlds/babe_univ_altered/schema.py`, `src/assets/worlds/rofan/schema.py`, `src/assets/worlds/sses/schema.py`
-    - `app.py`
-  - `MODEL_STATE_UPDATER` 기본값 파일 간 불일치 해소 (→ `gemini-3-flash-preview`로 통일)
 - [신규] `src/simulation/events/` 패키지 추가 — 조건 기반 이벤트(StaticEvent) 시스템
   - `evaluator.py`: `time` / `stat` / `flag` 세 가지 조건 타입 평가 (time은 MM-DD 정수 비교, stat은 RELATIONSHIP 쿼리, flag는 GlobalState.flags JSON 조회)
   - `manager.py`: `evaluate_all()` — 매 턴 모든 StaticEvent 상태를 갱신하고 foreshadowing/active 힌트 목록 반환. `set_flag()` — Complex Updater 등에서 서사적 조건 충족 시 호출
   - `__init__.py`: `evaluate_all`, `set_flag` 노출
   - StaticEvent 상태: `dormant` → `foreshadowing` → `active` → `done`
   - foreshadow_conditions / trigger_conditions 두 단계 분리로 복선과 발화를 구분함
-- [변경] `src/assets/worlds/base.py`
-  - `StaticEvent` 노드 테이블 추가 (`foreshadow_conditions`, `foreshadow_hint`, `trigger_conditions`, `status`)
-  - `EVENT_INVOLVES` 관계 테이블 추가 (StaticEvent → Character)
-  - `GlobalState`에 `flags STRING` 컬럼 추가 (flag 타입 조건 저장용)
-- [변경] `src/agents/prompt_factory/builder.py`
-  - `build_world_section()`: `static_events` 키 지원 추가. foreshadowing 이벤트는 `[예정]`, active는 `[오늘]` 레이블로 `<world_context>` 블록에 렌더링
-- [변경] `src/agents/manager.py`
-  - step 7.6 추가: 매 턴 `evaluate_static_events()` 호출 → 활성 힌트를 `world_context["static_events"]`에 주입
 - [최적화] LLM 호출 횟수 축소
   - `src/simulation/state/updater.py`: Classifier + Complex Updater + Relationship Status 재작성을 `_run_combined_update()` 단일 호출로 통합
     - 복합 턴 기준 최대 3회 → 1회로 축소
@@ -195,10 +137,6 @@
     - game time DB 조회 1회로 공유 후 각 기능에 전달 (불필요한 중복 조회 방지)
 
 ## 2026-05-07
-- [리팩토링] `narrator / pc / chars` 패턴 전 세계관으로 확장
-  - `src/assets/worlds/.../schema.py`: 15개 캐릭터 클래스 임포트 후 `world_instance` 생성 인자로 전달
-  - `src/assets/worlds/default/schema.py`: `Char`, `Player` 임포트 후 `world_instance` 생성 인자로 전달
-  - `get_pc_id()`, `get_npc_id()`, `npc_name_kor()` 오버라이드 제거 (base 위임)
 - [버그픽스] Kuzu 호환성 오류 다수 수정
   - `src/core/database/driver.py`
     - `KuzuRecord`에 `keys()` 메서드 추가 — `dict(row)` 호출 시 정수 인덱스로 접근하던 KeyError 수정
@@ -224,28 +162,6 @@
   - `src/agents/manager.py`
     - Memory recall 벡터 검색을 Neo4j 문법 `db.index.vector.queryNodes()`에서 Kuzu 문법 `QUERY_VECTOR_INDEX()`로 교체
     - Kuzu의 `distance` 값을 기존 prompt score 의미에 맞게 `1 - distance` 형태로 변환
-- [신규] TODO-4 **삶은 넓어지며 또한 깊어진다** 2차 구현
-  - `src/simulation/systems/goals.py` 신규: NPC 장기 목표 시스템
-    - `fetch_goal_hints()`: active `Goal`을 Dynamic prompt용 은근한 행동/일정 압박 힌트로 반환
-    - `apply_goal_updates()`: Actor 응답 확정 후 목표 진행도, 상태, 다음 힌트 갱신
-    - `PURSUES`, `GOAL_RELATED_EVENT` 관계로 캐릭터·이벤트와 연결
-  - `src/simulation/systems/items.py` 신규: 물건에 담긴 추억 시스템
-    - `fetch_object_memory_hints()`: 현재 위치/소유자/유저 입력/벡터 recall 기반으로 Item-anchored Memory 힌트 조회
-    - `apply_item_updates()`: 기존 Item의 위치·소유자·분실 상태·설명·앵커 기억을 보수적으로 갱신
-    - `ensure_item_memory()`: `Item` → `ANCHORS_MEMORY` → `Memory`, `Character` → `REMEMBERS` 연결 생성
-  - `src/simulation/systems/secrets.py` 신규: 조건부 비밀/서브텍스트 시스템
-    - `fetch_secret_hints()`: 조건을 만족한 `Secret`의 `public_hint`만 prompt에 제공하고 `private_summary`는 노출하지 않음
-    - `apply_secret_updates()`: reveal 조건 충족 시 reveal level/status 갱신 및 이벤트 연결
-  - `src/assets/worlds/base.py`
-    - `Goal`, `Secret`, 확장 `Item` 노드 테이블 추가
-    - `PURSUES`, `GOAL_RELATED_EVENT`, `OWNS`, `GAVE`, `ANCHORS_MEMORY`, `ROOTED_IN`, `TRIGGERED_BY` 관계 테이블 추가
-  - `src/agents/manager.py`
-    - step 7.7 추가: goal / object memory / secret hint를 `world_context`에 동적 주입
-  - `src/agents/prompt_factory/builder.py`
-    - `<world_context>`에 `[Life Goals]`, `[Object Memories]`, `[Subtext]` 블록 렌더링
-    - Fixed prompt가 아니라 Dynamic prompt에만 넣어 Gemini implicit cache 안정성 유지
-  - `src/simulation/state/updater.py`
-    - Actor 응답 확정 후 `apply_goal_updates()`, `apply_item_updates()`, `apply_secret_updates()` 후처리 호출
 - [신규] TODO 문서 전면 재작성
   - `TODO.md`: 단순 TODO-4 목록에서 엔진 안정화 로드맵 문서로 확장
   - 1차 작업: Turn Router, Deferred Commit / State Diff, State Update Guard 정리
@@ -274,20 +190,6 @@
   - `public/elements/EditableMessage.jsx`
     - Chainlit props 중첩 구조 대응 추가
     - `useEffect`로 편집 대상 응답 변경 시 textarea 내용 동기화
-- [버그픽스] Kuzu 스키마/마이그레이션 및 NeedsState 안정화
-  - `src/assets/worlds/base.py`
-    - `DynamicState` 확장 필드 추가 (`outfit`, `injury_marks`, 임신/수용도/외형/심리 보조 필드 등)
-    - `Location.district`, `GlobalState.today_schedule`, `GlobalState.schedule_date` 추가
-    - `StaticProfile`에 `age`, `gender`, `role` 컬럼 추가
-  - `src/core/database/driver.py`
-    - 시작 시 누락된 `NeedsState`, `HAS_NEEDS` 테이블을 생성하는 migration 추가
-    - Kuzu ALTER 문법에 맞춰 컬럼 migration을 `ADD` 기반으로 정리
-    - migration 실패 사유를 구분해 이미 존재하는 컬럼/테이블은 조용히 skip
-  - `src/core/database/helpers.py`
-    - `DYNAMIC_STATE_FIELDS` whitelist 추가로 잘못된 DynamicState 필드 write 방지
-    - `update_relationship_affinity()`가 `null` affinity에서도 안전하게 clamp되도록 `coalesce` 적용
-  - `src/core/database/__init__.py`
-    - schema builder 등에서 패키지 임포트만 해도 active Kuzu store가 열리지 않도록 lazy export로 변경
 - [버그픽스] Needs / Resolver / Social 계열 null 안정화
   - `src/simulation/systems/needs.py`
     - 욕구 수치를 DynamicState가 아니라 `NeedsState`에 저장하도록 정리
@@ -350,11 +252,6 @@
     - `logs/state_audit/<timestamp>.json`에 guard 결과, state 후보, relationship 후보, event 후보 저장
 
 ## 2026-05-09
-- [버그픽스] Actor 히스토리 컨텍스트 과다 주입 수정
-  - `app.py`
-    - `conversation_history`에 사용자 메시지로 `dynamic_prompt` 전체를 저장하던 문제 수정
-    - 이제 history에는 실제 `user_input`만 저장하고, 현재 턴의 graph/dynamic context는 별도 `dynamic_prompt`로만 전달
-    - 최근 10턴 히스토리 제한은 유지하되, 이전 턴마다 `<character>`, `<world_context>`, dialogue examples가 중복 주입되는 문제 제거
 - [버그픽스] Relationship context 방향 및 렌더링 수정
   - `src/agents/manager_pipeline.py`
     - 관계 조회 방향을 실제 DB 구조에 맞춰 `npc_id -> pc_id`로 수정
@@ -367,49 +264,6 @@
   - `app.py`
     - `on_chat_end()`에서 `process_actor_response()`를 `asyncio.create_task()`로 fire-and-forget 처리하던 부분을 `await`로 변경
     - 마지막 응답 직후 세션 종료 시 state update가 누락될 가능성 감소
-
-## 2026-05-10
-- [신규] ContextRenderer numeric state band 렌더링 추가
-  - `src/agents/context_renderer.py`
-    - `DynamicState`의 `mood`, `stress_level`, `ts_acceptance`, `needs` 계열 수치를 Actor용 band 힌트로 렌더링
-    - `RELATIONSHIP.affinity`, `RELATIONSHIP.trust`를 `distant/cautious/comfortable/intimate/deeply bonded`, `guarded/uncertain/trusting/secure/unwavering` 계열 band로 해석
-    - `RelationshipProfile` 렌더링에 현재 affinity/trust band를 함께 붙여, 원본 `prompt_hint`를 수정하지 않고 이번 턴 표현 강도만 조절
-    - 0~1 스케일의 needs와 0~10 스케일의 stress를 각각 별도 정규화해 band 오해를 방지
-  - `src/agents/manager_prompting.py`
-    - `char_data.dynamic_state`를 `build_rendered_dynamic_context()`에 전달해 dynamic context 단계에서 수치 band를 만들 수 있게 변경
-  - `src/agents/prompt_factory/renderers.py`
-    - pre-rendered `<world_context>` 조립 순서에 `state` 블록 추가
-  - `TODO.md`
-    - numeric state band renderer, RelationshipProfile affinity/trust band, DynamicState stress/mood/needs band 항목 완료 처리
-- [리팩토링] 비대 파일 분리 및 패키지 경계 정리
-  - `src/agents/prompt_factory/builder.py`
-    - 프롬프트 상수와 렌더링 세부 구현을 builder 밖으로 분리
-    - `PromptBuilder`는 Fixed / Genre / Dynamic 프롬프트 조립 흐름 중심으로 축소
-    - `prompt_sections.py`, `fixed.py`, `checklist.py`, `renderers.py` 추가
-  - `src/agents/manager_pipeline.py`
-    - 파이프라인 파일을 orchestration 전용으로 축소
-    - `manager_models.py`, `manager_planning.py`, `manager_core_context.py`, `manager_prompting.py`, `manager_world_context.py` 추가
-  - `src/agents/manager.py`
-    - scene classifier, graph query, world loader, effect commit 책임을 전용 모듈로 분리
-    - `manager_classifier.py`, `manager_queries.py`, `manager_world_loader.py`, `manager_effects.py` 추가
-  - `app.py`
-    - Chainlit helper 로직을 `src/ui/`로 분리
-    - `input_routing.py`, `turn_debug.py`, `actor_stream.py`, `time_state.py`, `response_editing.py`, `status.py`, `deferred_commit.py` 추가
-  - `src/simulation/state/updater.py`
-    - audit, time planning, event update 책임을 `audit.py`, `time_plan.py`, `events.py`로 분리
-  - `src/simulation/systems`
-    - flat module 구조를 `items/`, `memory/`, `needs/`, `social/`, `goals/`, `secrets/` 하위 패키지로 재구성
-    - 기존 public import 경로는 각 패키지 `__init__.py`에서 유지
-  - [정리] 깨진 파일 헤더 주석 정리 및 UTF-8 확인
-    - Python 파일 121개 UTF-8 디코딩 확인
-    - mojibake가 남은 분리 파일 27개의 헤더 주석 교체
-    - 함수 이동 후 stale private symbol reference 검색 완료
-  - Priority 0 안정화:
-    - OOC 시간 패치 결과에 `time_before`, `time_after`, `applied_time_delta_minutes`, `applied_time_set` 반환 추가.
-    - OOC+RP 혼합 입력에서 OOC로 이미 적용된 시간을 Manager time plan이 다시 증가시키지 않도록 no-op planning 처리.
-    - Chainlit OOC step과 turn debug metadata에서 OOC 시간 변경 내용을 확인할 수 있게 정리.
-    - 신규 schema에서 `HAS_DYNAMIC_STATE` 생성 중단, 기존 legacy 관계는 시작 migration에서 `HAS_STATE`로 backfill.
-    - `AGENTS.md` schema 초기화 명령과 주요 모듈 경로를 현재 Kuzu 기반 구조로 동기화.
 
 ## 2026-05-12
 - [신규] **prompt_factory 프롬프트 마크다운 파일 외부화**
@@ -436,12 +290,6 @@
     - `_unique_event_id()` 추가: 같은 ID의 Event 노드가 이미 존재하면 `_2`, `_3` … 접미사를 붙여 충돌 회피. 100회 시도 실패 시 타임스탬프 접미사 폴백
     - LLM 호출에 `response_mime_type: "application/json"` 추가로 JSON 이외 출력 방지
     - event_id에 `need_name` 포함해 로그 식별성 향상 (`{loc}_{npc}_{need}_auto_{ts}` 형식)
-- [신규] **default 세계관 범용 프롬프트 노드 추가**
-  - `src/assets/worlds/default/schema.py`
-    - `get_prompt_config()` 메서드 추가: perspective 인자를 받아 POV·섹션·씬별 설정 dict 반환
-    - `get_full_config()` 반환값을 `prompt` 키 중심으로 재구성
-    - 스키마 초기화 시 `Rule`, `SpeechProfile`, `RelationshipProfile` 예시 노드 + 관계 생성
-    - `Location.home`에 `summary`, `prompt_hint`, `prompt_priority`, `tags` 필드 추가
 - [개선] **DynamicState 타입 정규화 강화**
   - `src/core/database/helpers.py`
     - `DYNAMIC_STATE_INT_FIELDS`, `DYNAMIC_STATE_FLOAT_FIELDS`, `DYNAMIC_STATE_BOOL_FIELDS` 집합 추가
@@ -460,10 +308,6 @@
   - `src/simulation/state/classifier.py`
     - `_sanitize_stress_level()`: 인라인 매핑 로직 제거, `normalize_stress_level()` 위임으로 단순화
     - LLM 분류 프롬프트에 "JSON number from 0 to 10 ONLY" 문구 추가, 예시에 잘못된 경우 보완
-- [정리] **assets/worlds/base.py 오타·legacy DDL 제거**
-  - `"atmospheric.md"` 오타 키 → `"atmospheric"` 수정 (씬 타입 매핑 오류 해결)
-  - `HAS_DYNAMIC_STATE` 관계 테이블 DDL 제거 — migration 기반 backfill(`HAS_STATE`)로 완전 대체
-
 ## 2026-05-17
 - [버그픽스] **OOC 시간 처리 안정화**
   - `src/agents/prompt_factory/ooc_handler.py`
@@ -536,11 +380,6 @@
   - `src/ui/graph_server.py`: 기본 진입점을 `ppt_viewer.html`로 변경.
   - `/debug graph` 갱신 시 현재 장면 중심 그래프에 Memory/Event 연결을 함께 반영.
 
-- [신규] **시간 규칙 및 스케줄 tick 보강**
-  - `src/simulation/systems/time_rules.py`: Rule 노드에서 시간/일정 관련 힌트를 찾아 Manager world context에 주입.
-  - `src/simulation/systems/schedule_tick.py`: 턴 종료 시 시작된 NPC 스케줄을 감지해 off-scene NPC 위치를 이동하고 경량 Event를 생성.
-  - `src/simulation/systems/needs/location_policy.py`: 욕구 해소 위치 후보를 need type과 스케줄 상태에 따라 제한.
-
 - [개선] **Event / Memory 저장 방식 정리**
   - active Event가 끝난 턴의 Actor 응답까지 포함해 close summary를 갱신.
   - Event embedding 기준을 `narrative_summary`가 아니라 canonical `summary`로 단순화.
@@ -569,24 +408,16 @@
   - `docs/ARCHITECTURE.md`, `docs/architecture_analysis.md`, `docs/architecture_validation.md`, `docs/generic_nodes_policy.md`, `docs/long_term_simulation_policy.md` 추가.
   - turn lifecycle, deferred commit, generic node, 장기 시뮬레이션 정책을 문서화.
 
-- [프롬프트] **프롬프트 개선**
-  - core/checklist/pov/style/emotion/intimate/blacklist 계열 프롬프트를 전반적으로 개선.
-  - 혼합 입력 레이블링이 원문 순서를 보존하도록 수정.
-  - world별 CoT append hook과 통합 blacklist 조립 경로를 보강.
-
 ## 2026-06-13
 전체 감사(프론트/백엔드/3-에이전트) 기반 개선. Chainlit deprecated → 지원 스택은 정적 `frontend/app/` + `src/ui/web_app/`.
 
 - `src/ui/web_app/actor.py`: DeepSeek 스트리밍 경로·`_is_deepseek_model`·`_openai_messages`·`httpx` import 제거(API 키 미보유).
-- `src/ui/web_app/models.py`: `SUPPORTED_ACTOR_MODELS`/별칭에서 DeepSeek 제거(Gemini 3종+Claude 4종); 미호출 `WorldSelectionRequest` 제거; `ConversationState`에 `pending_ooc`·`narrative_turns` 필드 추가(JSON 영속).
-- `src/ui/web_app/app.py`: reroll/tool/edit 엔드포인트 `RuntimeError`→HTTP 500 `{detail}` 표준화; 프론트 미호출 `POST /conversations/{id}/world` 라우트 제거.
 - `src/ui/web_app/service.py`: `activate_variant`가 미커밋 `pending_commit.ai_response` 동기화(다음 턴 Updater 정합); `append_user_and_stream`가 임신/유기 OOC(`pending_ooc`)를 다음 턴 입력 앞에 주입(표시 메시지는 원본 유지).
 - `src/ui/web_app/commit.py`: `commit_pending_web`에 임신 OOC→`pending_ooc` 저장 + narrative 압축 단계(10턴마다 `compress_to_narrative_log`) 이식(Chainlit 기능 포팅).
 - `src/simulation/state/time_plan.py`: `commit_time_plan(companion_ids=...)`로 그룹 이동 시 동행 NPC도 이동하되 `_present_companion_ids()`로 실제 동석자만 이동(언급-only NPC 텔레포트 방지); `reconcile_location_with_prose` 추가 — Actor 산문 헤더 장소가 알려진 위치와 정확 매칭+현재와 다를 때만 산문 우선 보정.
 - `src/agents/manager/effects.py`: `commit_manager_core_effects`가 scene NPC를 `commit_time_plan` 동행자로 전달.
 - `src/simulation/state/multi_character.py`: `exited_character_ids` 추출→퇴장 NPC를 상위(`PART_OF`) 위치로 이동(presence 제외); `_personal_space_is_grounded` 강화(`{char_id}_house`는 목적지격+이동동사 조합일 때만 인정, 소유격/출발격/단순위치 제외).
 - `src/core/database/helpers.py`: `move_location`이 성공/실패(`bool`) 반환.
-- `src/ui/web_app/world_state.py`: `move_character_location`이 무효 위치에 `ValueError`(→엔드포인트 400).
 - `src/simulation/state/updater.py`: `process_actor_response`가 상태 추출 전 `<analyze>` CoT 블록 제거(`[:N]` 절단이 CoT에 잠식되던 문제) + 주 updater 입력 캡 2000→4000.
 - `frontend/app/app.js`: 죽은 DOM 참조(`activeConversationTitle/Preview`)·연쇄 고아(`makePreview`/`stripMarkdownForPreview`)·죽은 `.conversation-item` 리스너 제거; `alert()` 6곳→비차단 `showToast()`; ACTOR_MODELS에서 DeepSeek 제거.
 - `frontend/app/style.css`: `.app-toast` 스타일 추가.
@@ -599,24 +430,20 @@
 ## 2026-06-14
 Chainlit 제거 + Codex 리뷰 지적 반영 + 백로그 정리.
 
-- 삭제(Chainlit UI): 루트 `app.py`, `src/ui/{actor_stream,deferred_commit,response_editing,kakao_panel,status,session_world,time_state}.py`, `src/core/data_layer/`, `.chainlit/`, `chainlit.md`. 공유 모듈(graph_loader/graph_models/graph_writer/graph_server/debug_graph/pending_store/input_routing/output_guard/output_repair/session_models/social_media_settings/turn_debug/history)은 보존. (공유 인프라 5파일은 여전히 `import chainlit` → chainlit 패키지 의존성 유지, 완전 decoupling은 후속.)
 - `.env`·`CLAUDE.md`·`AGENTS.md`: `CHAINLIT_AUTH_SECRET` 제거 + 두 문서의 Run/Env/턴 파이프라인/디렉토리·프로젝트 맵을 web_app 기준으로 갱신(Chainlit 참조 0건).
 - `scripts/smoke_arch_stabilization.py`: `recover_missing_analyze_prose` import를 `src.ui.web_app.actor`로 repoint + 제거된 `_extract_prose` 검사 삭제(실행 통과).
 - `tests/smoke_refactor_pending.py`: 삭제(전부 삭제된 Chainlit 모듈 테스트, obsolete).
 - `src/ui/web_app/service.py` (Codex 지적 반영): `append_user_and_stream`를 try/finally(store.save)로 감싸 어느 단계 실패에도 상태 영속화 + `pending_ooc`는 `parse_ooc`가 DB에 즉시 반영하므로 파싱 성공 직후 소비(이중 반영·유실 방지); `_collect_generation(persist=False)`로 reroll 중복 저장 창 제거; `reroll_assistant` crash-recovery를 try/except 롤백으로 재작성(실패 시 rerolled 응답 제거 + history/recent를 messages에서 재구성한 일관 '폐기' 상태 저장 → resurrect·half-state·pending-없는-보이는-응답 모두 방지); 보류 커밋이 다른(과거) 응답의 것이면 reroll 거부 — 엉뚱한 pending 폐기와, 재생성이 `pending_commit`을 덮어써 디스크에 stale pending 파일이 남는 것을 모두 방지(`ValueError`→`app.py`에서 400); `_character_exists`로 무효 캐릭터 id도 400.
 - `src/simulation/state/multi_character.py` (Codex 지적 반영): `exited_character_ids`만 있고 `character_updates`가 비어도 퇴장 처리하도록 조기 return 가드 수정; `_personal_space_is_grounded`가 "A는 B의 방에 들어갔다"를 A 자택으로 오인하던 것 수정(중간 소유격 '의' 차단).
 - `src/ui/web_app/commit.py` (Codex 지적 반영): `_maybe_compress_narrative`가 압축 성공 시에만 버퍼를 비우도록 변경(실패 시 다음 턴 재시도).
-- `frontend/app/app.js`: `loadWorldProfiles`를 try/catch로 감싸 `/api/worlds` 실패 시 토스트(폴백 유지, 앱 초기화 중단 방지).
 - `src/agents/manager/pipeline.py`: 리더(루트 app.py)가 삭제되어 죽은 `manager_effects["kakao_panel_refresh"]` write 제거.
 - `src/core/database/driver.py`: `_resolve_driver`에서 Chainlit 세션 드라이버 폴백(`cl.user_session.get("db_driver")`) 제거 — 활성 ContextVar 드라이버(없으면 기본) 사용.
 - `src/ui/pending_store.py`: `_current_thread_id`의 `cl.context.session.thread_id` 제거(web UI는 pending dict의 thread_id 사용 → ambient 없음, "").
 - `src/ui/debug_graph.py`: 모듈 `import chainlit` 제거; `_pending_time_state`·thread_id 조회의 `cl` 사용 제거; Chainlit 전용 `send_debug_graph`(`cl.Message`) 삭제(`upsert_debug_graph` 유지).
 - `src/simulation/systems/social/graph.py`: `_cache_key`의 `cl.user_session.get("db_path")` 제거 → `current_db_path()`(스레드/대화별 활성 DB 경로)를 키로 사용. 전역 "__global__" 키로 인한 스레드 간 캐릭터 캐시 오염 해소(활성 드라이버 없으면 "__global__" 폴백).
-- `src/simulation/systems/needs/traits.py`: `_trait_cache_context`의 `cl.user_session` world/scenario 조회 제거 → config `WORLD_ID`/기본 시나리오 사용.
 - chainlit 완전 decoupling 완료: 전 코드 `import chainlit` 0건(compileall·import 검증), chainlit는 더 이상 코드 의존성 아님.
 - `src/core/database/driver.py`: `KuzuAsyncDriver.db_path` 속성 + `current_db_path()` 추가(기본 드라이버를 강제 생성하지 않고 ContextVar만 확인 — 스레드별 캐시 격리 키 용도).
 - `src/ui/web_app/actor.py`: Gemini `finish_reason`·Claude `stop_reason`를 캡처해 토큰 한도 절단 시 경고 로그(silent truncation 방지).
-- `frontend/world_editor.html`: `@media (max-width:760px)` 추가 — nav/`prompt-layout`/`editor-split`/`rel-layout`/tree를 모바일에서 단일 컬럼으로 스택.
 - `tests/smoke_web_app_state.py`: web_app 상태 로직(모델 정규화·variant pending 동기화·삭제 시 pending 폐기·preview) DB·LLM 없는 smoke 검사 추가(`get_client` stub).
 
 ## 2026-06-15
@@ -633,9 +460,7 @@ Chainlit 제거 + Codex 리뷰 지적 반영 + 백로그 정리.
 - [신규] `scripts/analyze_llm_latency.py`: log_source별 평균/최대 지연 + 턴 클러스터 순차/병렬 요약 스크립트.
 - [리팩토링] `simulation/state/extract/` (신규 패키지): `turn_extractor.py`, `multi_character.py`, `dynamic_information.py`, `creator_slots.py` + `__init__.py` 공개 API 재노출.
 - [리팩토링] `simulation/state/apply/` (신규 패키지): `events.py`, `relationships.py`, `audit.py`, `update_policy.py`, `time_plan.py` + `__init__.py` 공개 API 재노출.
-- [리팩토링] `simulation/systems/world_dynamics/` (신규 패키지): `organic.py`, `personality.py`, `reputation.py` + `__init__.py`.
 - [리팩토링] `simulation/systems/scheduling/` (신규 패키지): `schedules.py`, `schedule_tick.py`, `time_rules.py` + `__init__.py`; 이동된 모듈 경로로 caller import 전면 갱신(`updater.py` 외 12개 파일); `CLAUDE.md` 디렉토리 맵 갱신.
-- [신규] Web UI 5항목: OOC 설정 모달(스레드별 저장), 유저노트 CRUD(다중 노트), 모델 버튼 중앙 정렬, 시나리오 레이블, textarea 자동 리사이즈.
 - [신규] `src/simulation/systems/memory/gate.py`: Memory Gate 구현 — `GateDecision` enum, `decide_gate`(순수 룰: importance<5 + 신호 없음=REJECT), `apply_gate`(DB dedup + 올바른 target mem_id 반환).
 - [신규] `src/core/database/driver.py` `_COLUMN_MIGRATIONS` +12: Memory 11개 신규 컬럼(status/source_commit_id/source_type/confidence/signals/salience/recall_count/last_recalled_at/reinforced_count/last_reinforced_at/resolved_at) + `Event.source_commit_id` 자동 마이그레이션.
 - [개선] `src/simulation/systems/memory/__init__.py`: Gate 통합, 한국어 키워드 기반 signal 자동 추론(`_infer_signals_from_summary`), 2-phase commit(게이트 결정 후 일괄 DB write), Memory 신규 컬럼 쓰기 + REINFORCE 경로 실제 matched mem_id 사용.
@@ -644,15 +469,6 @@ Chainlit 제거 + Codex 리뷰 지적 반영 + 백로그 정리.
 - [버그픽스] `src/simulation/state/apply/events.py`: `commit_id` 기반 idempotency — 같은 commit이 이미 Event를 생성했으면 Event 재생성 스킵 + `ensure_memories_for_event` 재호출(Event 생성 성공 후 Memory 생성 실패 시 retry에서 Memory 영구 누락 방지); Event CREATE에 `source_commit_id` 컬럼 추가.
 
 ## 2026-06-16
-
-- [리팩토링] **Phase D 대형 파일 분리** — 4개 파일 300줄 이하로 축소, 3개 신규 파일 생성.
-  - `src/core/database/migrations.py` 신규: `_TABLE_MIGRATIONS`, `_COLUMN_MIGRATIONS`, `_DATA_PATCHES` 리스트를 `driver.py`에서 분리. Secret-Character HAS_SECRET backfill 패치 추가. `driver.py` 620L → ~370L.
-  - `src/apps/app/message_ops.py` 신규: `reroll_assistant`, `edit_message`, `activate_variant`, `delete_message` 4개 함수를 `service.py`에서 분리. `service.py`와의 순환 참조 방지를 위해 `_message_ops_payload`·`_preview`·`_generate` 내부 래퍼에 lazy import 사용. `service.py` 778L → ~520L.
-  - `src/simulation/state/extract/primary.py` 신규: `_run_primary_update`, `_render_state_world_context`, `_render_dynamic_state_field_policy`, `_compact_world_context_text`를 `updater.py`에서 분리. `updater.py` 964L → ~780L.
-  - `src/simulation/systems/memory/__init__.py`: decay 로직(이미 `decay.py`에 존재)·`_compress_memories_batch` 제거 → 메모리 생성(`ensure_memories_for_event`) 전용으로 축소 487L → ~220L; `decay.run_decay`·`distortion.distort_on_affinity_change` re-export 유지.
-  - `src/apps/app/app.py`: import를 `service`와 `message_ops` 두 모듈로 분리.
-  - `CLAUDE.md` 디렉토리 맵: `migrations.py`, `primary.py`, `message_ops.py`, `decay.py(기존)` 항목 추가; `service.py` 설명 갱신.
-  - `AGENTS.md` Project Map·Where To Change Things 갱신: 신규 4개 파일 반영, reroll/edit/activate/delete → `message_ops.py` 행 추가.
 
 - [아키텍처 감사 개선] **core/·simulation/ 감사 로드맵 Phase A/B/D 구현** (Codex 적대적 리뷰로 단계별 게이팅).
   - **Phase A — 트랜잭션·실패 시맨틱:**
@@ -673,57 +489,29 @@ Chainlit 제거 + Codex 리뷰 지적 반영 + 백로그 정리.
   - Codex 리뷰 수정: `EMBEDDING_DIM` 무성 1024 fallback → 빠른 실패로 전환; 메모리 배치 헬퍼가 파싱 실패(`{}`)를 no-op으로 삼키던 문제 → `strict=True` + 비-list 시 `None`.
   - `CLAUDE.md`/`AGENTS.md`: 트랜잭션 규칙·`errors.py`·`needs/models.py`·`migrations.py` 파서/원장·`driver.py` introspection 항목 동기화.
 
-
-
-## 2026-06-27
-- [리팩터링] **과대 파일에서 응집 헬퍼 군 모듈 분리** (동작 보존, 호출부 무변경 — AST 기반 추출 + re-export로 검증).
-  - `src/simulation/systems/social/naming.py` 신규: `graph.py`에서 한글 이름 생성·로마자화 헬퍼(`_romanize_hangul`, `_kor_to_roman_id`, `_fallback_given_name`, `_alt_surname`, `_compose_name` + 성씨/이름 테이블, 한글 자모 매핑 상수)를 분리. `graph.py` 1090L → 1018L. 외부 호출부 없어 내부 import로만 환원.
-  - `src/apps/world_editor/source_text.py` 신규: `source_edit.py`에서 순수 텍스트/오프셋 헬퍼(`_line_offsets`, `_byte_col_to_codepoint`, `_node_span`, `_base_indent`, `_replace_node_span`, `_literal_eval_segment`, `_emit`)를 분리. `se._x` 호출 보존을 위해 `source_edit`에서 re-export.
-  - `src/apps/world_editor/state_normalize.py` 신규: `source_edit.py`에서 DynamicState scalar 정규화(`normalize_state_fields`, `normalize_cfg_state_values`, `_coerce_state_int_value`, `_coerce_state_bool_value` + `_STATE_*` 상수)를 분리. `se.normalize_state_fields` 호출 보존을 위해 re-export. `source_edit.py` 1655L → 1476L.
-  - 검증: 변경·신규 5개 파일 `py_compile` 통과, world_editor/social 다운스트림(`source_create`, `repair`, `migrate`, `schedules`, `context`, `promotion`) import 정상, BOM·한글 리터럴 보존 확인, `_kor_to_roman_id('민지')='minji'`·정규화 동작 동일 스모크 통과.
+
 
 ## 2026-07-21
 
 - [디자인] `frontend/app/` 채팅 UI를 편집 도구형 시각 체계로 전면 개편. 장식적 그라데이션·과한 카드 표현을 제거하고, 대화 중심 레이아웃·절제된 상태 패널·모바일 반응형 구성을 적용.
 - [신규] 헤더에 엔진 연결, 응답 스트리밍, 연결 오류 상태를 표시하는 실시간 상태 인디케이터 추가.
-- [개선] 세계/시나리오 선택, 세계 구조·장면 보드, OOC·유저 노트·시뮬레이션 도구의 레이블과 정보 계층을 Wiki V2 제품 방향에 맞게 정리하면서 기존 FastAPI/NDJSON 계약은 유지.
 - [신규] `hosted-ui/`에 기존 채팅 화면과 분리된 Sites 전용 "Live Fiction Room"을 추가. 원고·연속성 스트립·지시문 데스크 중심의 편집 디자인으로 로컬 GraphRAG 엔진과 실시간 NDJSON 스트리밍을 연결.
 - [신규] `HOSTED_UI_ORIGINS` 설정과 Private Network Access 대응 CORS를 추가해 Sites에서 실행되는 브라우저가 로컬 FastAPI 엔진에 안전하게 연결되도록 구성.
 - [개선] `hosted-ui/`를 채팅 중심 구조로 다시 설계. 독립 메시지 스크롤, 최신 응답 이동, 고정 입력창, 모바일 대화 목록과 GFM Markdown(제목·목록·인용·표·코드) 렌더링을 추가하고 장식적 설명 문구를 제거.
-- [기능] Sites UI에 로컬 UI 기능을 복원. 메시지 수정·삭제·리롤·응답 버전, 분석/OOC 기록, 스레드 OOC, 유저노트 CRUD, 세계 구조, 캐릭터 위치 이동, 임신 도구, Output Repair, 라이트/다크 테마와 본문 글꼴 설정을 채팅 중심 UI에 통합.
 - [수정] Sites UI의 글꼴을 기존 Pretendard/Noto Serif KR/JetBrains Mono 구성으로 복원하고 사용자 Markdown·OOC INPUT, 메시지별 리롤 모델, OOC 초안, 설정 즉시 적용, 모달 키보드 동작을 기존 클라이언트와 동기화.
 - [기능] Sites UI에 사용자 지정 포인트 컬러와 프리셋을 추가하고, 다크 모드 Markdown 이탤릭 대비를 높임.
-- [기능] Graph/Wiki 모드와 월드·대화·유저노트 저장 범위를 분리. 동일 모드·동일 월드의 대화는 유저노트를 공유하며, Graph와 Wiki 월드는 같은 ID여도 서로 호환하거나 데이터를 공유하지 않음.
 - [디자인] Sites 채팅의 assistant 응답을 얇은 종이 시트, 반투명 테이프, 접힌 페이지 모서리로 표현해 연속 스크롤을 유지하면서 소설 페이지의 물성을 추가.
 - [신규] `graphRAG/wiki` 브랜치에 Kuzu와 독립적인 `src/wiki/` 기반 구현 시작. Markdown 제목 경로 섹션 패치, 문서·섹션 revision 충돌 감지, Updater 재시도, `commit.md` 지연 적용 및 커밋 이력 보관을 추가.
-- [신규] Wiki V2에 YAML frontmatter 로더, 15종 구체적 제목의 Markdown 템플릿, `worlds/<world_id>`·`threads/<thread_id>` 무덮어쓰기 스캐폴드를 추가하고 문서 규격을 `docs/wiki_v2_format.md`로 고정.
-- [신규] `wiki_v2/worlds/babe_university/` 월드를 추가. 공통 캐릭터·장소·조직과 `lover`, `best_friends`, `amputee_fwb`, `ntr_lite` 네 평행 시나리오를 Markdown으로 구성. 각 루트는 `scenario.md`의 특징·한정 묘사 규정, `start_state.md`의 시작 설정, `opening_scene.md`의 첫 장면 원문으로 분리.
-- [기능] Wiki 월드를 기존 FastAPI Actor 스트리밍과 `PromptBuilder`에 연결. `start_state.md` thread 물질화, Fixed/Genre/Dynamic Markdown 조립, 응답 후 Gemini Pro Updater 재시도와 `commit.md` 보류, 다음 입력 직전 적용을 Kuzu 없이 수행.
 - [문서] `architecture_wiki/`를 별도 Obsidian vault로 추가. GraphRAG와 WikiRAG의 상태 원본·턴 수명주기·불변식을 각각 정리하고, 실제 LLM 검증부터 독립 저장소 승격까지의 통합 TODO 보드를 작성. 플레이 상태인 `wiki_v2/`와 개발 문서 vault의 비호환 경계를 명시.
 - [문서/진단] Obsidian 아키텍처 vault를 공용 런타임·엔진 경계·GraphRAG 저장/턴/시뮬레이션·WikiRAG vault/턴/prompt/commit·관측성 문서로 세분화. Wiki turn debug에 시작 설정 물질화와 Dynamic 포함 여부, scene revision, Updater 입력 문서별 revision/visibility를 기록해 첫 턴 누락을 즉시 진단할 수 있게 함.
 
 ## 2026-07-23
 
-- [설정] `babe_university`의 성인 메이저 여성 캐릭터 8명에게 연애·성경험 이력과 공개 범위·현재 경계를 추가하고, 진은서와 서아린은 시나리오별 차이를 분리.
-- [기능] Wiki 시나리오가 frontmatter의 선택적 `pov_mode`로 월드 기본 시점을 덮어쓸 수 있게 하고, `babe_university/altered`를 진은서 1인칭 시점으로 전환.
-- [콘텐츠] 기존 Graph `babe_univ_altered`의 상식 재배치 세계를 Wiki V2 `babe_university/altered` 시나리오로 편입. 시나리오 3문서, 시안·은서와 주변 인물의 작성용 분기, 성화오피스텔 307호를 추가하고 성화대·성화고 변형의 무심한 일상 처리와 성격 보존 규칙을 반영.
 - [기능] Wiki thread에 commit 상태 조회, 다음 채팅 전 즉시 반영, 마지막 확정 턴 Updater 재시도, 건너뛰기 FastAPI 제어 경로를 추가.
 - [안전성] 정상 pending commit의 재시도 덮어쓰기를 차단하고, 건너뛴 commit과 재시도로 대체된 failed commit을 `skipped` 이력으로 보존.
 - [진단] 대화 상태에 Wiki updater 성공·실패·pending commit ID를 영속화하되 실제 `commit.md` payload를 상태 조회의 원본으로 사용.
-- [테스트/문서] LLM 없는 Wiki 제어 lifecycle 스모크를 추가하고, 아키텍처 Obsidian TODO와 실제 LLM 수동 테스트 계획에 구현/미구현 경계 및 제어 시나리오를 반영.
-- [콘텐츠] `babe_university`의 주요 인물인 진은서·김시안·한도준 프로필을 성장 배경, 사고방식, 말투 예시, 능력, 생활 습관, 관계망, 목표와 갈등 조건까지 확장.
-- [콘텐츠] 진은서의 일반 상태와 사지 절단·법적 사망·간병·트라우마 상태를 하나의 상세 원본 프로필에서 작성용 분기로 관리하도록 통합.
 - [기능] 인물 프로필의 `common`/`default`/활성 분기를 선택해 평탄한 Markdown으로 물질화하는 compiler를 추가하고, 선택기와 비활성 정보가 Actor prompt에 남지 않도록 검증.
-- [안전성] Wiki Actor prompt에서 `thread.md`, frontmatter ID, 파일 경로, revision, world/scenario/thread 식별자와 작성 문서의 포장 제목을 제거하고 의미 기반의 path-free XML만 전달.
-- [테스트/문서] 네 관계 설정 전체에 대해 현재 사실만 포함되고 내부 메타데이터와 다른 분기 정보는 포함되지 않는 prompt 격리 스모크를 추가하고 Obsidian 아키텍처 문서를 동기화.
-- [콘텐츠] 진은서·김시안·한도준의 미정형 문구를 모두 제거하고 출생, 가족, 거주, 학업, 일정, 능력, 취향, 소지품, 관계 이력과 갈등 반응을 장면에서 사용할 수 있는 구체적인 정본으로 확장.
-- [콘텐츠] 절단 상태의 은서를 23세·누운 몸길이 84cm·27kg으로 고정하고, 청람 메디컬의 납치 일시·감금 시설·신체 훼손·몸값·구조·사망 기록 조작 경위를 추가.
 - [구조] Wiki V2의 `rules.md`/`type: rules` 계약을 `prose.md`/`type: prose`로 교체하고 template scaffold, frontmatter 검증, Actor asset loader와 smoke test를 함께 변경.
-- [콘텐츠] `babe_university/world.md`에서 플레이어·Actor 권한 문구를 제거하고 가온시, 바베대학교, 학과, 캠퍼스 지리, 상권, 주거, 교통, 기술, 경제와 제도적 결과를 구체화.
-- [콘텐츠] `babe_university/prose.md`를 기존 성화 월드의 형식에 맞춰 장면 스케일, 관찰 카메라, 시점, 대화 리듬, 물리적 연속성, 관계 변화, 비밀, 코미디, 친밀 장면, 간병, 시간과 종결 규정까지 확장.
-- [구조] Wiki `prose.md`를 `world_lore`에서 분리해 PromptBuilder의 `world_specific_prose_prompt`에 한 번만 전달하고 prompt 격리 회귀 검증을 추가.
-- [콘텐츠] 공용 CORE·POV·EMOTION·STYLE·NPC 규정과 겹치던 `babe_university/prose.md`를 작품 전용 장르 감각, 한국어 사회적 말투, 공유 이력, 학업·업무와 생활 코미디 중심으로 축약.
-- [콘텐츠] 간병·장애 규정은 `amputee_fwb`, 흔적·의심 규정은 `ntr_lite`로 이동하고 `world.md`, 장소와 조직 문서의 정본 책임을 분리.
 - [안전성] 친밀 장면에서 현재 동의를 신체 반응보다 우선하고 거부·중단 요청 뒤 진행을 금지하도록 상충 규정을 통일.
 - [안전성] Wiki `SectionPatch`에 `evidence_source`를 추가하고 지정된 사용자 입력·Actor 응답의 exact quote가 아닌 근거를 거부.
 - [안전성] Actor 응답이 플레이어 행동·감정·현재 상태를 영속화하지 못하게 하고 gameplay Updater의 정적 캐릭터 섹션 및 `thread.md` 수정을 차단.
@@ -732,10 +520,6 @@ Chainlit 제거 + Codex 리뷰 지적 반영 + 백로그 정리.
 - [진단] Wiki Updater의 실제 prompt, 모델 원문, 시도별 검증 오류와 최종 상태를 thread별 `debug/updater/`에 `.txt`/`.json`으로 보존. 진단 Markdown이 runtime 문서 검색에 섞이지 않도록 확장자를 격리.
 - [안전성] Actor 장면 patch에서 플레이어가 행동 주체인 경우와 NPC 행동의 대상·기준점으로 언급된 경우를 구분하고, 실제 공동 이동과 `함께 가자` 같은 제안을 분리해 과잉 차단을 완화.
 - [정합성] scene updater가 `현재 장면`과 legacy `시작 기준`을 혼동하면 실제 문서에 유일하게 존재하는 H2로 section path와 replacement 제목을 정규화.
-- [개발 도구] `author-wikirag-worlds` Codex 스킬을 추가. Wiki V2 월드·시나리오 3문서·캐릭터 분기 작성 절차, 정본 책임과 Actor 메타데이터 격리 규칙, 읽기 전용 월드 검증기를 함께 제공.
-- [개발 도구] `author-wikirag-worlds`에 독립 조립식 프롬프트 불변식을 추가. 각 본문의 다른 파일·프롬프트·시나리오 참조, Actor/Updater 등 runtime 역할 언급, 사용자 선택으로의 설정 유보를 금지하고 읽기 전용 검사기로 검증.
-- [개발 도구] `author-wikirag-worlds`에 영어 작성 계약을 추가. 설정·규정 프롬프트의 제목과 설명형 본문은 영어로 작성하고, 한국어는 고유명사·호칭·대사·짧은 묘사 예시·원문 인용·필수 구조 제목과 플레이어용 `opening_scene.md`에만 유지.
-- [콘텐츠] `babe_university`의 세계·문체·장소·조직·캐릭터·시나리오·시작 설정을 영어 프롬프트 본문으로 전환. 한국어 고유명사와 대사, 필수 구조 제목, 플레이어용 `opening_scene.md` 원문은 유지하고 신규 문서 템플릿도 같은 언어 계약에 맞춤.
 - [기능] Wiki 최신 미반영 턴에 리롤, 사용자 입력 수정 후 재생성, 응답 직접 수정, 응답 버전 선택과 메시지 삭제를 연결. Actor 재생성이 성공하기 전에는 기존 `commit.md`를 유지하고, 성공 후 이전 변경안을 skipped 이력으로 보관한 뒤 현재 메시지 쌍으로 Updater 변경안을 다시 생성한다.
 - [안전성] 이미 정본에 반영된 과거 Wiki 턴의 리롤·수정·삭제는 inverse patch와 3-way merge가 구현될 때까지 거부해 Obsidian 수동 편집과 적용된 상태를 조용히 덮어쓰지 않도록 함.
 
@@ -746,7 +530,6 @@ Chainlit 제거 + Codex 리뷰 지적 반영 + 백로그 정리.
 - [문서] Wiki 구현 상태가 바뀌면 parity 보드, 상세 TODO와 관련 아키텍처·포맷 문서를 같은 변경에서 즉시 갱신하도록 `AGENTS.md`에 규칙을 추가.
 - [문서 정합성] 최신 미반영 Wiki 턴의 reroll/edit/delete/variant, content-hash revision 거부와 parser/rollback smoke 검증을 완료 상태로 동기화하고, 남은 과거 commit 복구와 신규 상태 문서 생성 경계를 명확히 함.
 - [안전성] `src/wiki/prompt_contract.py`를 추가해 Actor-visible Wiki 본문의 wikilink·Markdown 파일명·frontmatter 필드와 compiled Fixed/Genre/Dynamic 배치 위반을 prompt 생성 전에 거부.
-- [회귀 검증] 현재 5개 Wiki 시나리오의 Fixed/Genre/Dynamic SHA-256 snapshot과 동일 장면에서 Fixed cache가 유지되는지 `tests/smoke_wiki_runtime.py`에서 검증.
 - [아키텍처] accepted Actor turn의 공개 상태 반영 경로를 `src/simulation/state/updater.py::update_accepted_turn` 하나로 통합하고 `GraphTurnUpdateRequest`/`WikiTurnUpdateRequest`의 명시적 mode 계약을 추가. Graph 반영은 `graph_apply.py`, Wiki 변경안 생성은 `commit_planner.py`로 역할을 좁혀 병렬 Updater 파일을 제거.
 - [회귀 검증] `tests/smoke_mode_aware_updater.py`에서 Wiki mode가 Graph 반영기를 로드하지 않는 경계, 두 mode의 공용 진입점 분기와 Wiki `commit.md` 보류를 검증.
 - [사용자 편의] Sites Wiki 채팅에 변경안 상태 카드를 추가. Updater 성공·실패·적용·건너뜀 상태, 실패 사유와 변경 문서·section·근거를 표시하고 즉시 반영·재시도·건너뛰기를 같은 화면에서 실행할 수 있게 함.
@@ -775,13 +558,28 @@ Chainlit 제거 + Codex 리뷰 지적 반영 + 백로그 정리.
 - [사용자 편의] Sites Wiki 변경안 카드에서 Event와 Memory 신규 문서를 구분해 표시.
 - [관계 상태] 새 Wiki thread와 관계 문서가 없는 기존 thread에 활성 Actor→player 방향의 owner 관계 원장을 물질화하고 Dynamic prompt에 현재 Actor owner 문서만 포함.
 - [관계 정책] Graph affinity/trust 수치를 복제하지 않고 시작 이후 durable 관계 변화를 자연어 bullet로 누적하도록 확정. complete H2와 Actor exact evidence를 요구하고 기존 기록 삭제·의역 및 플레이어 내면 확정을 거부.
-- [회귀 검증] 다섯 Wiki 시나리오의 관계 원장 포함 Dynamic prompt snapshot, 관계 owner·participants, source 권한과 플레이어 상태 격리를 smoke test로 고정.
 - [복구] Wiki 채팅에 항상 접근 가능한 명시적 갱신 동작을 추가. 최신 확정 사용자/Actor 쌍으로 Updater를 다시 실행해 `commit.md`를 새로 만들며, 기존 pending은 확인 후 `skipped` 이력으로 보존한다.
 
 ## 2026-07-25
 
-- [콘텐츠] `babe_university/altered`에서 진은서의 2024년 9월 연애가 끝나지 않고 현재까지 이어지도록 정정하고, 현재 남자친구 정우진의 신원·생활·성격·말투·관계사·지식 경계를 시나리오 전용 캐릭터로 추가.
-- [콘텐츠] 정우진 프로필을 514줄 규모의 주요 인물 정본으로 확장. 가족사·성장 과정·군 복무·학업과 졸업 프로젝트·취업 준비·외형과 건강·판단 순서·감정 처리·말투·기술·주거·소지품·디지털 습관·연애 연혁·성적 경계·주변 관계·목표와 행동 연속성을 구체화.
-- [콘텐츠] 은서·시안·가족·친구의 인식, 시작 시점의 우진 위치와 퇴근 약속, 첫 장면의 메시지를 현재 연인 정본에 맞춰 동기화하고 기존 관계가 시안의 개입만으로 과거 관계가 되지 않도록 묘사 규정을 보강.
-- [정합성] 시안과 우진이 이름·얼굴·존재를 서로 전혀 모르고 공유 지인·학교·직장·연락·사진·과거 만남도 없는 완전한 초면임을 양쪽 프로필과 시작 상태에 고정.
-- [회귀 검증] `altered` 고정·동적 프롬프트 snapshot을 갱신하고 정우진 프로필 물질화, 현재 교제 사실, frontmatter와 시나리오 식별자 비노출을 smoke test로 고정.
+- [개발 인프라] 상시 저장소 규칙, 안정적인 프로젝트 설명, 현재 initiative, 모델 라우팅을 `AGENTS.md`, `CLAUDE.md`, `.ai/`로 분리해 작업 전환 시 운영 설정을 다시 작성하지 않도록 정리.
+- [안전성] Claude Code와 Codex에 공통 컨텍스트 로딩, Codex MCP 기본값 보정, 파괴적 명령 차단, changelog 범위 검증 훅을 추가.
+- [문서] 중복·완료 계획서와 생성된 실행 산출물을 제거하고 아키텍처, 개발 워크플로, Wiki 규격과 실행 보드 중심으로 정본을 축소.
+- [안전성] Wiki 과거 턴 분기 직후 새 thread의 audit baseline을 즉시 시드해, 첫 턴 전 외부 Markdown 편집이 새 baseline으로 흡수되지 않고 audited manual commit으로 기록되도록 수정.
+
+## 2026-07-26
+
+- [관측성] `logs/llm_latency.jsonl`에 호출별 prompt/output/thought/total 토큰 사용량을 지연과 함께 기록. 비스트리밍 경로는 응답 usage에서, Actor 스트리밍 경로는 provider 청크에서 수집하며, provider가 보고하지 않으면 값을 비워 둔다.
+- [안전성] 토큰 계측을 측정 전용으로 격리. provider의 usage 접근이 예외를 던져도 생성이 실패하거나 스트림이 중단되지 않고, 부분 보고가 앞서 받은 값을 덮지 않으며, 첫 토큰 전 스트림 재시도 시 폐기된 시도의 값이 완료된 시도에 귀속되지 않는다. 토큰 값을 int로 강제해 직렬화 실패로 지연 로그 줄 전체가 유실되던 경로도 차단.
+- [개발 인프라] 사람이 작성한 Markdown 턴 스크립트를 따라 격리된 임시 저장소에서 여러 대화를 무인 연속 실행하는 장기 플레이 검증 하네스를 추가. 턴마다 생성 중 canonical 무변경(deferred commit) 불변식을 검증하고, patch/생성 수·변경 문서·지연·토큰을 턴 단위로 귀속해 실행별 산출물과 집계 리포트로 남긴다. 비용은 가격표를 주입할 때만 계산한다.
+- [개발 인프라] 검증 스크립트의 임시 vault 격리와 산출물 기록 로직을 공용 모듈로 분리해 단일 턴 하네스와 장기 플레이 하네스가 같은 경로를 공유하도록 정리.
+- [관측성] LLM 호출 로그 분석기가 호출 종류별·모델별 토큰 사용량과 선택적 비용을 함께 요약. 보고되지 않은 토큰은 0으로 합산하지 않고 known/unknown 건수를 나눠 표시해 부분 계측 구간이 싸게 보이지 않도록 하며, 가격표는 하드코딩 없이 주입할 때만 비용을 계산한다.
+- [프롬프트 격리] 캐릭터 현재 상태의 생식 상태 section을 Actor 문서 블록에서 제거하고, 주기 정보를 Graph와 같은 공용 체크리스트 한 줄로만 전달. 주기 일차·임신 일수 같은 정수 대신 국면과 가임 위험만 노출해 모델이 정확한 일수를 서술에 받아쓰는 것을 막는다. 국면·임신 단계 판정은 기존 공용 구현을 재사용하고 복제하지 않는다.
+- [상태 정합성] 이번 턴의 보호 여부 판정을 산문 문자열 매칭에서 Actor의 숨김 보고로 옮김. 보호 수단이 여러 턴 전에 확립될 수 있는데 상태 반영 경로는 대화 히스토리를 받지 않아, 보호된 행위를 위험으로 세거나 보호되지 않은 행위를 놓치는 양방향 오류가 있었다. 이제 히스토리를 가진 Actor가 한 줄로 보고하고, 보고가 없거나 형식이 어긋나면 기존 판정으로 물러난다. 추가 LLM 호출은 없다.
+- [경계] 이 숨김 채널은 히스토리가 있어야만 알 수 있는 사실로 한정한다. 이번 턴 산문만으로 판정 가능한 상태 변화는 계속 기존 반영 경로가 소유해 제안자가 둘로 갈리지 않게 한다.
+- [상태 정합성] 생식 시스템에 지속 피임 상태를 도입. 산문이 피임을 확립해도 엔진이 이를 모른 채 정상 확률로 임신을 판정하던 불일치를 해소한다. 확률 감쇠는 Graph와 공유하는 모델의 게임플레이 상수로 두고 0이 아닌 잔여 위험을 남기며, 기존 호출부는 인자 없이 이전 수치를 그대로 재현한다. 사후피임약은 지속 상태 대신 현재 주기 누적을 되돌리는 사건으로 처리한다.
+- [비용] 피임 변화 판정은 값싼 부분 문자열 게이트를 먼저 통과한 턴에만 작은 구조화 호출을 수행해, 관련 서술이 없는 대다수 턴에서 추가 호출이 발생하지 않는다. 단순 언급·가정·타인의 피임은 상태를 바꾸지 않는다.
+- [사용자 편의] Sites UI에서 리롤과 수정 중에 낡은 응답 본문이 그대로 남아 있던 문제를 수정. 생성이 진행되는 동안 본문 자리에 스트리밍 경로와 같은 생성 표시를 띄우고, 실패하면 원래 내용을 되돌린다. 삭제는 생성이 아니므로 해당 표시를 쓰지 않는다.
+- [프롬프트 정합성] Wiki 턴에서 항상 `CYCLE: n/a`로 비어 있던 공용 주기 체크리스트를 실제 상태에 연결. 활성 캐릭터의 정본 생식 상태를 공용 경로가 읽는 형태로 채워, 무방비 상황에서 가임 위험을 내적 독백에 명시하라는 규칙이 Wiki에서도 작동한다. 결정적 tick 대상과 동일하게 활성 캐릭터에만 적용하고, 상태가 없거나 손상되면 기존 동작으로 물러난다.
+- [사용자 편의] 실험적 장기 시스템 4종의 on/off를 환경 변수 수정과 재시작 없이 대화별로 바꾸는 조회·변경 API를 추가. 명시적으로 설정한 키만 대화에 저장해 나머지는 계속 엔진 기본값을 따르며, 값을 비우면 기본값 추적으로 되돌아간다. 환경 접근은 설정 모듈에만 남는다.
+- [사용자 편의] Sites UI의 Wiki 패널에 실험 시스템 토글을 추가. 직접 설정된 항목과 기본값을 따르는 항목을 구분해 표시하고 기본값 되돌리기를 제공하며, 실행 게이트와 문서 단위 opt-in이 함께 켜져야 하는 시스템은 현재 대화에서 opt-in된 대상이 없으면 그 사실을 함께 알린다. 저장 실패 시 이전 상태로 되돌린다.

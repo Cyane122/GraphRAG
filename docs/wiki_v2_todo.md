@@ -2,7 +2,7 @@
 
 > Branch: `graphRAG/wiki`  
 > 방향: Kuzu를 사용하지 않고 Markdown vault를 세계 상태의 유일한 원본으로 삼는 별도 V2 엔진  
-> 소스-단위 parity 구현 로드맵(GraphRAG 기능 전체 이식의 통합 지점·단계·검증)은 `docs/wiki_parity_roadmap.md` 참조.
+> 현재 우선순위와 parity 원칙은 `.ai/active.md` 및 `.ai/initiatives/wikirag-migration.md`를 참조한다. 이 문서와 `architecture_wiki/TODO.md`가 구현 상태의 정본이다.
 
 ## 확정된 원칙
 
@@ -373,10 +373,10 @@ wiki_v2/
 - [x] 문서 파서, 섹션 교체, revision, rollback을 `tests/smoke_wiki_v2.py`에서 검증한다.
 - [x] 현재 5개 시나리오의 Fixed/Genre/Dynamic SHA-256 snapshot과 Fixed cache 안정성을 `tests/smoke_wiki_runtime.py`에서 검증한다.
 - [ ] 파일 감지와 동시 수정 시나리오를 검증한다.
-- [ ] Actor와 updater를 포함한 장기 플레이 smoke 시나리오를 만든다.
-- [ ] 잘못된 사실 추가, 기존 사실 누락, 비밀 누출을 평가한다.
+- [x] Actor와 updater를 포함한 장기 플레이 smoke 시나리오를 만든다. (`scripts/run_wiki_long_play.py` — 사람이 작성한 Markdown 턴 스크립트를 격리 임시 저장소에서 무인 연속 실행하고, 턴마다 생성 중 canonical 무변경(deferred) 불변식을 검증한다. LLM 없는 회귀는 `tests/smoke_wiki_long_play.py`. 다만 2026-07-26 결정으로 기본 검증 경로는 실제 플레이이며, 이 하네스는 좁은 회귀 재현용 보조 도구다.)
+- [ ] 잘못된 사실 추가, 기존 사실 누락, 비밀 누출을 평가한다. (실제 플레이 중 `commits/` archive의 section diff로 관찰하고 판정은 사람이 한다.)
 - [ ] 문서 수와 턴 수가 늘어날 때 검색 품질과 지연을 측정한다.
-- [ ] 모델별 비용, 입력·출력 토큰, 지연을 기록한다.
+- [x] 모델별 비용, 입력·출력 토큰, 지연을 기록한다. (`logs/llm_latency.jsonl`이 플레이 중 호출별 지연과 prompt/output/thought/total 토큰을 자동으로 남긴다. 실측 집계는 미수행.)
 - [ ] Gemini 모델 교체 smoke check를 만든다.
 - [ ] 기존 Kuzu 모듈을 참조하지 않는지 의존성 감사를 한다.
 - [ ] 독립 저장소로 옮길 코드, 문서, 정적 자산 목록을 만든다.

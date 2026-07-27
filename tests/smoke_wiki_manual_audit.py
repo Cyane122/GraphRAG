@@ -1,22 +1,26 @@
 # ================================
 # tests/smoke_wiki_manual_audit.py
 #
-# 외부 Markdown 편집의 baseline 감지·manual archive·inverse·commit 충돌을 검증합니다.
+# 외부 Markdown 편집의 baseline 감지·분기 baseline 시드·manual archive·inverse·commit 충돌을 검증합니다.
 #
 # Functions
 #   - _character_document() -> str : 두 H2를 가진 canonical character fixture를 반환합니다.
 #   - _section_patch(store: WikiStore, section_path: tuple[str, ...], replacement: str) -> SectionPatch : 최신 revision patch를 만듭니다.
 #   - _pending(patch: SectionPatch) -> PendingWikiCommit : 테스트용 update commit을 만듭니다.
-#   - main() -> None : manual audit smoke assertions를 실행합니다.
+#   - main() -> None : 외부 편집, branch baseline, inverse와 pending 충돌의 감사 보장을 검증합니다.
 # ================================
 
 from __future__ import annotations
 
 from hashlib import sha256
 from pathlib import Path
+import shutil
 from tempfile import TemporaryDirectory
 
 from src.apps.app.app import create_app
+from src.apps.app.models import ChatMessage, ConversationState
+from src.apps.app.storage import ConversationStore
+import src.apps.app.wiki_branching as wiki_branching
 from src.wiki import (
     PendingWikiCommit,
     SectionPatch,
@@ -24,7 +28,9 @@ from src.wiki import (
     WikiRevisionConflict,
     WikiStore,
     document_revision,
+    initialize_wiki_conversation,
     parse_markdown_sections,
+    plan_manual_edit_audit,
 )
 
 
@@ -89,10 +95,19 @@ def _pending(patch: SectionPatch) -> PendingWikiCommit:
 
 
 def main() -> None:
-    """외부 section/구조/생성/삭제와 pending 충돌의 감사 보장을 검증합니다."""
+    """외부 편집, branch baseline, inverse와 pending 충돌의 감사 보장을 검증합니다."""
     route_paths = {route.path for route in create_app().routes}
+    route_methods: dict[str, set[str]] = {}
+    for route in create_app().routes:
+        if not hasattr(route, "methods"):
+            continue
+        route_methods.setdefault(route.path, set()).update(route.methods or [])
     assert "/api/conversations/{thread_id}/wiki/manual-audit" in route_paths
     assert "/api/conversations/{thread_id}/wiki/manual-audit/record" in route_paths
+    assert "/api/conversations/{thread_id}/wiki/systems" in route_paths
+    assert {"GET", "PATCH"}.issubset(
+        route_methods["/api/conversations/{thread_id}/wiki/systems"]
+    )
 
     with TemporaryDirectory() as temporary:
         thread_root = Path(temporary) / "threads" / "audit_thread"
@@ -106,6 +121,60 @@ def main() -> None:
         initialized = queue.audit_external_changes()
         assert initialized.status == "initialized"
         assert (thread_root / ".wikirag-audit-baseline.json").is_file()
+
+        branch_workspace = Path(temporary) / "branch_case"
+        vault_root = branch_workspace / "wiki_v2"
+        shutil.copytree(
+            Path("wiki_v2/worlds/babe_university"),
+            vault_root / "worlds" / "babe_university",
+        )
+        branch_store = ConversationStore(branch_workspace / "data" / "threads")
+        previous_vault_root = wiki_branching.WIKI_VAULT_ROOT
+        wiki_branching.WIKI_VAULT_ROOT = vault_root
+        try:
+            setup = initialize_wiki_conversation(
+                vault_root,
+                "babe_university",
+                "lover",
+                "branch_audit_source",
+            )
+            source_state = ConversationState(
+                thread_id=setup.thread_id,
+                world_mode="wiki",
+                world_id=setup.world_id,
+                scenario_id=setup.scenario_id,
+                title="Branch audit source",
+                messages=[
+                    ChatMessage(role="assistant", content=setup.opening_scene),
+                    ChatMessage(role="user", content="분기 직전 입력"),
+                ],
+                pc_id=setup.pc_id,
+                npc_id=setup.npc_id,
+                perspective=setup.perspective,
+                wiki_update_status="applied",
+            )
+            branch_store.save(source_state)
+            branch_result = wiki_branching.branch_wiki_conversation_before_message(
+                source_state,
+                source_state.messages[-1].id,
+                branch_store,
+            )
+            branch_root = vault_root / "threads" / branch_result.conversation.thread_id
+            assert (branch_root / ".wikirag-audit-baseline.json").is_file()
+            branch_manifest_path = branch_root / "thread.md"
+            branch_manifest_path.write_text(
+                branch_manifest_path.read_text(encoding="utf-8").replace(
+                    "- 현재 단계: opening",
+                    "- 현재 단계: branched-opening",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            branch_plan = plan_manual_edit_audit(WikiStore(branch_root))
+            assert branch_plan.result.status == "ready"
+            assert branch_plan.result.changed_documents == ["thread.md"]
+        finally:
+            wiki_branching.WIKI_VAULT_ROOT = previous_vault_root
 
         section_edit = original.replace("- 감정 상태: 평온", "- 감정 상태: 긴장")
         character_path.write_text(section_edit, encoding="utf-8")

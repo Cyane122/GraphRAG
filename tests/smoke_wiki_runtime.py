@@ -66,27 +66,27 @@ _EXPECTED_PROMPT_SNAPSHOTS = {
     "lover": {
         "fixed": "82e0cfabd7950e8c5a17d1464ce17c239b02fbadb3e697dc14e71172a896bbef",
         "genre": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "dynamic": "038924387b1c4b13f1935020f77fd03f55aaea897a349135c6d4cfff6131fa37",
+        "dynamic": "04917ce3ddbfb9a99e431b08a53c8f3e631123853bd2318bf924ea2acae08d49",
     },
     "best_friends": {
         "fixed": "08ced7668c9cadeafa3aae0c5b6a2feee73acbcdeab9df57902bedfd51db4045",
         "genre": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "dynamic": "853f7c3798dd4658985deda83df75a757ceeecd570d33f6524f1dd344f8bfafd",
+        "dynamic": "9658dfc1966887b56e45a78286735a8d8bbd2b6f23f11a183bd9d75472406a54",
     },
     "amputee_fwb": {
         "fixed": "3ea528491d29f83e2bf79d54a189e30304d0e03101971797db777859a35b85a3",
         "genre": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "dynamic": "998ec6cf8105a0844a49f34b6a2a3d0abf7fc382ea56818246a35806174b1c1b",
+        "dynamic": "7fd49764a6fd78f11522bdfae1521ea6419dec314bac9cbab1254d242e1c3a43",
     },
     "ntr_lite": {
         "fixed": "8d6c5bfa050cd97358a1de1888122761d45225766724d2b3941c15631bb8d41b",
         "genre": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "dynamic": "f2aabe0698cab8a9ff2587e162f419cffd05d3ffb83f78139294b230d5b803bd",
+        "dynamic": "d3621c763e9c915ac2156071caf94557ddcf84588a4f6eb61803ac4fe106cda0",
     },
     "altered": {
         "fixed": "6483bcb0d04f82d5d4cf4e1ad1040ed4e3703519742e32c7dbc91b0967fa98a5",
         "genre": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "dynamic": "f0ebb3cfce8513e67b2d18c245281cf83051d79e9fe87955541d371e39ea6661",
+        "dynamic": "13aadd8eba924555820240c995d445978aa3494f500399bddf14e36ca2f9aa73",
     },
 }
 

@@ -77,6 +77,7 @@ created_at: {{CREATED_AT_YAML}}
 ### Reproductive State
 
 - Menstrual cycle: disabled
+- Contraception: none
 - Cycle day: 1
 - Pregnant: no
 - Pregnancy day: 0

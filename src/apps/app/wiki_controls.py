@@ -5,6 +5,8 @@
 #
 # Functions
 #   - get_wiki_commit_status(state: ConversationState) -> WikiCommitStatusResponse : 현재 Wiki 변경 상태를 조회합니다.
+#   - get_wiki_systems(state: ConversationState) -> WikiSystemsResponse : 대화별 Wiki postprocessor 유효값과 authored cycle 캐릭터를 반환합니다.
+#   - update_wiki_systems(state: ConversationState, store: ConversationStore, patch: dict[str, bool | None]) -> WikiSystemsResponse : 대화별 Wiki postprocessor override를 갱신합니다.
 #   - apply_wiki_commit_now(state: ConversationState, store: ConversationStore) -> WikiCommitStatusResponse : 현재 commit.md를 즉시 적용합니다.
 #   - retry_wiki_update(state: ConversationState, store: ConversationStore) -> WikiCommitStatusResponse : 마지막 확정 턴으로 Updater를 재실행합니다.
 #   - regenerate_wiki_update(state: ConversationState, store: ConversationStore) -> WikiCommitStatusResponse : 기존 변경안을 보존하고 마지막 확정 턴의 commit.md를 새로 생성합니다.
@@ -28,10 +30,14 @@ from src.apps.app.models import (
     ChatMessage,
     ConversationState,
     WikiCommitStatusResponse,
+    WikiSystemsResponse,
     WikiUpdateStatus,
+    apply_wiki_system_patch,
+    overridden_wiki_system_names,
+    resolve_wiki_systems,
 )
 from src.apps.app.storage import ConversationStore
-from src.config import MODEL_PRO_UPDATER, WIKI_VAULT_ROOT
+from src.config import MODEL_PRO_UPDATER, WIKI_VAULT_ROOT, wiki_system_defaults
 from src.simulation.state.models import WikiTurnUpdateRequest
 from src.simulation.state.updater import update_accepted_turn
 from src.wiki import (
@@ -52,12 +58,26 @@ from src.wiki import (
     plan_manual_edit_audit,
     plan_thread_contract_migration,
 )
+from src.wiki.character_postprocess import authored_cycle_character_titles
+from src.wiki.context import read_wiki_thread_documents
 
 
 def _commit_queue(thread_id: str) -> WikiCommitQueue:
     """Return the commit queue for one Wiki thread."""
     thread_root = Path(WIKI_VAULT_ROOT) / "threads" / thread_id
     return WikiCommitQueue(WikiStore(thread_root))
+
+
+def _wiki_system_response(state: ConversationState) -> WikiSystemsResponse:
+    """현재 대화의 Wiki system 응답 모델을 조립합니다."""
+    defaults = wiki_system_defaults()
+    documents = read_wiki_thread_documents(Path(WIKI_VAULT_ROOT), state.thread_id)
+    return WikiSystemsResponse(
+        systems=resolve_wiki_systems(state.wiki_system_overrides, defaults),
+        defaults=defaults,
+        overridden=overridden_wiki_system_names(state.wiki_system_overrides),
+        authored_cycle_characters=authored_cycle_character_titles(documents),
+    )
 
 
 def _status_from_commit(commit: PendingWikiCommit) -> WikiUpdateStatus:
@@ -77,6 +97,25 @@ def _latest_turn_pair(state: ConversationState) -> tuple[ChatMessage, ChatMessag
         if user is not None and user.role == "user":
             return user, assistant
     raise ValueError("재시도할 확정 사용자/Actor 응답 쌍이 없습니다.")
+
+
+def get_wiki_systems(state: ConversationState) -> WikiSystemsResponse:
+    """대화별 Wiki postprocessor 유효값과 authored cycle 캐릭터를 반환합니다."""
+    return _wiki_system_response(state)
+
+
+def update_wiki_systems(
+    state: ConversationState,
+    store: ConversationStore,
+    patch: dict[str, bool | None],
+) -> WikiSystemsResponse:
+    """대화별 Wiki postprocessor override를 갱신하고 저장합니다."""
+    state.wiki_system_overrides = apply_wiki_system_patch(
+        state.wiki_system_overrides,
+        patch,
+    )
+    store.save(state)
+    return _wiki_system_response(state)
 
 
 def get_wiki_commit_status(state: ConversationState) -> WikiCommitStatusResponse:
@@ -172,6 +211,10 @@ async def _run_wiki_update(
                 actor_profile_id=state.npc_id,
                 user_message_id=user_message.id,
                 assistant_message_id=assistant_message.id,
+                wiki_systems=resolve_wiki_systems(
+                    state.wiki_system_overrides,
+                    wiki_system_defaults(),
+                ),
             )
         )
         pending = update_result.pending_wiki_commit

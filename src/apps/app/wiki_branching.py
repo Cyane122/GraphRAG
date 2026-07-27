@@ -24,7 +24,12 @@ from src.apps.app.models import (
 from src.apps.app.storage import ConversationStore
 from src.apps.app.wiki_message_ops import rebuild_wiki_derived_state
 from src.config import WIKI_VAULT_ROOT
-from src.wiki import WikiCommitError, WikiCommitQueue, WikiStore
+from src.wiki import (
+    WikiCommitError,
+    WikiCommitQueue,
+    WikiStore,
+    ensure_audit_baseline,
+)
 
 
 _FRONTMATTER_BLOCK_RE = re.compile(
@@ -196,6 +201,9 @@ def branch_wiki_conversation_before_message(
             branch_thread_id,
         )
         _rewind_branch_state(state, target_user_index, branch_root)
+        # Branches exclude the source baseline, so seed a fresh one from the
+        # copied thread's final post-rewrite, post-rewind canonical state.
+        ensure_audit_baseline(WikiStore(branch_root))
 
         branch = state.model_copy(deep=True)
         branch.thread_id = branch_thread_id

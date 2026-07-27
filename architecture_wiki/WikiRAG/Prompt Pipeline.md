@@ -101,7 +101,7 @@ Markdown으로 채웠다. `intimate`는 기존 전용 Genre overlay도 함께 �
 
 1. 현재 header와 scene-specific prompt
 2. 현재 `scene/current.md`
-3. thread character의 `현재 상태`
+3. thread character의 `현재 상태`. `Reproductive State`는 이 블록에서 통째로 제거한다. 주기 정보는 활성 Actor 캐릭터의 정본에서 뽑아 공용 checklist의 `CYCLE:` 한 줄로만 전달하며, 정수 대신 국면과 `pregnancy_risk`만 노출한다(Graph와 동일한 `_cycle_status` 경로를 재사용하고 국면·임신 단계 표를 복제하지 않는다). 정본과 `updater_documents`는 손대지 않는다
 4. actor visibility를 가진 기타 상태 문서. Memory·Relationship·Goal·Item은 `owner`가 현재 Actor profile과 일치하고, Secret은 현재 Actor가 owner 또는 knower인 문서만 포함
 5. 최근 Actor 응답
 6. usernote와 OOC

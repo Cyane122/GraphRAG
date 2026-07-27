@@ -38,6 +38,7 @@ _PERSONALITY_SECTION = """### Personality Change Ledger
 _REPRODUCTIVE_SECTION = """### Reproductive State
 
 - Menstrual cycle: disabled
+- Contraception: none
 - Cycle day: 1
 - Pregnant: no
 - Pregnancy day: 0

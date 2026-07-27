@@ -20,21 +20,29 @@
 #   - WikiBranchResult : 안전한 과거 턴 분기로 만든 대화와 재입력 초안.
 #   - WikiConversationRenameRequest : Wiki 대화 이름 변경 요청.
 #   - WikiConversationArchiveRequest : Wiki 대화 보관 또는 복원 요청.
+#   - WikiSystemsPatchRequest : 대화별 Wiki postprocessor override 변경 요청.
+#   - WikiSystemsResponse : 대화별 Wiki postprocessor 유효값·기본값·override 상태 응답.
 #   - AppSettingsRequest : Request body for updating app-wide settings.
 #   - ForcePregnancyRequest : Request body for forcing a pregnancy (mother + optional father).
 #   - SimulatePregnancyRequest : Request body for simulating N internal ejaculations.
 #
 # Functions
 #   - normalize_actor_model(model_name: str | None) -> str : Return a supported Actor model id.
+#   - normalize_wiki_system_overrides(overrides: Mapping[str, object] | None) -> dict[str, bool] : 저장용 Wiki system override를 canonical bool dict로 정리합니다.
+#   - resolve_wiki_systems(overrides: Mapping[str, object] | None, defaults: Mapping[str, bool]) -> dict[str, bool] : override와 기본값을 합쳐 대화의 유효 Wiki system 표를 만듭니다.
+#   - overridden_wiki_system_names(overrides: Mapping[str, object] | None) -> list[str] : 명시적으로 설정된 Wiki system 키를 canonical 순서로 반환합니다.
+#   - apply_wiki_system_patch(overrides: Mapping[str, object] | None, patch: Mapping[str, bool | None]) -> dict[str, bool] : PATCH payload를 기존 override dict에 적용합니다.
 # ================================
 
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
+
+from src.config import WIKI_SYSTEM_KEYS
 
 WorldMode = Literal["graph", "wiki"]
 WikiUpdateStatus = Literal["idle", "queued", "failed", "applied", "skipped"]
@@ -62,6 +70,57 @@ def normalize_actor_model(model_name: str | None) -> str:
     if candidate in SUPPORTED_ACTOR_MODELS:
         return candidate
     return DEFAULT_ACTOR_MODEL
+
+
+def normalize_wiki_system_overrides(
+    overrides: Mapping[str, object] | None,
+) -> dict[str, bool]:
+    """저장용 Wiki system override를 canonical bool dict로 정리합니다."""
+    normalized: dict[str, bool] = {}
+    if overrides is None:
+        return normalized
+    for key in WIKI_SYSTEM_KEYS:
+        value = overrides.get(key)
+        if isinstance(value, bool):
+            normalized[key] = value
+    return normalized
+
+
+def resolve_wiki_systems(
+    overrides: Mapping[str, object] | None,
+    defaults: Mapping[str, bool],
+) -> dict[str, bool]:
+    """override와 기본값을 합쳐 대화의 유효 Wiki system 표를 만듭니다."""
+    resolved = {key: bool(defaults[key]) for key in WIKI_SYSTEM_KEYS}
+    resolved.update(normalize_wiki_system_overrides(overrides))
+    return resolved
+
+
+def overridden_wiki_system_names(overrides: Mapping[str, object] | None) -> list[str]:
+    """명시적으로 설정된 Wiki system 키를 canonical 순서로 반환합니다."""
+    normalized = normalize_wiki_system_overrides(overrides)
+    return [key for key in WIKI_SYSTEM_KEYS if key in normalized]
+
+
+def apply_wiki_system_patch(
+    overrides: Mapping[str, object] | None,
+    patch: Mapping[str, bool | None],
+) -> dict[str, bool]:
+    """PATCH payload를 기존 override dict에 적용합니다."""
+    unknown = sorted(key for key in patch if key not in WIKI_SYSTEM_KEYS)
+    if unknown:
+        names = ", ".join(unknown)
+        raise ValueError(f"Unknown wiki systems: {names}")
+    updated = normalize_wiki_system_overrides(overrides)
+    for key in WIKI_SYSTEM_KEYS:
+        if key not in patch:
+            continue
+        value = patch[key]
+        if value is None:
+            updated.pop(key, None)
+            continue
+        updated[key] = value
+    return updated
 
 
 class MessageVariant(BaseModel):
@@ -121,6 +180,7 @@ class ConversationState(BaseModel):
     wiki_update_status: WikiUpdateStatus = "idle"
     wiki_update_error: str = ""
     wiki_pending_commit_id: str | None = None
+    wiki_system_overrides: dict[str, bool] = Field(default_factory=dict)
 
 
 class WikiBranchResult(BaseModel):
@@ -142,6 +202,21 @@ class WikiConversationArchiveRequest(BaseModel):
     """Request body for archiving or restoring a Wiki conversation."""
 
     archived: bool
+
+
+class WikiSystemsPatchRequest(BaseModel):
+    """Request body for partially updating per-conversation Wiki system overrides."""
+
+    systems: dict[str, bool | None]
+
+
+class WikiSystemsResponse(BaseModel):
+    """Resolved Wiki system state for one conversation."""
+
+    systems: dict[str, bool]
+    defaults: dict[str, bool]
+    overridden: list[str]
+    authored_cycle_characters: list[str]
 
 
 class ConversationCreateRequest(BaseModel):

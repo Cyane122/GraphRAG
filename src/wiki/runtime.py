@@ -21,6 +21,9 @@ from src.config import (
     WIKI_ACTOR_RECALL_BUDGET,
     WIKI_ACTOR_RECALL_TOKEN_BUDGET,
 )
+from src.simulation.systems.world_dynamics.organic_models import (
+    normalize_contraception_value,
+)
 from src.wiki.commit import WikiCommitQueue
 from src.wiki.context import (
     document_body,
@@ -51,6 +54,11 @@ _INTIMATE_RE = re.compile(
 )
 _ACTOR_METADATA_RE = re.compile(r"\b(?:wiki|thread|scenario)\b|시나리오", re.IGNORECASE)
 _ACTOR_FILE_REFERENCE_RE = re.compile(r"(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+\.md\b")
+_CURRENT_STATE_H3_RE = re.compile(r"^###\s+(.+?)\s*$")
+_CURRENT_STATE_FIELD_RE = re.compile(r"^-\s*([^:\n]+):\s*(.*?)\s*$")
+_REPRODUCTIVE_STATE_SECTION_PATH = ("현재 상태", "Reproductive State")
+_PROMPT_DIR = Path(__file__).parent / "prompts"
+_PROTECTION_OOC_PROMPT_PATH = _PROMPT_DIR / "protection_ooc.md"
 
 
 def initialize_wiki_conversation(
@@ -153,10 +161,100 @@ def _character_fixed_body(document: WikiDocument) -> str:
     return body.replace(current_markdown, "", 1).strip()
 
 
+def _omit_current_state_subsection(markdown: str, heading_title: str) -> str:
+    """현재 상태 H2에서 지정한 H3 subsection 전체를 Actor 본문에서 제거합니다."""
+    lines = markdown.splitlines()
+    heading_indexes = [
+        index
+        for index, line in enumerate(lines)
+        if _CURRENT_STATE_H3_RE.fullmatch(line) is not None
+    ]
+    if not heading_indexes:
+        return markdown.strip()
+    filtered_lines = lines[: heading_indexes[0]]
+    for position, start in enumerate(heading_indexes):
+        end = heading_indexes[position + 1] if position + 1 < len(heading_indexes) else len(lines)
+        block = lines[start:end]
+        heading = _CURRENT_STATE_H3_RE.fullmatch(block[0])
+        if heading is not None and heading.group(1).strip() == heading_title:
+            continue
+        filtered_lines.extend(block)
+    return "\n".join(filtered_lines).strip()
+
+
+def _actor_character_document(
+    documents: list[WikiDocument],
+    actor_profile_id: str,
+) -> WikiDocument | None:
+    """활성 Actor profile에 대응하는 thread character 문서를 반환합니다."""
+    return next(
+        (
+            document
+            for document in documents
+            if document.metadata is not None
+            and document.metadata.type == "character"
+            and document.metadata.profile_id == actor_profile_id
+        ),
+        None,
+    )
+
+
+def _parse_reproductive_state_int(value: str) -> int | None:
+    """Reproductive State 정수 필드를 안전하게 변환하고 malformed input은 거부합니다."""
+    normalized = str(value or "").strip()
+    if not normalized:
+        return None
+    try:
+        return int(normalized)
+    except ValueError:
+        return None
+
+
+def _actor_cycle_dynamic_state(
+    documents: list[WikiDocument],
+    actor_profile_id: str,
+) -> dict[str, object] | None:
+    """활성 Actor character의 canonical Reproductive State를 checklist 입력으로 변환합니다."""
+    character = _actor_character_document(documents, actor_profile_id)
+    if character is None:
+        return None
+    section = parse_markdown_sections(character.content).get(_REPRODUCTIVE_STATE_SECTION_PATH)
+    if section is None:
+        return None
+    fields: dict[str, str] = {}
+    for line in section.markdown.splitlines()[1:]:
+        if not line.strip():
+            continue
+        match = _CURRENT_STATE_FIELD_RE.fullmatch(line)
+        if match is None:
+            return None
+        label = match.group(1).strip()
+        if label in fields:
+            return None
+        fields[label] = match.group(2).strip()
+    if fields.get("Menstrual cycle", "").lower() != "enabled":
+        return None
+    cycle_day = _parse_reproductive_state_int(fields.get("Cycle day", ""))
+    pregnancy_day = _parse_reproductive_state_int(fields.get("Pregnancy day", ""))
+    pregnant_text = fields.get("Pregnant", "").strip().lower()
+    contraception = normalize_contraception_value(fields.get("Contraception"))
+    if cycle_day is None or pregnancy_day is None or pregnant_text not in {"yes", "no"}:
+        return None
+    return {
+        "has_menstrual_cycle": True,
+        "contraception": contraception,
+        "cycle_day": cycle_day,
+        "pregnant": pregnant_text == "yes",
+        "pregnancy_day": pregnancy_day,
+    }
+
+
 def _character_dynamic_body(document: WikiDocument) -> str:
-    """thread character의 현재 상태 섹션만 반환합니다."""
+    """thread character의 현재 상태 섹션을 Actor 표시 규칙에 맞춰 반환합니다."""
     section = parse_markdown_sections(document.content).get(("현재 상태",))
-    return section.markdown.strip() if section is not None else ""
+    if section is None:
+        return ""
+    return _omit_current_state_subsection(section.markdown, "Reproductive State")
 
 
 def _scene_actor_body(document: WikiDocument) -> str:
@@ -310,6 +408,16 @@ def _dynamic_context(
     return context
 
 
+def _wiki_turn_ooc_directives(turn_ooc_directives: str) -> str:
+    """호출자 지시와 Wiki 전용 Protection bookkeeping 지시를 함께 반환합니다."""
+    asset_directives = _PROTECTION_OOC_PROMPT_PATH.read_text(encoding="utf-8").strip()
+    return "\n\n".join(
+        part
+        for part in [str(turn_ooc_directives or "").strip(), asset_directives]
+        if part
+    )
+
+
 def build_wiki_prompt_bundle(
     vault_root: Path,
     setup: WikiConversationSetup,
@@ -338,6 +446,8 @@ def build_wiki_prompt_bundle(
         perspective=setup.perspective,
     )
     char_data = {"id": setup.npc_name, "name": setup.npc_name}
+    if (dynamic_state := _actor_cycle_dynamic_state(thread_documents, setup.npc_id)) is not None:
+        char_data["dynamic_state"] = dynamic_state
     user_data = {"id": setup.pc_name, "name": setup.pc_name}
     fixed, genre, dynamic = builder.build(
         scene_types=selected_scene_types,
@@ -360,7 +470,7 @@ def build_wiki_prompt_bundle(
                 "hide_metadata": True,
             }
         },
-        turn_ooc_directives=turn_ooc_directives,
+        turn_ooc_directives=_wiki_turn_ooc_directives(turn_ooc_directives),
     )
     bundle = WikiPromptBundle(
         fixed_prompt=fixed,

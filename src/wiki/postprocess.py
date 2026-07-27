@@ -6,7 +6,7 @@
 # 기본은 전부 off이므로 정상 경로는 단일 Updater 호출 하나로 유지됩니다.
 #
 # Functions
-#   - apply_wiki_postprocessors(documents, user_input, actor_response, pending, actor_profile_id, player_profile_id, model_name) -> str | None : 활성화된 postprocessor를 실행해 pending에 병합하고 OOC 메시지를 반환합니다.
+#   - apply_wiki_postprocessors(documents, user_input, actor_response, pending, actor_profile_id, player_profile_id, model_name, wiki_systems: dict[str, bool] | None = None) -> str | None : 활성화된 postprocessor를 실행해 pending에 병합하고 OOC 메시지를 반환합니다.
 #   - plan_memory_distortion(documents, actor_response, actor_profile_id, model_name) -> list[SectionPatch] : 활성 NPC 기억의 해석·감정 왜곡 patch를 계획합니다.
 #   - plan_gossip(documents, actor_response, pending, actor_profile_id, player_profile_id, model_name) -> list[DocumentCreation] : 새 event 목격자의 주관적 memory 생성을 계획합니다.
 # ================================
@@ -146,6 +146,16 @@ def _merge_creations(
             continue
         existing.add(creation.document)
         pending.creations.append(creation)
+
+
+def _resolved_wiki_systems(wiki_systems: dict[str, bool] | None) -> dict[str, bool]:
+    """호출값이 없으면 env 기본값으로 보완한 Wiki system 표를 반환합니다."""
+    from src.config import wiki_system_defaults
+
+    resolved = wiki_system_defaults()
+    if wiki_systems is not None:
+        resolved.update(wiki_systems)
+    return resolved
 
 
 async def plan_memory_distortion(
@@ -352,20 +362,18 @@ async def apply_wiki_postprocessors(
     actor_profile_id: str,
     player_profile_id: str,
     model_name: str,
+    wiki_systems: dict[str, bool] | None = None,
 ) -> str | None:
     """활성화된 gated postprocessor를 best-effort로 병합하고 OOC 메시지를 반환합니다."""
-    from src.config import (
-        WIKI_GOSSIP,
-        WIKI_MEMORY_DISTORTION,
-        WIKI_PERSONALITY_DRIFT,
-        WIKI_PREGNANCY,
-    )
     from src.wiki.character_postprocess import (
         plan_organic_state,
         plan_personality_drift,
     )
     from src.wiki.needs import plan_needs_decay
 
+    del user_input
+
+    systems = _resolved_wiki_systems(wiki_systems)
     ooc_message: str | None = None
     try:
         needs_patches = plan_needs_decay(
@@ -386,7 +394,7 @@ async def apply_wiki_postprocessors(
         document_types.get(patch.document) == "relationship"
         for patch in pending.patches
     )
-    if WIKI_MEMORY_DISTORTION and actor_profile_id and has_relationship_change:
+    if systems["memory_distortion"] and actor_profile_id and has_relationship_change:
         try:
             patches = await plan_memory_distortion(
                 documents, actor_response, actor_profile_id, model_name
@@ -395,7 +403,7 @@ async def apply_wiki_postprocessors(
         except Exception as exc:
             logger.warning(f"[WikiPostprocess] memory distortion failed (ignored): {exc}")
 
-    if WIKI_GOSSIP:
+    if systems["gossip"]:
         try:
             creations = await plan_gossip(
                 documents,
@@ -409,7 +417,7 @@ async def apply_wiki_postprocessors(
         except Exception as exc:
             logger.warning(f"[WikiPostprocess] gossip failed (ignored): {exc}")
 
-    if WIKI_PERSONALITY_DRIFT:
+    if systems["personality_drift"]:
         try:
             personality_patches = await plan_personality_drift(
                 documents,
@@ -422,7 +430,7 @@ async def apply_wiki_postprocessors(
         except Exception as exc:
             logger.warning(f"[WikiPostprocess] personality drift failed (ignored): {exc}")
 
-    if WIKI_PREGNANCY:
+    if systems["pregnancy"]:
         try:
             organic_patches, ooc_message = await plan_organic_state(
                 documents,
@@ -430,6 +438,7 @@ async def apply_wiki_postprocessors(
                 pending,
                 actor_profile_id,
                 player_profile_id,
+                model_name,
             )
             _merge_patches(pending, organic_patches, replace_exact=True)
         except Exception as exc:

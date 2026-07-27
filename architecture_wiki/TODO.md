@@ -9,7 +9,7 @@ tags:
 
 # Wiki-first parity TODO
 
-이 문서는 [[GraphRAG]]와 [[WikiRAG]]의 실행 순서를 함께 관리하는 Obsidian 작업 보드다. 상세한 WikiRAG 장기 백로그는 `docs/wiki_v2_todo.md`, 소스-단위 parity 구현 로드맵(어디를 어떻게 고치는가)은 `docs/wiki_parity_roadmap.md`, 실제 LLM 테스트 케이스는 `docs/wiki_v2_manual_llm_test_plan.md`에 있다.
+이 문서는 [[GraphRAG]]와 [[WikiRAG]]의 실행 순서를 함께 관리하는 Obsidian 작업 보드다. 상세한 WikiRAG 장기 백로그와 검증 항목은 `docs/wiki_v2_todo.md`에 있으며, 현재 개발 우선순위는 `.ai/active.md`와 그 파일이 참조하는 initiative가 관리한다.
 
 ## 개발 모드
 
@@ -58,7 +58,7 @@ vault 계약이 바뀌면 연결된 `WikiRAG/` 문서와 `docs/wiki_v2_format.md
 | social/Kakao·소문·reputation | 지원 | 부분 — 새 Event의 명시 목격자를 owner-private Memory로 전파하는 기본-off gossip 구현 | Kakao/reputation과 다단 전파는 별도 실측 | P3 |
 | personality drift·pregnancy 등 | 지원 | 코드 완료·실제 LLM 검증 필요 — 동적 성격 변화 원장, opt-in 주기/임신 상태, 공용 OOC 결과 경로 구현 | 장기 플레이에서 임계·표현 품질 검증 | P3 |
 | World Editor·상태 탐색 | Graph 도구 지원 | 부분 — Explorer 문서 목록 읽기 API 구현(`GET .../wiki/documents`); 편집·diff·시점 복원 UI는 site 후속 | Markdown 편집, diff, 문서 tree와 상태 탐색 | P4 |
-| 장기 플레이·비용·지연 검증 | 부분 | 검증 필요 | 5개 현재 시나리오 20턴 이상 기록 | P4 |
+| 장기 플레이·비용·지연 검증 | 부분 | 계측 완료·실측 필요 — 호출별 지연·토큰이 플레이 중 자동 기록됨; 실제 플레이로 20턴 관찰은 미수행 | 5개 현재 시나리오 20턴 이상 기록 | P4 |
 
 ## 공동 개발 전환 조건
 
@@ -127,6 +127,18 @@ vault 계약이 바뀌면 연결된 `WikiRAG/` 문서와 `docs/wiki_v2_format.md
 - [ ] 충돌로 failed가 된 commit을 수동 수정 후 즉시 반영하거나 재시도할 수 있는지 확인한다.
 - [ ] 건너뛰기 후 원문은 바뀌지 않고 `skipped` 이력만 남는지 확인한다.
 - [ ] 20턴 이상 진행하며 사실 누락, 과잉 patch, 입력 token, 비용, 지연을 기록한다.
+
+검증 방식은 무인 실행이 아니라 **실제 플레이**로 한다(2026-07-26 결정). 정상
+`GraphRAG Chat` 플레이를 진행하면서 위 항목들을 관찰해 기록한다.
+
+플레이 중 자동으로 남는 근거는 다음과 같다.
+
+- turn debug 스냅샷: start state 물질화, 선택 문서, Fixed/Genre/Dynamic 세 구간
+- `commits/` archive: 적용 전·후 hash와 section diff
+- `logs/llm_latency.jsonl`: 호출별 지연과 prompt/output/thought/total 토큰
+
+무인 하네스(`scripts/run_wiki_long_play.py`)는 구현되어 있으나 이 결정에 따라
+기본 검증 경로가 아니다. 손으로 재현하기 어려운 회귀를 좁혀야 할 때만 쓴다.
 
 ## WikiRAG 다음 마일스톤
 

@@ -92,6 +92,7 @@ def main() -> None:
         assert "### 욕구와 컨디션" in migrated
         assert "### Personality Change Ledger" in migrated
         assert "### Reproductive State" in migrated
+        assert "- Contraception: none" in migrated
 
         queue = WikiCommitQueue(WikiStore(vault_root / "threads" / thread_id))
         archive = queue.load_archive(result.migration_commit_id)

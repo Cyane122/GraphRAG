@@ -308,6 +308,7 @@ def _thread_character_content(
             "- No durable personality change has occurred since the story began.\n\n"
             "### Reproductive State\n\n"
             "- Menstrual cycle: disabled\n"
+            "- Contraception: none\n"
             "- Cycle day: 1\n"
             "- Pregnant: no\n"
             "- Pregnancy day: 0\n"

@@ -21,6 +21,7 @@ from src.apps.app.models import (
     ConversationState,
     MessageVariant,
     normalize_actor_model,
+    resolve_wiki_systems,
 )
 from src.apps.app.storage import ConversationStore
 from src.apps.app.wiki_controls import skip_wiki_commit
@@ -31,7 +32,7 @@ from src.apps.app.wiki_service import (
     _strip_hidden_blocks,
     stream_wiki_turn,
 )
-from src.config import MODEL_PRO_UPDATER
+from src.config import MODEL_PRO_UPDATER, wiki_system_defaults
 from src.simulation.state.models import WikiTurnUpdateRequest
 from src.simulation.state.updater import update_accepted_turn
 from src.wiki import WikiCommitQueue, WikiStore
@@ -165,6 +166,10 @@ async def _replace_wiki_update(
                 actor_profile_id=state.npc_id,
                 user_message_id=user_message.id,
                 assistant_message_id=assistant_message.id,
+                wiki_systems=resolve_wiki_systems(
+                    state.wiki_system_overrides,
+                    wiki_system_defaults(),
+                ),
             )
         )
         pending = update_result.pending_wiki_commit

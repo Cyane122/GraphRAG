@@ -322,6 +322,14 @@ commit으로 기록한다. 문서 전체 replacement도 exact after revision일 
 - 캐릭터 문서에서는 `## 현재 상태`만 gameplay Updater가 수정할 수 있다.
 - `현재 상태 > 욕구와 컨디션`은 `Needs: hunger=...; rest=...; social=...; fun=...; safety=...; libido=...` canonical 행을 사용한다. gameplay 모델은 이 section을 수정하지 않고 accepted header 경과 시간 기반 결정적 규칙이 수치와 pressure만 갱신한다. 작성자가 기록한 `Condition` 서술은 보존한다.
 - `Personality Change Ledger`와 `Reproductive State`도 일반 gameplay 모델이 수정하지 않는다. 기본-off 장기 시스템 gate가 전용 section patch로만 변경한다.
+- `Reproductive State`는 작성자가 프로필에 `## 현재 상태` H2를 직접 쓰고 `- Menstrual cycle: enabled`를 남길 때만 켜진다. 런타임은 그 H2가 **아예 없을 때만** 기본 블록을 붙이므로, H2를 직접 쓰는 프로필은 runtime-owned H3(`현재 위치와 활동`, `신체 상태와 감정 상태`, `욕구와 컨디션`, `Personality Change Ledger`, `Reproductive State`)를 모두 포함해야 한다. 하나라도 빠지면 해당 캐릭터의 needs·성격 원장·주기가 오류 없이 조용히 멈춘다.
+- `Reproductive State`는 Actor 문서 블록에 전혀 들어가지 않는다. Actor에게는 Graph와 같은 공용 `CYCLE:` 체크리스트 한 줄로만 전달되며, 그 줄은 주기 일차 같은 정수 대신 국면(`생리 중`/`난포기`/`가임기`/`황체기`)과 `pregnancy_risk`만 노출한다. 임신 중이면 단계와 신체 단서만 주고 정확한 일수·주수를 세지 않도록 명시한다. 정수를 그대로 주면 모델이 "N일째"를 서술에 받아쓰기 때문이며, 이는 Graph에서 먼저 확인된 제약이다.
+- 체크리스트 줄은 활성 Actor 캐릭터에 대해서만 만든다. 결정적 tick도 활성 Actor 캐릭터만 대상으로 하므로, 시뮬레이션하지 않는 주기를 Actor에게 알리지 않는다.
+- `Contraception`은 `none`과 `oral`을 가지며 `Menstrual cycle` 바로 다음 줄에 온다. 값이 없거나 알 수 없으면 `none`으로 강등한다. `oral`은 임신 확률을 공용 모델의 게임플레이 상수로 낮추고 체크리스트의 가임 위험 표시도 함께 낮추지만 0으로 만들지는 않는다. 사후피임약은 지속 상태가 아니라 사건으로 다루어 `Internal ejaculation count this cycle`을 0으로 되돌린다.
+- 이번 턴의 보호 여부는 Actor가 응답 끝의 숨김 `<ooc>` 블록에 `- Protection: none|condom|n/a` 한 줄로 보고한다. 콘돔은 여러 턴 전에 착용될 수 있고 Updater와 postprocessor는 대화 히스토리를 받지 않으므로, 이 사실을 아는 컴포넌트는 Actor뿐이다. 값이 `condom`이나 `n/a`면 위험을 세지 않고, `none`이면 산문에 관용 표현이 없어도 위험으로 센다. 블록이 없거나 형식이 어긋나면 기존 산문 판정으로 물러난다.
+- `<ooc>` 블록은 사용자에게 보이지 않으며 산문에 영향을 주거나 언급되어서는 안 된다. 이 채널에는 히스토리가 있어야만 알 수 있는 사실만 싣는다. 관계 변화, 사건 생성, 이동처럼 이번 턴 산문만으로 판정 가능한 것은 계속 Updater가 소유한다. 제안자를 둘로 늘리면 충돌하는 patch를 조정할 근거가 없어진다.
+- 피임 변화 판정은 gameplay Updater가 아니라 `Reproductive State`를 소유한 postprocessor가 한다. 값싼 부분 문자열 게이트가 먼저 걸러 대부분의 턴은 추가 호출 없이 끝나고, 게이트에 걸린 턴만 작은 구조화 호출로 실제 상태 변화인지 판정한다. 단순 언급, 가정, 타인의 피임은 상태를 바꾸지 않는다.
+- 정본 Markdown은 계속 정수와 부기 필드를 보관하고 Updater·postprocessor는 전문을 그대로 받는다. 축약은 표시 전용이며 정본을 바꾸지 않는다.
 - 정적 외형, 이력, 성격, 능력, 관계와 시나리오 사실은 Obsidian이나 별도 편집 흐름에서 수정한다.
 - thread relationship은 `owner` Actor profile이 다른 participant를 보는 방향성 문서다.
 - 관계 문서는 affinity/trust 수치를 저장하지 않고 `## Relationship Development` 아래에 시작 이후의 durable 변화를 자연어 bullet로 누적한다.

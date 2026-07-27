@@ -109,6 +109,17 @@ Event 제목을 기록한다.
 `update_accepted_turn(mode="wiki")`가 정상 Updater 결과를 검증한 뒤 같은 pending에
 추가 patch/creation을 병합한다.
 
+gate는 두 단계로 해석한다. `src/config.py`의 환경 변수가 기본값이고, 대화별
+override가 있으면 그 값이 이긴다. 대화에는 명시적으로 설정한 키만 저장하므로
+건드리지 않은 시스템은 계속 환경 기본값을 따라간다. `GET`/`PATCH
+/api/conversations/{thread_id}/wiki/systems`가 유효값·기본값·override 목록을
+반환하며, `PATCH`에 `null`을 보내면 override를 지워 기본값 추적으로 되돌린다.
+환경 접근은 `src/config.py`에만 남는다.
+
+생식 상태는 이 실행 gate와 캐릭터 문서의 작성자 opt-in이 모두 켜져야 동작한다.
+gate만 켜고 캐릭터가 `Menstrual cycle: disabled`이면 아무 일도 일어나지 않으므로,
+systems 응답은 현재 thread에서 opt-in된 캐릭터 이름을 함께 반환한다.
+
 - Memory 왜곡은 durable relationship patch가 있는 턴만 실행하며 기억의 사실 section이
   아니라 해석·감정 section만 바꾼다.
 - Gossip은 같은 pending에 새로 생긴 Event의 명시된 제3자 목격자만 owner로 하는

@@ -8,6 +8,9 @@
 # ================================
 
 from src.agents.prompt_factory.renderers import _SafeFormatDict, render_state_line
+from src.simulation.systems.world_dynamics.organic_models import (
+    normalize_contraception_value,
+)
 
 
 
@@ -143,6 +146,7 @@ def _cycle_status(dyn_state: dict) -> str:
     cycle_day = int(dyn_state.get("cycle_day") or 1)
     pregnant  = bool(dyn_state.get("pregnant") or False)
     preg_day  = int(dyn_state.get("pregnancy_day") or 0)
+    contraception = normalize_contraception_value(dyn_state.get("contraception"))
 
     if pregnant:
         stage, body, hint = next(
@@ -164,7 +168,12 @@ def _cycle_status(dyn_state: dict) -> str:
         (v for r, v in phase_ranges.items() if cycle_day in r),
         ("황체기", False),
     )
-    risk = "있음" + (" (배란 피크)" if cycle_day == 14 else "") if fertile else "없음"
+    if not fertile:
+        risk = "없음"
+    elif contraception == "oral":
+        risk = "낮음" + (" (배란 피크)" if cycle_day == 14 else "")
+    else:
+        risk = "있음" + (" (배란 피크)" if cycle_day == 14 else "")
     # cycle_day 정수는 노출하지 않는다(국면·가임 위험만으로 충분; "N일째" 받아쓰기 방지).
     return f"{phase} / pregnancy_risk={risk}"
 
