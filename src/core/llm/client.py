@@ -9,9 +9,10 @@
 #   - _SafeResponse : response.text가 항상 str을 반환하도록 보장하는 래퍼
 #
 # Functions
-#   - record_llm_latency(log_source: str, model: str, start_epoch_ms: int, elapsed_ms: int, mime: str | None, status: str) -> None : LLM 호출 지연을 logs/llm_latency.jsonl에 기록
+#   - usage_token_counts(usage: object) -> dict[str, int | None] : provider usage 객체에서 prompt/output/thought/total 토큰 수 추출
+#   - record_llm_latency(log_source: str, model: str, start_epoch_ms: int, elapsed_ms: int, mime: str | None, status: str, tokens: dict[str, int | None] | None = None) -> None : LLM 호출 지연과 토큰 사용량을 logs/llm_latency.jsonl에 기록
 #   - is_rate_limit_error(exc: BaseException) -> bool : 예외가 429 RESOURCE_EXHAUSTED인지 판별(provider 공용, Actor 스트리밍도 공유)
-#   - _run_generate_with_retries(generate_once, log_source: str, model_name: str, mime: str | None) : 1회 생성 코루틴을 provider-무관하게 재시도/계측
+#   - _run_generate_with_retries(generate_once: Callable[[], Awaitable[tuple[object, str]]], log_source: str, model_name: str, mime: str | None) -> object : 1회 생성 코루틴을 provider-무관하게 재시도/계측
 #   - get_client() -> genai.Client : 스트리밍 직접 호출 시 사용하는 클라이언트 반환
 #   - get_model(model_name: str, system_prompt: str | None) -> _GeminiModel | _DeepSeekModel : 이름에 따라 Gemini/DeepSeek 래퍼 반환
 #   - get_response_text(response) -> str : response.text가 None인 경우 parts에서 텍스트 추출
@@ -24,6 +25,7 @@ import json
 import random
 import re
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from time import perf_counter
 from types import SimpleNamespace
@@ -71,6 +73,20 @@ def is_rate_limit_error(exc: BaseException) -> bool:
 _LLM_LATENCY_LOG = Path("logs") / "llm_latency.jsonl"
 
 
+def usage_token_counts(usage: object) -> dict[str, int | None]:
+    """usage_metadata 유사 객체에서 prompt/output/thought/total 토큰 수를 추출한다.
+
+    provider 마다 필드명이 달라 Gemini(`*_token_count`)와 Anthropic 호환
+    (`input_tokens`/`output_tokens`)을 함께 본다. 값이 없으면 None을 남긴다.
+    """
+    return {
+        "prompt_tokens": _usage_value(usage, "prompt_token_count", "input_tokens"),
+        "output_tokens": _usage_value(usage, "candidates_token_count", "output_tokens"),
+        "thought_tokens": _usage_value(usage, "thoughts_token_count"),
+        "total_tokens": _usage_value(usage, "total_token_count"),
+    }
+
+
 def record_llm_latency(
     log_source: str,
     model: str,
@@ -78,22 +94,28 @@ def record_llm_latency(
     elapsed_ms: int,
     mime: str | None,
     status: str,
+    tokens: dict[str, int | None] | None = None,
 ) -> None:
     """LLM 호출 1건의 지연을 logs/llm_latency.jsonl에 한 줄로 남긴다. 측정 전용, 실패는 무시.
 
     start_epoch_ms(시작 시각) + elapsed_ms 로 호출 구간이 겹치면 병렬, 안 겹치면 순차임을
     사후 분석할 수 있다. log_source 별로 묶으면 호출 종류별 지연 분포를 볼 수 있다.
+    tokens가 있으면 prompt/output/thought/total 사용량을 같은 줄에 덧붙여 장기 플레이
+    비용 집계에 쓴다(provider가 보고하지 않으면 값은 None).
     """
     try:
         _LLM_LATENCY_LOG.parent.mkdir(exist_ok=True)
-        line = json.dumps({
+        payload = {
             "ts": start_epoch_ms,
             "log_source": log_source,
             "model": model,
             "elapsed_ms": elapsed_ms,
             "mime": mime,
             "status": status,
-        }, ensure_ascii=False)
+        }
+        if tokens:
+            payload.update(tokens)
+        line = json.dumps(payload, ensure_ascii=False)
         with _LLM_LATENCY_LOG.open("a", encoding="utf-8") as fh:
             fh.write(line + "\n")
     except Exception:
@@ -230,10 +252,30 @@ def _response_diagnostics(response: object) -> dict:
     return info
 
 
-def _usage_value(usage: object, attr: str) -> object:
-    """Return one usage metadata value without exposing verbose SDK objects."""
+def _usage_value(usage: object, *attrs: str) -> int | None:
+    """Return the first present usage metadata value coerced to a plain int.
+
+    provider 별 필드명을 순서대로 시도하고 전부 없으면 None을 반환한다.
+    값이 JSON 직렬화에 안전한 int로 변환되지 않으면 None으로 버린다.
+    """
+    for attr in attrs:
+        try:
+            value = getattr(usage, attr, None)
+        except Exception:
+            value = None
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except Exception:
+            return None
+    return None
+
+
+def _safe_usage_metadata(owner: object) -> object | None:
+    """Return usage_metadata when available without letting provider quirks raise."""
     try:
-        return getattr(usage, attr, None)
+        return getattr(owner, "usage_metadata", None)
     except Exception:
         return None
 
@@ -363,7 +405,7 @@ class _GeminiModel:
             contents=contents,
             config=config,
         ):
-            chunk_usage = getattr(chunk, "usage_metadata", None)
+            chunk_usage = _safe_usage_metadata(chunk)
             if chunk_usage is not None:
                 usage_metadata = chunk_usage
             if not chunk.candidates:
@@ -447,11 +489,11 @@ class _GeminiModel:
 
 
 async def _run_generate_with_retries(
-    generate_once,
+    generate_once: Callable[[], Awaitable[tuple[object, str]]],
     log_source: str,
     model_name: str,
     mime: str | None,
-):
+) -> object:
     """1회 생성 코루틴(generate_once)을 provider-무관하게 재시도/계측한다.
 
     두 종류의 일시 오류를 재시도한다:
@@ -472,8 +514,10 @@ async def _run_generate_with_retries(
         started = perf_counter()
         status = "ok"
         retry_delay: float | None = None
+        tokens: dict[str, int | None] | None = None
         try:
             result, status = await generate_once()
+            tokens = usage_token_counts(_safe_usage_metadata(result))
             return result
         except (asyncio.TimeoutError, TimeoutError) as exc:
             status = "timeout"
@@ -511,6 +555,7 @@ async def _run_generate_with_retries(
                 int((perf_counter() - started) * 1000),
                 mime,
                 status,
+                tokens,
             )
         # 재시도 예산이 남아 있으면 세마포어를 놓은 상태로 백오프 후 다시 시도한다.
         if retry_delay is None:

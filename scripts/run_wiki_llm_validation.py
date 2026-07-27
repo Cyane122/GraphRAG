@@ -4,10 +4,6 @@
 # 실제 LLM으로 Wiki 한 턴의 Actor·Updater·deferred commit lifecycle을 임시 vault에서 검증합니다.
 #
 # Functions
-#   - _patch_vault_root(vault_root: Path) -> None : 앱 모듈의 Wiki vault 참조를 임시 검증 경로로 맞춥니다.
-#   - _canonical_documents(thread_root: Path) -> dict[str, str] : runtime 산출물을 제외한 canonical Markdown snapshot을 반환합니다.
-#   - _render_document_diff(before: dict[str, str], after: dict[str, str]) -> str : 문서 snapshot 사이의 unified diff를 렌더링합니다.
-#   - _write_json(path: Path, payload: object) -> None : UTF-8 JSON artifact를 저장합니다.
 #   - _run_validation(scenario_id: str, user_input: str, actor_model: str | None, output_root: Path) -> Path : 실제 Wiki 한 턴을 실행하고 artifact 경로를 반환합니다.
 #   - _parse_args() -> argparse.Namespace : CLI 인자를 파싱합니다.
 #   - main() -> None : 검증을 실행하고 결과 경로를 출력합니다.
@@ -18,8 +14,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 from datetime import datetime, timezone
-import difflib
-import json
 from pathlib import Path
 import shutil
 import sys
@@ -29,68 +23,15 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import src.apps.app.conversation_lifecycle as conversation_lifecycle
-import src.apps.app.runtime as app_runtime
 import src.apps.app.service as app_service
-import src.apps.app.wiki_branching as wiki_branching
 import src.apps.app.wiki_controls as wiki_controls
-import src.apps.app.wiki_service as wiki_service
 from src.apps.app.storage import ConversationStore
-
-
-_RUNTIME_MARKDOWN_PARTS = frozenset({"commits", "debug"})
-
-
-def _patch_vault_root(vault_root: Path) -> None:
-    """Point app modules with imported Wiki roots at the isolated validation vault."""
-    app_runtime.WIKI_VAULT_ROOT = vault_root
-    app_service.WIKI_VAULT_ROOT = vault_root
-    conversation_lifecycle.WIKI_VAULT_ROOT = vault_root
-    wiki_branching.WIKI_VAULT_ROOT = vault_root
-    wiki_controls.WIKI_VAULT_ROOT = vault_root
-    wiki_service.WIKI_VAULT_ROOT = vault_root
-
-
-def _canonical_documents(thread_root: Path) -> dict[str, str]:
-    """Return canonical Markdown content keyed by thread-relative path."""
-    documents: dict[str, str] = {}
-    for path in sorted(thread_root.rglob("*.md")):
-        relative = path.relative_to(thread_root)
-        if path.name == "commit.md" or _RUNTIME_MARKDOWN_PARTS & set(relative.parts):
-            continue
-        documents[relative.as_posix()] = path.read_text(encoding="utf-8")
-    return documents
-
-
-def _render_document_diff(
-    before: dict[str, str],
-    after: dict[str, str],
-) -> str:
-    """Render unified diffs for every created, deleted, or changed canonical document."""
-    chunks: list[str] = []
-    for document in sorted(set(before) | set(after)):
-        previous = before.get(document, "")
-        current = after.get(document, "")
-        if previous == current:
-            continue
-        chunks.extend(
-            difflib.unified_diff(
-                previous.splitlines(),
-                current.splitlines(),
-                fromfile=f"before/{document}",
-                tofile=f"after/{document}",
-                lineterm="",
-            )
-        )
-    return "\n".join(chunks) + ("\n" if chunks else "")
-
-
-def _write_json(path: Path, payload: object) -> None:
-    """Write one JSON artifact as readable UTF-8 text."""
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, default=str) + "\n",
-        encoding="utf-8",
-    )
+from scripts.wiki_validation_common import (
+    canonical_documents,
+    patch_vault_root,
+    render_document_diff,
+    write_json,
+)
 
 
 async def _run_validation(
@@ -112,7 +53,7 @@ async def _run_validation(
             source_world,
             vault_root / "worlds" / "babe_university",
         )
-        _patch_vault_root(vault_root)
+        patch_vault_root(vault_root)
         store = ConversationStore(temporary_root / "data" / "threads")
         state = app_service.create_conversation(
             "babe_university",
@@ -122,7 +63,7 @@ async def _run_validation(
             world_mode="wiki",
         )
         thread_root = vault_root / "threads" / state.thread_id
-        before_generation = _canonical_documents(thread_root)
+        before_generation = canonical_documents(thread_root)
 
         started_at = datetime.now(timezone.utc)
         events: list[dict] = []
@@ -136,7 +77,7 @@ async def _run_validation(
                 events.append(event)
         finished_generation_at = datetime.now(timezone.utc)
 
-        before_apply = _canonical_documents(thread_root)
+        before_apply = canonical_documents(thread_root)
         pending_path = thread_root / "commit.md"
         pending_text = (
             pending_path.read_text(encoding="utf-8")
@@ -162,7 +103,7 @@ async def _run_validation(
                 ).model_dump(mode="json")
             except Exception as exc:
                 apply_error = str(exc)
-        after_apply = _canonical_documents(thread_root)
+        after_apply = canonical_documents(thread_root)
         finished_at = datetime.now(timezone.utc)
 
         assistant = next(
@@ -208,14 +149,14 @@ async def _run_validation(
                 "total": (finished_at - started_at).total_seconds(),
             },
         }
-        _write_json(run_root / "result.json", result)
-        _write_json(run_root / "events.json", events)
+        write_json(run_root / "result.json", result)
+        write_json(run_root / "events.json", events)
         (run_root / "pending_commit.md").write_text(
             pending_text,
             encoding="utf-8",
         )
         (run_root / "canonical.diff").write_text(
-            _render_document_diff(before_apply, after_apply),
+            render_document_diff(before_apply, after_apply),
             encoding="utf-8",
         )
         shutil.copytree(thread_root, run_root / "thread_snapshot")

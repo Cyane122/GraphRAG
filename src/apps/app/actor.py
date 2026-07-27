@@ -7,8 +7,8 @@
 #   - recover_missing_analyze_prose(raw: str) -> tuple[str, bool] : Recover prose when Actor omits closing analyze tag.
 #   - extract_scene_chars(raw_thinking: str, visible_text: str = "") -> list[str] : Extract visible secondary character names.
 #   - _build_generation_config(model_name: str, system_text: str, max_token: int) -> types.GenerateContentConfig : Build a model-compatible generation config.
-#   - _stream_actor_text_chunks(fixed_prompt: str, genre_prompt: str, dynamic_prompt: str, history: list[dict], genai_client: object, model_name: str, max_token: int) -> AsyncIterator[str] : Yield provider text chunks.
-#   - _stream_actor_text_chunks_resilient(fixed_prompt: str, genre_prompt: str, dynamic_prompt: str, history: list[dict], genai_client: object, model_name: str, max_token: int) -> AsyncIterator[str] : Yield provider text chunks, retrying the whole stream on pre-first-token network blips.
+#   - _stream_actor_text_chunks(fixed_prompt: str, genre_prompt: str, dynamic_prompt: str, history: list[dict], genai_client: object, model_name: str, max_token: int, usage_sink: dict[str, int | None] | None = None) -> AsyncIterator[str] : Yield provider text chunks.
+#   - _stream_actor_text_chunks_resilient(fixed_prompt: str, genre_prompt: str, dynamic_prompt: str, history: list[dict], genai_client: object, model_name: str, max_token: int, usage_sink: dict[str, int | None] | None = None) -> AsyncIterator[str] : Yield provider text chunks, retrying the whole stream on pre-first-token network blips.
 #   - stream_actor_events(fixed_prompt: str, genre_prompt: str, dynamic_prompt: str, history: list[dict], genai_client: object, model_name: str, max_token: int) -> AsyncIterator[dict] : Yield token events and a final event.
 # ================================
 
@@ -47,7 +47,11 @@ from src.config import (
     GOOGLE_PROJECT_ID,
     LLM_MAX_RETRIES_429,
 )
-from src.core.llm.client import is_rate_limit_error, record_llm_latency
+from src.core.llm.client import (
+    is_rate_limit_error,
+    record_llm_latency,
+    usage_token_counts,
+)
 
 _anthropic_client: AsyncAnthropic | None = None
 _anthropic_vertex_client: AsyncAnthropicVertex | None = None
@@ -252,6 +256,21 @@ def _is_quota_error(exc: Exception) -> bool:
     return isinstance(exc, APIStatusError) and exc.status_code in (403, 429)
 
 
+def _safe_usage_metadata(owner: object) -> object | None:
+    """Return usage_metadata when available without aborting generation on access errors."""
+    try:
+        return getattr(owner, "usage_metadata", None)
+    except Exception:
+        return None
+
+
+def _merge_usage_sink(usage_sink: dict[str, int | None], usage: object) -> None:
+    """Merge only non-None token counts into the caller-provided usage sink."""
+    for key, value in usage_token_counts(usage).items():
+        if value is not None:
+            usage_sink[key] = value
+
+
 def _gemini_messages(dynamic_prompt: str, history: list[dict]) -> list[dict]:
     """Build Google GenAI contents ending with a user turn and prefill instruction."""
     messages = [
@@ -358,14 +377,23 @@ async def _stream_gemini_text_chunks(
     genai_client: object,
     model_name: str,
     max_token: int,
+    usage_sink: dict[str, int | None] | None = None,
 ) -> AsyncIterator[str]:
-    """Yield text chunks from Gemini through Google GenAI streaming."""
+    """Yield text chunks from Gemini through Google GenAI streaming.
+
+    usage_sink가 주어지면 마지막으로 보고된 usage_metadata의 토큰 수를 채워
+    호출자가 스트리밍 턴의 입력/출력 토큰을 계측할 수 있게 한다.
+    """
     finish_reason = None
     async for chunk in await genai_client.aio.models.generate_content_stream(
         model=model_name,
         contents=_gemini_messages(dynamic_prompt, history),
         config=_build_generation_config(model_name, system_text, max_token),
     ):
+        if usage_sink is not None:
+            chunk_usage = _safe_usage_metadata(chunk)
+            if chunk_usage is not None:
+                _merge_usage_sink(usage_sink, chunk_usage)
         if not chunk.candidates:
             continue
         candidate = chunk.candidates[0]
@@ -515,12 +543,22 @@ async def _stream_actor_text_chunks(
     genai_client: object,
     model_name: str,
     max_token: int,
+    usage_sink: dict[str, int | None] | None = None,
 ) -> AsyncIterator[str]:
-    """Yield raw Actor text chunks from the selected provider."""
+    """Yield raw Actor text chunks from the selected provider.
+
+    usage_sink는 provider가 토큰 사용량을 보고할 때만 채워진다(현재 Gemini).
+    """
     system_text = f"{fixed_prompt}\n\n{genre_prompt}" if genre_prompt else fixed_prompt
     if _is_gemini_model(model_name):
         async for text in _stream_gemini_text_chunks(
-            system_text, dynamic_prompt, history, genai_client, model_name, max_token
+            system_text,
+            dynamic_prompt,
+            history,
+            genai_client,
+            model_name,
+            max_token,
+            usage_sink,
         ):
             yield text
         return
@@ -547,6 +585,7 @@ async def _stream_actor_text_chunks_resilient(
     genai_client: object,
     model_name: str,
     max_token: int,
+    usage_sink: dict[str, int | None] | None = None,
 ) -> AsyncIterator[str]:
     """Actor 텍스트 청크를 스트리밍하되 첫 토큰 전 일시 오류는 전체 스트림을 재시도한다.
 
@@ -563,6 +602,8 @@ async def _stream_actor_text_chunks_resilient(
     while True:
         yielded_any = False
         retry_delay: float | None = None
+        if usage_sink is not None:
+            usage_sink.clear()
         try:
             async for text in _stream_actor_text_chunks(
                 fixed_prompt=fixed_prompt,
@@ -572,6 +613,7 @@ async def _stream_actor_text_chunks_resilient(
                 genai_client=genai_client,
                 model_name=model_name,
                 max_token=max_token,
+                usage_sink=usage_sink,
             ):
                 yielded_any = True
                 yield text
@@ -628,11 +670,13 @@ async def stream_actor_events(
     thinking_done = False
     recovered_missing_analyze = False
 
-    # 측정용: 웹 스트리밍 Actor 호출의 총 지연을 기록한다(이 경로는 generate_content_async를 우회).
+    # 측정용: 웹 스트리밍 Actor 호출의 총 지연과 토큰 사용량을 기록한다
+    # (이 경로는 generate_content_async를 우회하므로 계측도 여기서 직접 한다).
     start_epoch_ms = int(time.time() * 1000)
     started = perf_counter()
     status = "ok"
     got_text = False
+    usage_sink: dict[str, int | None] = {}
     try:
         async for text in _stream_actor_text_chunks_resilient(
             fixed_prompt=fixed_prompt,
@@ -642,6 +686,7 @@ async def stream_actor_events(
             genai_client=genai_client,
             model_name=model_name,
             max_token=max_token,
+            usage_sink=usage_sink,
         ):
             got_text = True
             raw += text
@@ -679,6 +724,7 @@ async def stream_actor_events(
         record_llm_latency(
             "actor", model_name, start_epoch_ms,
             int((perf_counter() - started) * 1000), None, status,
+            usage_sink or None,
         )
 
     if not thinking_done and thinking_buf:
