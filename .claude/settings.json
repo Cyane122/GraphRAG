@@ -1,0 +1,53 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact|fork",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.ai/hooks/context_loader.py\"",
+            "timeout": 30,
+            "statusMessage": "Loading active repository context"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "mcp__codex__codex",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.ai/hooks/enforce_codex_call.py\"",
+            "timeout": 30,
+            "statusMessage": "Applying Codex repository defaults"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.ai/hooks/guard_commands.py\"",
+            "timeout": 30,
+            "statusMessage": "Checking command safety"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.ai/hooks/validate_changelog.py\"",
+            "timeout": 30,
+            "statusMessage": "Checking changelog policy"
+          }
+        ]
+      }
+    ]
+  }
+}

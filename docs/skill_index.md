@@ -49,7 +49,10 @@ Header sync is always the **last step**, never the task itself.
 
 | Skill | Use it for | It must NOT | Trigger boundary |
 | --- | --- | --- | --- |
-| **author-wikirag-worlds** | Creating, expanding, repairing or reviewing English-authored, independently assembled Wiki V2 world/scenario prompt modules, character variants, locations, organizations and work-specific prose | modify live thread state or pending commits, invent or defer major missing canon, leave Korean explanatory prose outside allowed literals/examples, let one body reference another prompt/scenario, expose Actor/Updater/runtime mechanics, duplicate PromptBuilder rules | requests involving `wiki_v2/worlds`, Wiki형 월드/시나리오 작성, or GraphRAG-to-WikiRAG content promotion |
+| **author-wikirag-worlds** | Creating, repairing, or reviewing Wiki V2 world/scenario prompt modules and authoring variants | modify live thread state, expose runtime metadata, or invent missing canon without authority | work under `wiki_v2/worlds/` |
+
+This authoring workflow is intentionally excluded from `docs/changelog.md`; see
+`.ai/changelog-policy.md`.
 
 ---
 
@@ -64,7 +67,12 @@ Header sync is always the **last step**, never the task itself.
 | portfolio vs changelog | both narrate work | changelog = repo-side raw record; portfolio = curated external view, reads (never writes) the changelog |
 | test-review vs dev-style/refactor-safe | both involve tests | dev-style owns first-write tests; refactor-safe owns regression-safety notes; test-review is for explicit test-improvement passes |
 
-Disambiguating keywords: "Wiki형 월드/시나리오" → author-wikirag-worlds; "추가/구현/만들어" (add/build) → dev-style; "동작 그대로/중복 제거/정리/리팩토링" (keep behavior/dedup/clean up/refactor) → refactor-safe; "헤더/header" → file-header; "기록/changelog" → changelog-maintainer; "구조/architecture" → architecture-doc-maintainer.
+Disambiguating keywords: work under `wiki_v2/worlds/` → author-wikirag-worlds;
+"추가/구현/만들어" (add/build) → dev-style;
+"동작 그대로/중복 제거/정리/리팩토링" (keep behavior/dedup/clean
+up/refactor) → refactor-safe; "헤더/header" → file-header;
+"기록/changelog" → changelog-maintainer; "구조/architecture" →
+architecture-doc-maintainer.
 
 ---
 

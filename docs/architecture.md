@@ -1,260 +1,241 @@
-# GraphRAG Architecture
+# GraphRAG / WikiRAG Architecture
 
-Canonical architecture reference for the GraphRAG roleplay simulation engine.
-For the short, always-loaded rules see `AGENTS.md` (the source of truth for
-working conventions). This document is the longer narrative: how a turn flows,
-where state lives, and which design boundaries must not be broken.
+This is the canonical runtime architecture reference. Repository-wide operating
+rules live in `AGENTS.md`; current priorities live in `.ai/active.md`; the detailed
+Wiki execution board lives in `architecture_wiki/TODO.md` and
+`docs/wiki_v2_todo.md`.
 
-For Obsidian navigation and a current execution board, open
-`architecture_wiki/` as a separate vault and start at `Home.md`. That vault is
-developer documentation only and is never read as WikiRAG runtime state.
+`architecture_wiki/` is a developer-facing Obsidian vault. It is never loaded as
+WikiRAG runtime state.
 
-> This file supersedes the older `ARCHITECTURE.md`, `ARCHITECTURE_WALKTHROUGH.md`,
-> `architecture_analysis.md`, and `architecture_validation.md`, which described the
-> retired Chainlit / `src/ui/` layout and have been removed.
+## 1. System Boundaries
 
----
+The repository contains two roleplay simulation modes behind one FastAPI
+application:
 
-## 1. System at a glance
+- **Graph mode** stores thread-scoped simulation state in embedded Kuzu databases.
+- **Wiki mode** stores canonical state as revision-checked Markdown and does not
+  depend on Kuzu.
+- **Shared runtime** provides conversation storage, input routing, provider-agnostic
+  Actor streaming, output guards, and the accepted-turn Updater contract.
+- **Local UI** is served from `frontend/app/`.
+- **Hosted UI** lives in `hosted-ui/` and calls the local engine through JSON and
+  NDJSON endpoints.
 
-GraphRAG is a graph-based roleplay simulation engine:
+The main backend entry point is `python -m src.apps.app`.
 
-- **UI:** a static web client under `frontend/app/` (HTML/CSS/JS) served by a
-  FastAPI backend in `src/apps/app/` (port 8000), plus a standalone Sites client
-  under `hosted-ui/` that connects to the same browser-facing JSON + NDJSON API.
-- **Database:** Kuzu, embedded in-process (no separate server). Each thread/chat
-  room gets an isolated graph under `data/<world_id>/<thread_id>/`.
-- **LLM:** Gemini (Vertex AI) for the Actor and most updaters, with Claude as a
-  fallback/option (Vertex or Anthropic direct).
-- **Embeddings:** HuggingFace KURE-v1 (1024-dim) via `src/core/embedding/`.
+## 2. Persistence And Isolation
 
-The graph stores "facts about the world": characters, locations, relationships,
-memories, needs, schedules, goals, secrets, and items are all nodes and edges.
-Each turn reads only the slice of the graph it needs, builds an Actor prompt,
-streams a response, and writes graph mutations back **only after** the response
-is accepted on the next turn.
+### Graph mode
 
-### Wiki V2 experimental branch
+- Each FastAPI conversation owns an isolated database under
+  `data/threads/<thread_id>/schema`.
+- `graph/<world_id>` remains the standalone schema-builder/default-driver path.
+- Conversation metadata is stored in `data/threads/<thread_id>.json` through
+  `src/apps/app/storage.py::ConversationStore`.
+- Kuzu access lives under `src/core/database/`.
+- Grouped writes use `async with async_driver.transaction() as tx:`.
+- The transaction lock is non-reentrant. Do not open a nested session or call a
+  transaction-owning helper from inside a transaction.
 
-The `graphRAG/wiki` branch also contains an independent, Kuzu-free foundation in
-`src/wiki/`. Markdown is the intended source of truth. H2-and-deeper heading paths
-identify replaceable sections, while content hashes protect both whole documents
-and target sections from stale writes.
+`schema_builder` deletes its selected target before rebuilding it.
 
-`src/wiki/scaffold.py` creates isolated `worlds/<world_id>` and
-`threads/<thread_id>` vaults from Markdown assets in `src/wiki/templates/` without
-overwriting existing core documents. YAML frontmatter is loaded into a typed common
-metadata boundary, while unknown document-specific keys remain available. The
-frontmatter stores `schema_version`, but not a mutable revision counter: revision is
-always derived from the complete file hash so an Obsidian save is visible immediately.
-The detailed document contract lives in `docs/wiki_v2_format.md`.
-World scenarios use `worlds/<world_id>/scenarios/<scenario_id>/`: `scenario.md`
-contains only scenario-specific traits and prose rules, `start_state.md` contains
-the initial state, and `opening_scene.md` contains only the first-scene prose.
+### Wiki mode
 
-The Wiki Updater reads complete relevant documents and returns only `SectionPatch`
-objects. Invalid output is retried. A successful update is written to `commit.md`
-without changing target documents; the next player input applies it and archives
-the result under `commits/<commit_id>.md`. If the player edited an unrelated section
-while the commit was pending, the patch rebases onto the latest document. Editing
-the target section itself produces a conflict instead of overwriting the player.
+- Authored source documents live under `wiki_v2/worlds/`.
+- Each conversation receives an isolated materialized vault under
+  `wiki_v2/threads/<thread_id>/`.
+- Canonical Markdown is reread on every normal turn so external edits are visible
+  without restarting the server.
+- Revisions are content-derived. Pending patches must validate the expected
+  document and section revisions before writing.
+- `commit.md` is a deferred proposal, not canonical state.
 
-The existing FastAPI app now exposes Wiki worlds as runtime-ready. A new Wiki
-conversation materializes `start_state.md` and world character profiles into an
-isolated `threads/<thread_id>` vault, inserts `opening_scene.md` as the initial
-assistant message, and rereads Markdown on every turn. `src/wiki/runtime.py` adapts
-those documents to the existing `PromptBuilder`: stable world/prose/current-situation
-facts and character sections become Fixed, common genre/checklist assets remain Genre,
-and current state documents plus player input become Dynamic. Before assembly, the
-adapter removes frontmatter, paths, revisions, world/scenario/thread IDs, `thread.md`,
-and authoring-only profile selector headings. Profiles may select `common` plus an
-active H3 variant, falling back to `default`; Actor-visible output contains only the
-flattened Markdown inside semantic, path-free XML tags. The Actor streams through
-the existing provider-agnostic app path without opening Kuzu. After the Actor response,
-the unified Wiki Updater queues `commit.md`; the next player input applies it before
-building the new prompt.
+### Shared user notes
 
-`src/apps/app/wiki_controls.py` adds Wiki-only status, apply-now, retry, explicit
-regeneration, and skip
-operations. The filesystem artifact remains authoritative over the conversation's
-display status. A normal pending commit cannot be overwritten by retry; explicit
-regeneration archives it as skipped before creating a fresh proposal. Skipped and
-superseded failed commits are archived for audit instead of deleted.
+User notes are shared by engine mode and world under
+`data/worlds/<graph|wiki>/<world_id>/usernotes.json`. Graph and Wiki namespaces
+must never share notes implicitly.
 
-`src/apps/app/wiki_message_ops.py` handles reroll, user/assistant edits, response
-variant activation, and deletion for the latest Wiki turn while its changes are
-still pending, failed, or skipped. Actor regeneration finishes before the existing
-`commit.md` is archived, so a generation failure leaves the accepted response and
-pending update intact. After successful regeneration or a text/version edit, the old
-commit is archived as skipped and a new Updater commit is queued from the active
-message pair. Already-applied historical turns are rejected because Wiki does not yet
-have inverse patches or a three-way rollback for manual Markdown edits.
+## 3. Accepted-Turn Contract
 
-Wiki turn debug metadata records whether the selected start state was materialized
-into the thread scene and included in Dynamic, together with the scene revision and
-the path/type/revision/visibility of every Updater input document.
+Both modes enter one public state-update API:
 
----
+`src.simulation.state.updater.update_accepted_turn`
 
-## 2. Turn lifecycle
+Storage-specific behavior remains behind that boundary:
 
-A single accepted roleplay turn flows through these layers (entry point:
-`src/apps/app/service.py::append_user_and_stream`):
+- Graph requests delegate persistent mutation to
+  `src/simulation/state/graph_apply.py`.
+- Wiki requests delegate validated Markdown planning to
+  `src/wiki/commit_planner.py`.
 
-1. **Input routing** — `src/apps/app/input_routing.py`
-   Handles `/help`, `/debug`, empty input, OOC-only input, and reroll/edit/delete
-   routing before any generation.
+Do not create a second public Updater entry point for either mode.
 
-2. **Deferred commit of the previous turn** — `src/apps/app/commit.py::commit_pending_web`
-   The previous turn's pending DB writes are applied now. The accepted Actor prose
-   header time is parsed into `GlobalState.currentTime`, and location is reconciled
-   from the accepted prose header.
+## 4. Graph Turn Lifecycle
 
-3. **OOC handling** — `src/agents/prompt_factory/ooc_handler.py`
-   `*...*` OOC-only inputs may mutate the DB immediately and end the turn early.
+The main orchestration path begins at
+`src.apps.app.service.append_user_and_stream`:
 
-4. **Manager pipeline** — `src/agents/manager/pipeline.py::run_manager_pipeline`
-   Prepares everything the Actor needs, mostly side-effect-free:
-   - world bootstrap + global state (`planning.py`)
-   - scene classification (`planning.py`, `classifier.py`) — time is **not** planned here
-   - personal fact extraction (`src/simulation/systems/personal_facts.py`)
-   - context plan (`integrated_planner.py` or `src/agents/context/planner.py`)
-   - core context: character / memory / event / relation (`core_context.py`)
-   - dynamic context: goal / item / secret / social (`world_context.py`)
+1. `src.apps.app.input_routing` handles commands, empty input, OOC-only input,
+   reroll, edit, and deletion routing.
+2. `src.apps.app.commit.commit_pending_web` applies the previously accepted
+   pending turn.
+3. `src.agents.prompt_factory.ooc_handler` may handle an OOC-only turn without
+   Actor generation.
+4. `src.agents.manager.pipeline.run_manager_pipeline` prepares scene
+   classification and Graph context.
+5. `src.agents.prompt_factory.builder` assembles Fixed, Genre, and Dynamic prompt
+   segments.
+6. `src.apps.app.actor` and `src.agents.actor` stream the Actor response.
+7. `src.apps.app.output_guard` validates or repairs the output.
+8. `src.apps.app.pending_store` records the response as pending.
+9. On the next accepted input, the pending response enters the shared Updater and
+   Graph mutations are committed.
 
-5. **Prompt assembly** — `src/agents/prompt_factory/builder.py`
-   Combines the Fixed / Genre / Dynamic segments (see §4).
+### Deferred commit invariant
 
-6. **Actor streaming** — `src/apps/app/actor.py`, `src/agents/actor.py`
-   Streams the roleplay response. Nothing is written to Kuzu during generation.
+Actor-response side effects must not be written to Kuzu during generation.
+Deferral allows reroll, edit, and deletion to discard unaccepted prose without
+contaminating persistent simulation state.
 
-7. **Output guard** — `src/apps/app/output_guard.py` (+ `output_repair.py`)
-   Blacklist checks and optional repair.
+The accepted Actor header is the authority for in-world time advancement.
+Manager preparation must not independently advance time.
 
-8. **Pending store** — `src/apps/app/pending_store.py`
-   The response is stored as a `PendingCommit`; DB writes are deferred to the
-   next turn.
+## 5. Wiki Turn Lifecycle
 
-9. **Next turn → state update** — `src/simulation/state/updater.py::update_accepted_turn`
-   receives `mode="graph"` and delegates Graph persistence to
-   `src/simulation/state/graph_apply.py`.
-   When the next turn starts and the previous response is accepted:
-   literal/figurative classification, multi-character state extraction, event
-   creation + embedding, relationship/affinity/personality deltas, goal/item/secret
-   updates, weather/location/state mutation, needs decay + autonomous action,
-   schedule tick, and memory creation/decay/distortion/narrative compression.
+Wiki mode branches through `src.apps.app.wiki_service`:
 
-### Deferred commit (a core invariant)
+1. Apply the previous validated `commit.md`, if present.
+2. Build the prompt through `src.wiki.runtime.build_wiki_prompt_bundle`.
+3. Stream through the shared provider-agnostic Actor path.
+4. Run the hidden-Secret output guard and optional repair.
+5. Enter the shared accepted-turn Updater with `mode="wiki"`.
+6. Ask one configured Pro Updater to propose section changes, retrying with all
+   previous validation feedback preserved.
+7. Validate evidence, authority, target sections, and revisions.
+8. Merge deterministic needs and optional best-effort long-running systems into
+   the same pending proposal.
+9. Write a new `commit.md` without changing canonical documents.
 
-Actor-response side effects are **never** written to Kuzu during generation.
-They are buffered in the pending store and committed on the next turn so that
-reroll / edit / delete can discard a response without contaminating graph state.
+The next player input applies the pending proposal before prompt assembly.
 
-- **Reroll of the latest (uncommitted) response:** discard pending, regenerate
-  from the snapshot, no DB change.
-- **Reroll of a past (committed) response:** regenerate text only from the
-  context just before the parent input; discard the new pending and restore the
-  existing latest pending. The graph stays at its current committed state — the
-  user owns any resulting text↔graph divergence.
+### Evidence and ownership
 
----
+- Actor prose cannot establish player-controlled state.
+- Mixed-source scene updates may cite separate exact player evidence.
+- Character static sections are read-only at runtime.
+- Actor-owned relationship history appends durable natural-language entries.
+- Actor prose may establish only the active Actor profile's private Memory.
+- Player input may establish only the player profile's private Memory.
+- Actor prompt compilation includes only Memories owned by the active NPC;
+  Updater inputs retain all owners.
 
-## 3. Database and isolation
+### Audit, manual edits, and inverse operations
 
-- World schemas are initialized once with
-  `python -m src.core.database.schema_builder --world_id <world_id>`.
-  **This deletes the target graph before rebuilding** — mention that when
-  suggesting it.
-- Driver: `src/core/database/driver.py` (`KuzuAsyncDriver` + `ProxyDriver`),
-  with introspection-based migration and a `SchemaMigration` ledger. Migration
-  DDL/column/data ops live in `src/core/database/migrations.py`.
-- `src/core/database/session.py` exposes `KuzuSession` (per-query lock) and
-  `KuzuTransaction` (atomic multi-write; lock held across BEGIN→COMMIT, rollback
-  on error, **non-reentrant**).
-- Thread metadata + conversation state are JSON under `data/threads/<id>.json`,
-  managed by `src/apps/app/storage.py`.
-- Usernotes use a separate mode/world source under
-  `data/worlds/<graph|wiki>/<world_id>/usernotes.json`. `ConversationStore`
-  hydrates them into a thread when it is loaded, so Graph and Wiki worlds remain
-  incompatible even when their textual world IDs match.
-- **Thread isolation:** never query across threads; scope the driver with
-  `session.py`.
+Each current-runtime thread has an Actor-invisible `.wikirag-runtime.json` marker
+and an Actor-invisible `.wikirag-audit-baseline.json`.
 
----
+Before pending apply, inverse, or migration, external canonical Markdown changes
+are archived as deterministic `operation="manual"` commits. Applied archives
+retain enough before/after content and hashes for audited inverse operations:
 
-## 4. Prompt contract
+- Stable section edits use section-level three-way inverse.
+- Structural manual edits use exact whole-document snapshots.
+- External creation and deletion retain complete document content.
+- A created document is removed by inverse only when its current revision still
+  matches the archived creation.
+
+Conflicts write nothing.
+
+### Message mutation and branching
+
+`src.apps.app.wiki_message_ops` handles latest-turn reroll, user/assistant edits,
+variant activation, and deletion.
+
+- Unapplied proposals are archived as skipped when superseded.
+- A latest applied turn with no downstream messages is inverted before mutation.
+- Non-overlapping manual edits survive the three-way merge.
+- Failed regeneration compensates by inverting the inverse commit.
+- Applied middle-history turns are not rewritten in place.
+- `src.apps.app.wiki_branching` creates a new conversation, reverses later
+  message-linked commits in the copy, preserves the source conversation, and
+  returns the selected user input as a draft.
+
+`src.apps.app.conversation_lifecycle` owns rename, archive/restore, ZIP export, and
+staged permanent deletion. Destructive lifecycle operations must validate the exact
+thread root and restore both vault and conversation JSON if staged cleanup fails.
+
+## 6. Prompt Contract
 
 Actor prompts have three segments:
 
 | Segment | Source | Rule |
 | --- | --- | --- |
-| **Fixed** | Policy, world, static character knowledge | Must stay identical across turns (Gemini implicit cache hit; Claude uses a `cache_control` breakpoint in `actor.py`) |
-| **Genre** | Scene-type prose rules + few-shot | May change when scene classification changes |
-| **Dynamic** | Header, current time/location, graph context, user input, live hints | Rebuilt every turn from the graph |
+| Fixed | Policy, world lore, static character knowledge | Stable across turns for implicit caching |
+| Genre | Scene prose rules and examples | May change with classification |
+| Dynamic | Current time/location/state, selected recall, recent story, user input | Rebuilt every turn |
 
-Scene types: `daily`, `emotional`, `physical`, `intimate`, `workplace`, `aegyo`.
+Supported shared classifier labels are `daily`, `bonding`, `intimate`, `formal`,
+`tense`, `conflict`, `vulnerable`, `action`, and `ambient`. Compilation maps legacy
+labels to a supported non-empty asset.
 
-Never put current time, location, recent events, relationship scores, needs,
-schedules, memories, or user input into the Fixed segment — doing so breaks
-caching. Prompt text and world prose belong in `.md` files under
-`src/agents/prompt_factory/prompts/` or `src/assets/worlds/<world_id>/prompt/`,
-not in large Python string constants.
+Never put current time, current location, recent events, relationship state, needs,
+schedules, memories, or user input into Fixed.
 
-`ConversationState.ooc_config` remains per-thread. `ConversationState.usernotes`
-is a hydrated view of the mode/world-shared usernotes and is injected before the
-player input; OOC config is injected after it.
+Prompt prose belongs in Markdown assets under
+`src/agents/prompt_factory/prompts/` or the relevant world prompt directory, not in
+large Python constants.
 
----
+### Wiki metadata boundary
 
-## 5. Module map by layer
+Actor-visible Wiki Markdown is a self-contained prompt module. Compilation removes:
 
-| Layer | Path | Responsibility |
-| --- | --- | --- |
-| Config | `src/config.py` | Centralized env access (the only place env vars are read) |
-| Agents — Actor | `src/agents/actor.py`, `resolver.py` | Actor calls/streaming; autonomous NPC action when needs exceed thresholds |
-| Agents — Context | `src/agents/context/` | Context planning, generic fetches, graph→prompt rendering, scene/transient state |
-| Agents — Manager | `src/agents/manager/` | Turn preparation pipeline, planning, classifier, context assembly, effects, POV, queries, world loading |
-| Agents — Prompt Factory | `src/agents/prompt_factory/` | Fixed/Genre/Dynamic builder, OOC handling, checklist, user notes, prompt assets |
-| Worlds | `src/assets/worlds/` | World base classes, scenarios, per-world schema/characters/prompts |
-| Core — Database | `src/core/database/` | Kuzu driver/session/proxy, schema builder, records, CRUD helpers, migrations |
-| Core — Embedding | `src/core/embedding/` | KURE-v1 embedding helpers |
-| Core — LLM | `src/core/llm/` | Vertex AI wrapper (`client.py`), error taxonomy (`errors.py`), JSON extraction |
-| Core — Logging | `src/core/logging/` | Conversation + prompt debug logging |
-| Wiki V2 | `src/wiki/` | Kuzu-free Markdown parsing, section patching, revision-safe storage, deferred commit queue, and Wiki commit planning behind the shared Updater |
-| Simulation — Events | `src/simulation/events/` | StaticEvent lifecycle + condition evaluation |
-| Simulation — State | `src/simulation/state/` | Graph/Wiki mode-aware accepted-turn Updater, Graph application, shared request/result models, `extract/`, and `apply/` |
-| Simulation — Systems | `src/simulation/systems/` | Lazy public facades for long-running systems; needs execution lives in `needs/engine.py`, pure need constants in `needs/models.py`, and storage-independent organic probability rules in `world_dynamics/organic_models.py` |
-| Apps — Main UI | `src/apps/app/` | FastAPI web UI (port 8000): routes, service, Graph/Wiki commit controls, actor, input routing, output guard/repair, pending store, message ops, storage |
-| Apps — World Editor | `src/apps/world_editor/` | World authoring GUI backend (port 8765) |
-| Apps — Graph Viewer | `src/apps/graph_viewer/` | Graph viewer backend (port 8766) |
-| Frontend | `frontend/` | Static clients: `app/` chat UI, `world_editor.html`, `ppt_viewer.html` |
-| Hosted frontend | `hosted-ui/` | Sites-hosted editorial chat room that bridges to the local GraphRAG API |
-| Scripts | `scripts/` | Dev/debug only, not production runtime |
+- YAML frontmatter
+- vault paths and revisions
+- world, scenario, and thread identifiers
+- `thread.md`
+- authoring-only selector headings
+- hidden target labels and private metadata
 
----
+Profiles may use `common`, `default`, and scenario selectors under one character
+section. Thread materialization retains `common` and the active selector (or
+`default` fallback), removes selector headings, and promotes nested headings.
+Updater inputs retain paths and revisions because validated patching requires them.
 
-## 6. Design boundaries (do not break casually)
+## 7. Ownership Map
 
-- **Async only.** Web handlers, Kuzu usage, and LLM calls are async-first. No
-  blocking I/O in turn paths; Kuzu work is wrapped in a thread pool.
-- **Transactions for multi-write.** Wrap grouped or read-modify-write graph ops in
-  `async with async_driver.transaction() as tx:`. The lock is non-reentrant —
-  never open a `session()` or call another transaction-using helper inside a
-  transaction, and precompute slow calls (e.g. embeddings) beforehand.
-- **Fixed segment is immutable across turns.** Any turn-specific content in Fixed
-  is a cache-miss bug.
-- **Thread/world isolation.** Each world lives under `src/assets/worlds/<world_id>`;
-  each thread gets its own graph path. Do not leak thread/world/scenario
-  assumptions into generic systems.
-- **State lives in the owning subsystem.** Domain models/constants belong in that
-  subsystem's `models.py`; higher layers import downward, not the reverse.
-- **Memory distortion is intentional.** Memories may drift toward an NPC's
-  personality; do not "correct" it as a bug.
-- **Prompt/world data stays in Markdown**, not Python string constants.
+| Area | Primary path |
+| --- | --- |
+| Backend entry and routes | `src/apps/app/` |
+| Graph/Wiki generation orchestration | `src/apps/app/service.py`, `src/apps/app/wiki_service.py` |
+| Conversation persistence | `src/apps/app/storage.py` |
+| Graph/Wiki message operations | `src/apps/app/message_ops.py`, `src/apps/app/wiki_message_ops.py` |
+| Wiki controls and branching | `src/apps/app/wiki_controls.py`, `src/apps/app/wiki_branching.py` |
+| Conversation lifecycle | `src/apps/app/conversation_lifecycle.py` |
+| Actor calls and streaming | `src/apps/app/actor.py`, `src/agents/actor.py` |
+| Manager preparation | `src/agents/manager/` |
+| Prompt assembly | `src/agents/prompt_factory/` |
+| Accepted-turn Updater | `src/simulation/state/updater.py` |
+| Graph persistence | `src/simulation/state/graph_apply.py`, `src/core/database/` |
+| Long-running systems | `src/simulation/systems/` |
+| Wiki runtime and commit planning | `src/wiki/` |
+| Local chat client | `frontend/app/` |
+| Hosted client | `hosted-ui/` |
+| Authoring and graph tools | `src/apps/world_editor/`, `src/apps/graph_viewer/` |
 
----
+## 8. Design Invariants
 
-## 7. Where to change things
-
-See the **"Where To Change Things"** table in `AGENTS.md` for a task→file index.
-This document explains *why* the boundaries exist; `AGENTS.md` is the quick lookup.
+- Keep asynchronous turn paths asynchronous.
+- Keep app entry modules and services thin.
+- Preserve thread, mode, world, and scenario isolation.
+- Route environment reads through `src/config.py`.
+- Precompute slow external work before opening a Kuzu transaction.
+- Keep domain models and constants in their owning subsystem.
+- Use package public APIs where they exist.
+- Treat persistent Actor-derived writes as validated simulation state.
+- Treat optional long-running systems as best-effort unless the caller explicitly
+  depends on their result.
+- Do not reinterpret subjective Memory distortion as an objective event log.
+- Keep frontend components responsible for presentation and transport, not
+  simulation rules.

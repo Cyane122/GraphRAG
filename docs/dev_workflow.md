@@ -54,6 +54,13 @@ Update `docs/changelog.md` for:
 - a refactor that changes structure or boundaries,
 - a documentation restructure.
 
+Never add Graph or Wiki world- or scenario-related history. This includes world
+selection, schemas, state surfaces, migrations, named worlds, scenarios,
+characters as authored canon, lore, prose, opening scenes, authoring tools/skills,
+and paths under `src/assets/worlds/` or `wiki_v2/worlds/`. If a change is
+substantively about a world or scenario, omit it rather than generalizing the
+wording. See `.ai/changelog-policy.md`.
+
 Do **not** add a changelog entry for:
 
 - formatting-only changes,
@@ -61,7 +68,7 @@ Do **not** add a changelog entry for:
 - trivial local fixes with no externally visible effect
 
 …unless the user explicitly asks. The changelog is **date-grouped** — add entries
-under the current date, newest first. It is the source record for portfolio writing
+under the current date, following the file's chronological order. It is the source record for portfolio writing
 (see the `portfolio-retrospective-writer` skill); Notion drafts are generated from
 it, never invented.
 
@@ -74,5 +81,6 @@ it, never invented.
 | Working conventions / law | `AGENTS.md` |
 | Detailed architecture | `docs/architecture.md` |
 | History | `docs/changelog.md` |
+| Changelog inclusion policy | `.ai/changelog-policy.md` |
 | Which skill to use | `docs/skill_index.md` |
 | Encoding rules (no PowerShell for Korean) | `AGENTS.md` → Encoding Rules |

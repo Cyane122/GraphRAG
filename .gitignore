@@ -14,7 +14,8 @@ tests/
 docs/codex_tmp/
 
 .chainlit/
-.claude/
+.claude/*
+!.claude/settings.json
 .files/
 .venv/
 __pycache__/
@@ -31,5 +32,10 @@ tmp_*.log
 
 *.zip
 *.json
+!.claude/settings.json
+!.mcp.json
+!.codex/hooks.json
+
+wiki_v2/
 
 project-91a38c19-e955-4824-804-cdfb18ab5045.json
