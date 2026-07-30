@@ -6,6 +6,7 @@
 # Classes
 #   - WikiMetadata : Markdown frontmatter의 공통 문서 메타데이터
 #   - WikiDocument : revision이 계산된 단일 Markdown 문서
+#   - WikiScenePromptAsset : 장면 분류 설명과 Actor용 Markdown을 묶은 정적 씬 프롬프트
 #   - WikiScaffoldResult : 새 world/thread vault 스캐폴드 결과
 #   - MarkdownSection : 제목 경로와 문자 범위를 가진 Markdown 섹션
 #   - SectionPatch : 근거 출처를 포함한 특정 제목 섹션 교체 요청
@@ -60,6 +61,7 @@ WikiDocumentType = Literal[
     "relationship",
     "scenario",
     "scene",
+    "scene_prompt",
     "secret",
     "thread",
     "world",
@@ -112,6 +114,7 @@ class WikiMetadata(BaseModel):
             "organization",
             "prose",
             "scenario",
+            "scene_prompt",
         }
         thread_scoped = {"event", "goal", "item", "memory", "relationship", "secret"}
         expected_prefix = {
@@ -126,6 +129,13 @@ class WikiMetadata(BaseModel):
             f"thread:{self.thread_id}:scene:"
         ):
             raise ValueError("scene id must match thread_id")
+        if self.type == "scene_prompt":
+            scene_type = str((self.model_extra or {}).get("scene_type") or "")
+            description = str((self.model_extra or {}).get("description") or "")
+            if re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", scene_type) is None:
+                raise ValueError("scene_prompt requires a lowercase scene_type")
+            if not description.strip():
+                raise ValueError("scene_prompt requires a classifier description")
         if self.type in world_scoped and self.world_id is None:
             raise ValueError(f"{self.type} requires world_id")
         if self.type in thread_scoped and self.thread_id is None:
@@ -156,6 +166,14 @@ class WikiDocument(BaseModel):
     revision: str
     content: str
     metadata: WikiMetadata | None = None
+
+
+class WikiScenePromptAsset(BaseModel):
+    """분류 key·설명과 저장 원문을 함께 보존하는 정적 씬 프롬프트입니다."""
+
+    scene_type: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,63}$")
+    description: str = Field(min_length=1)
+    document: WikiDocument
 
 
 class WikiScaffoldResult(BaseModel):

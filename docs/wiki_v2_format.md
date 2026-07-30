@@ -11,10 +11,12 @@ wiki_v2/
 ├─ worlds/<world_id>/
 │  ├─ world.md
 │  ├─ prose.md
+│  ├─ scenes/<scene_type>.md
 │  ├─ scenarios/<scenario_id>/
 │  │  ├─ scenario.md
 │  │  ├─ start_state.md
-│  │  └─ opening_scene.md
+│  │  ├─ opening_scene.md
+│  │  └─ scenes/<scene_type>.md
 │  ├─ characters/
 │  ├─ locations/
 │  └─ organizations/
@@ -50,12 +52,19 @@ world 프로필을 암묵적으로 되돌려 쓰지 않는다.
 | `scenario.md` | 해당 시나리오에만 적용되는 특징과 묘사 규정 | 표시용 시나리오 이름, 다른 시나리오 언급, 시작 설정과 첫 장면 |
 | `start_state.md` | 시작 시각·장소, 관계의 초기값, 인물 상태와 첫 계기 | 완성된 첫 장면 산문 |
 | `opening_scene.md` | 플레이어의 첫 입력 직전에 보여주는 첫 장면 원문 | 장기 운용 규칙과 별도 상태 목록 |
+| `scenes/<scene_type>.md` | 해당 장면 종류가 활성일 때만 적용되는 월드 또는 시나리오 전용 묘사 규정 | 지속 설정, 시작 상태, 다른 장면 종류와의 비교 |
 
 `scenario.md`의 frontmatter ID와 디렉터리 이름은 런타임 식별자이므로
 `scenario_id`를 포함하지만, Actor용 본문은 시나리오 이름을 되풀이하지 않는다.
 새 대화를 만들면 `start_state.md` 본문은 해당 thread의 `scene/current.md`로,
 선택 월드의 캐릭터 프로필은 thread-scoped `character` 문서로 물질화된다.
 `opening_scene.md`는 상태 문서에 합치지 않고 최초 assistant 메시지로만 사용한다.
+
+장면 프롬프트는 월드의 `scenes/`와 선택 시나리오의 `scenes/`에서 읽는다. 같은
+`scene_type`이 양쪽에 있으면 시나리오 문서가 월드 문서를 교체하고, 둘 다 없으면
+PromptBuilder의 공용 장면 프롬프트를 사용한다. frontmatter의 `scene_type`은 파일명과
+일치해야 하며 `description`은 분류기가 이 key를 선택할 조건을 영어 한 문장으로
+설명한다. 이 metadata와 경로, 분류 key는 Actor prompt에 포함하지 않는다.
 
 ### 정적 문서의 정본 책임
 
@@ -68,6 +77,7 @@ world 프로필을 암묵적으로 되돌려 쓰지 않는다.
 | `organizations/*.md` | 기관 목적, 운영 리듬, 역할, 문화와 구성원 |
 | `prose.md` | 해당 작품에서만 달라지는 장르 감각, 대화 관습과 생활 장면 작법 |
 | `scenario.md` | 선택된 관계와 사건에서만 유효한 사실, 톤과 묘사 규정 |
+| `scenes/*.md` | 활성 장면 종류에서만 필요한 진행 순서, 감각 우선순위, 물리·대화·리듬 제약 |
 
 출력 언어, 제한 시점, 감정 증거, 물리적 연속성, NPC 주체성, 관계 변화 속도,
 열린 장면 종결과 장르 공통 친밀 규정은 기존 PromptBuilder가 소유한다.
@@ -116,7 +126,7 @@ Actor에게 전달될 수 있는 각 Markdown 본문은 서로 독립된 조립 
 
 ### 프롬프트 작성 언어
 
-`world.md`, `prose.md`, 캐릭터·장소·조직 문서, `scenario.md`,
+`world.md`, `prose.md`, 캐릭터·장소·조직 문서, `scenario.md`, 장면 프롬프트,
 `start_state.md`의 제목과 설명형 본문은 영어로 작성한다. 이는 최종 출력 언어가
 아니라 LLM에 전달되는 설정·규정 프롬프트의 작성 언어에 대한 계약이다.
 
@@ -147,6 +157,10 @@ Actor prompt 조립은 `[[wikilink]]`를 따라가며 다른 문서를 자동 �
 Actor-visible 본문에 wikilink, Markdown 파일명 또는 frontmatter 필드가 남아
 있으면 컴파일을 거부한다. 필요한 사실은 현재 문서 본문에 직접 작성하고 저작용
 링크는 Actor-visible 본문 밖에 두거나 컴파일 전에 제거한다.
+
+장면 분류는 공용 scene 설명과 활성 월드·시나리오의 `scene_prompt.description`을
+함께 사용한다. 선택된 key의 본문만 Dynamic의 `scene_specific_prompts`에 들어가며,
+선택되지 않은 장면 프롬프트와 시나리오 override metadata는 노출되지 않는다.
 
 따라서 Actor runtime의 링크 탐색 깊이는 0이다. 누적되는 Event, Memory, Goal,
 Item, Secret은 구조 관련성과 최근성으로 결정적으로 정렬한 뒤 문서 수와 보수적
@@ -398,11 +412,11 @@ repair가 꺼져 있거나 수정 후에도 남으면 실제 내용을 오류 �
 ## 문서 템플릿
 
 템플릿은 `src/wiki/templates/` 아래에 있고 큰 Python 문자열로 복제하지 않는다.
-현재 제공되는 문서 종류는 world, prose, thread, scene, scenario, character
+현재 제공되는 문서 종류는 world, prose, thread, scene, scene_prompt, scenario, character
 profile, thread character, relationship, event, memory, goal, item, secret,
 location, organization이다. Scenario 문서 종류에는 역할이 분리된
 `scenario.md`, `scenario_start_state.md`, `scenario_opening_scene.md` 템플릿이
-있다.
+있고, 선택형 장면 규정에는 `scene_prompt.md` 템플릿이 있다.
 
 스캐폴드 함수는 world의 `world.md`와 `prose.md`, thread의 `thread.md`와
 `scene/current.md`, 그리고 표준 하위 디렉터리를 만든다. 대화 초기화는 character

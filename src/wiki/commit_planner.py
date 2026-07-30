@@ -8,7 +8,7 @@
 #
 # Functions
 #   - _relationship_bullets(markdown: str) -> set[str] : 관계 변화 section의 bullet 행을 반환합니다.
-#   - plan_pending_commit(documents: list[WikiDocument], user_input: str, actor_response: str, model_name: str, max_attempts: int = 3, player_profile_id: str = "", actor_profile_id: str = "", user_message_id: str | None = None, assistant_message_id: str | None = None, debug_root: Path | None = None) -> PendingWikiCommit : 출처와 수정·생성 범위를 검증하고 시도별 진단 자료를 남기며 Wiki commit을 계획합니다.
+#   - plan_pending_commit(documents: list[WikiDocument], user_input: str, actor_response: str, model_name: str, max_attempts: int = 3, player_profile_id: str = "", actor_profile_id: str = "", user_message_id: str | None = None, assistant_message_id: str | None = None, thinking_level: str | None = None, debug_root: Path | None = None) -> PendingWikiCommit : 출처와 수정·생성 범위를 검증하고 시도별 진단 자료를 남기며 Wiki commit을 계획합니다.
 #   - _synchronize_accepted_header(result: WikiUpdaterResult, documents: list[WikiDocument], user_input: str, actor_response: str) -> None : accepted Actor 헤더의 안전한 시각·장소를 scene patch에 결정적으로 반영합니다.
 # ================================
 
@@ -23,7 +23,7 @@ import re
 from uuid import uuid4
 
 from src.core.llm import extract_json_from_llm, get_model, get_response_text
-from src.simulation.state.apply.time_plan import (
+from src.simulation.prose_headers import (
     parse_prose_header_datetime,
     parse_prose_header_location,
     parse_prose_header_text,
@@ -402,6 +402,17 @@ def _validate_patch_policy(
                 f"Player-owned {metadata.type} state requires evidence from Player Input"
             )
         return
+
+    if metadata.type == "event":
+        raise WikiCommitPlanningError(
+            f"Gameplay updater cannot patch immutable event documents: {patch.document}"
+        )
+
+    if metadata.type == "memory":
+        raise WikiCommitPlanningError(
+            "Gameplay updater cannot patch memory documents; gated memory distortion "
+            f"owns their mutable section: {patch.document}"
+        )
 
     if metadata.type != "character":
         return
@@ -935,6 +946,7 @@ async def plan_pending_commit(
     actor_profile_id: str = "",
     user_message_id: str | None = None,
     assistant_message_id: str | None = None,
+    thinking_level: str | None = None,
     debug_root: Path | None = None,
 ) -> PendingWikiCommit:
     """Canonical 수정·생성 범위를 검증하고 진단 자료를 남기며 재시도합니다."""
@@ -997,14 +1009,19 @@ async def plan_pending_commit(
                     ),
                     "Return a corrected JSON result that satisfies every rule.",
                 ])
+            generation_config: dict[str, object] = {
+                "temperature": 0.0,
+                "max_output_tokens": 65536,
+                "response_mime_type": "application/json",
+                "log_source": "wiki_updater",
+            }
+            if thinking_level is not None:
+                generation_config["thinking_config"] = {
+                    "thinking_level": thinking_level
+                }
             response = await model.generate_content_async(
                 attempt_prompt,
-                generation_config={
-                    "temperature": 0.0,
-                    "max_output_tokens": 65536,
-                    "response_mime_type": "application/json",
-                    "log_source": "wiki_updater",
-                },
+                generation_config=generation_config,
             )
             response_text = get_response_text(response)
             payload = extract_json_from_llm(

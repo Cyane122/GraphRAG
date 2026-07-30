@@ -304,6 +304,8 @@ class AppSettingsRequest(BaseModel):
     """Request body for updating app-wide settings (partial update)."""
 
     output_repair_enabled: bool | None = None
+    actor_thinking_level: str | None = None
+    wiki_updater_thinking_level: str | None = None
 
 
 class ForcePregnancyRequest(BaseModel):

@@ -53,6 +53,10 @@
 - [x] 실제 LLM 격리 하네스로 `lover`·`best_friends` 1턴의 deferred canonical 불변, pending commit, apply 성공과 무의미한 Event/Memory 미생성을 검증한다.
 - [x] `amputee_fwb`·`ntr_lite`·`altered`까지 현재 5개 시나리오 실제 1턴 deferred/apply와 시나리오별 위험 경계를 검증한다.
 - [x] Updater correction prompt에 모든 이전 검증 거부 사유를 누적해 위치 중복·exact quote·section 범위 수정이 재시도 사이에서 진동하지 않게 한다.
+- [x] gameplay Updater의 기존 Event·Memory 문서 patch를 거부한다. 두 종류는 `creations`로만 만들고, Memory의 가변 섹션은 게이트형 왜곡 postprocessor가 소유한다.
+- [x] 한 턴이 서로 다른 참여자·장소·결과를 갖는 복수 durable Event를 생성할 수 있음을 프롬프트에 명시하고, 같은 발생의 중복 기록 금지는 유지한다.
+- [x] compiled prompt 회귀 게이트를 저작 원고 전문 해시에서 구간별 구조 fingerprint로 옮긴다. 저작 편집은 비치명적 drift 통지로 보고하고 조립 회귀만 실패시킨다.
+- [x] 매 턴 필요한 런타임 자산이 광범위 무시 규칙에 걸려 버전 관리에서 빠져 있던 문제를 수정한다.
 - [x] 임시 vault smoke 검증
 
 ---
@@ -209,6 +213,7 @@ wiki_v2/
 - [x] Fixed / Genre / Dynamic 구분을 Wiki 구조에 맞게 단순화한다.
 - [x] Graph와 같은 공용 rule/LLM 장면 분류를 Wiki 턴에 연결하고, 분류 라벨을 실제 8종 scene prompt asset으로 정규화한다.
 - [x] 비어 있던 daily/bonding/formal/tense/conflict/action/ambient 공용 장면 prompt를 연속성·과잉 전개 방지 계약으로 채운다.
+- [x] 월드·시나리오 `scenes/<scene_type>.md`의 상속·override와 custom classifier key를 Dynamic scene-specific prompt에 연결한다.
 - [x] Fixed prose 1회 포함, Dynamic current scene/user input 1회 포함과 가변 상태의 Fixed 유입 금지를 실행 시 검증한다.
 - [x] 선택된 updater 문서와 세 prompt 구간을 기존 turn debug에 기록한다.
 - [x] start state의 thread 물질화와 Dynamic prompt 포함 여부를 turn debug summary에서 진단한다.
@@ -371,14 +376,14 @@ wiki_v2/
 ## Phase 11 — 품질 검증과 독립 저장소 준비
 
 - [x] 문서 파서, 섹션 교체, revision, rollback을 `tests/smoke_wiki_v2.py`에서 검증한다.
-- [x] 현재 5개 시나리오의 Fixed/Genre/Dynamic SHA-256 snapshot과 Fixed cache 안정성을 `tests/smoke_wiki_runtime.py`에서 검증한다.
+- [x] 저작된 전체 시나리오의 Fixed/Genre/Dynamic 구조 fingerprint와 Fixed cache 안정성을 `tests/smoke_wiki_runtime.py`에서 검증한다. 전문 해시는 저작 drift 진단 출력으로만 남는다.
 - [ ] 파일 감지와 동시 수정 시나리오를 검증한다.
 - [x] Actor와 updater를 포함한 장기 플레이 smoke 시나리오를 만든다. (`scripts/run_wiki_long_play.py` — 사람이 작성한 Markdown 턴 스크립트를 격리 임시 저장소에서 무인 연속 실행하고, 턴마다 생성 중 canonical 무변경(deferred) 불변식을 검증한다. LLM 없는 회귀는 `tests/smoke_wiki_long_play.py`. 다만 2026-07-26 결정으로 기본 검증 경로는 실제 플레이이며, 이 하네스는 좁은 회귀 재현용 보조 도구다.)
 - [ ] 잘못된 사실 추가, 기존 사실 누락, 비밀 누출을 평가한다. (실제 플레이 중 `commits/` archive의 section diff로 관찰하고 판정은 사람이 한다.)
 - [ ] 문서 수와 턴 수가 늘어날 때 검색 품질과 지연을 측정한다.
 - [x] 모델별 비용, 입력·출력 토큰, 지연을 기록한다. (`logs/llm_latency.jsonl`이 플레이 중 호출별 지연과 prompt/output/thought/total 토큰을 자동으로 남긴다. 실측 집계는 미수행.)
 - [ ] Gemini 모델 교체 smoke check를 만든다.
-- [ ] 기존 Kuzu 모듈을 참조하지 않는지 의존성 감사를 한다.
+- [ ] 기존 Kuzu 모듈을 참조하지 않는지 의존성 감사를 한다. (1차 측정 완료: import 시 Kuzu를 끌어오던 경로는 셋이었고, 산문 헤더 파서를 순수 모듈로 분리해 하나를 제거했다. 남은 둘은 공용 PromptBuilder와 공용 scene key 정규화 재사용이며 의도된 설계다. 독립 실행은 이 둘의 분리 여부에 달려 있다.)
 - [ ] 독립 저장소로 옮길 코드, 문서, 정적 자산 목록을 만든다.
 - [ ] 기존 GraphRAG 전용 파일을 새 저장소에 끌고 가지 않도록 정리한다.
 - [ ] 별도 저장소 승격 여부를 최종 결정한다.

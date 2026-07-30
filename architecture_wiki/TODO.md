@@ -42,14 +42,14 @@ vault 계약이 바뀌면 연결된 `WikiRAG/` 문서와 `docs/wiki_v2_format.md
 | 월드·시나리오·대화 생성/열기 | 지원 | 완료 | Graph/Wiki namespace를 분리한 선택·생성·열기 | P0 |
 | Actor 모델 선택·스트리밍·중단 | 지원 | 완료 | 공용 provider 스트리밍과 실패 표시 유지 | P0 |
 | output guard/repair | 지원 | 완료 | Graph와 동일한 사용자 출력 안전 경계 | P0 |
-| Fixed/Genre/Dynamic prompt | 지원 | 완료 — compiled contract, 공용 장면 분류·8종 prompt, 결정적 recall과 문서 수/token 이중 예산 | metadata/wikilink 차단과 prompt snapshot을 유지하는 안정적 3구간 조립 | P0 |
+| Fixed/Genre/Dynamic prompt | 지원 | 완료 — compiled contract, 공용 장면 분류·8종 prompt, Wiki 월드/시나리오 scene prompt override, 결정적 recall과 문서 수/token 이중 예산 | metadata/wikilink 차단과 prompt snapshot을 유지하는 안정적 3구간 조립 | P0 |
 | 최신 미반영 reroll/edit/delete/variant | 지원 | 완료 | 기존 commit 보존 후 성공 시 안전하게 교체 | P0 |
 | Wiki commit 상태와 사용자 제어 | 해당 없음 | 완료 | 변경 section·실패 사유·즉시 반영·재시도·건너뛰기 UI | P0 |
 | 대화 이름 변경·보관·삭제·내보내기 | 미구현 | 완료 | 이름 변경, 보관/복원, canonical Markdown ZIP, 확인 후 thread 영구 삭제 | P1 |
 | 적용된 과거 턴 변경 | 텍스트만 바뀌고 graph는 유지되는 위험한 한계 | 완료 — 최신 applied 턴은 audited inverse, 중간 과거 턴은 이후 commit을 복사본에서 역순 inverse하는 원본 보존 분기 | in-place 과거 편집을 금지하고 원본 보존 분기를 기본 정책으로 유지 | P1 |
 | 현재 장면·시각·장소 | GlobalState/DynamicState와 accepted header | 완료 | `scene/current.md` 전체 H2와 accepted header 기반 결정적 시각·장소 guard | P1 |
 | 캐릭터 현재 상태·관계 | 다단계 extractor/updater | 완료·장기 LLM 검증 필요 — 현재 5개 시나리오 실제 1턴 deferred/apply 통과 | 현재 상태 source 권한 + Actor-owner 자연어 관계 원장, append-only 보존과 과잉 변화 억제 | P1 |
-| Event·Memory 생성 | 새 graph node 생성 | 완료 | durable Event와 owner-private Memory `CreateDocument`, source turn/commit, inverse | P1 |
+| Event·Memory 생성 | 새 graph node 생성 | 완료 — 생성 전용 계약을 강제하고 한 턴의 복수 durable Event 생성을 허용 | durable Event와 owner-private Memory `CreateDocument`, source turn/commit, inverse | P1 |
 | Goal·Item·Secret 생성·갱신 | 전용 시스템 | 코드 완료·실제 LLM 검증 필요 — 단일 Updater 생성·갱신·권한, Actor-visible knower-scoping, hidden/suspected 은닉 계약 구현 | 신규 문서 생성, 갱신, visibility와 공개 범위 검증 | P2 |
 | usernote·OOC | 지원 | 완료·실제 LLM 검증 필요 | 다음 prompt 반영과 상태 변경 결과 표시 | P2 |
 | 변경 이력·감사 | pending/state audit | 완료 — 자동 commit diff/hash, 진단, schema 계약, 상태 migration, baseline 기반 외부 편집 manual archive/inverse | 실시간 watcher는 P3 편의 기능으로 별도 | P2 |
@@ -65,7 +65,7 @@ vault 계약이 바뀌면 연결된 `WikiRAG/` 문서와 `docs/wiki_v2_format.md
 - [ ] 필수 사용자 기능 parity 행이 모두 `완료`다.
 - [ ] 현재 장면, 캐릭터 상태, 관계, Event, Memory, Goal, Item, Secret이 Markdown에 안정적으로 유지된다.
 - [ ] 최신·과거 턴 변경과 Obsidian 수동 편집이 상태를 조용히 손상하지 않는다.
-- [ ] 다섯 현재 시나리오가 각각 20턴 이상 실제 LLM 검증을 통과한다.
+- [ ] 저작된 현재 시나리오가 각각 20턴 이상 실제 LLM 검증을 통과한다.
 - [ ] Graph/Wiki 공용 Actor, output guard, PromptBuilder 회귀 검증이 통과한다.
 - [ ] Wiki 전용 실행과 저장소 분리 여부를 결정할 근거가 확보된다.
 
@@ -78,6 +78,7 @@ vault 계약이 바뀌면 연결된 `WikiRAG/` 문서와 `docs/wiki_v2_format.md
 - [x] `start_state.md`를 새 thread의 `scene/current.md`로 물질화
 - [x] `opening_scene.md`를 최초 메시지와 첫 턴 문맥으로 전달
 - [x] 기존 `PromptBuilder`로 Wiki Fixed/Genre/Dynamic 조립
+- [x] 월드·시나리오 `scenes/<scene_type>.md` 상속과 custom classifier key를 Dynamic scene-specific prompt에 연결
 - [x] Kuzu 없는 Wiki Actor streaming
 - [x] Updater 최대 3회 재시도
 - [x] 응답 뒤 `commit.md` 보류, 다음 입력 직전 적용
@@ -112,6 +113,9 @@ vault 계약이 바뀌면 연결된 `WikiRAG/` 문서와 `docs/wiki_v2_format.md
 - [x] 실제 LLM 격리 하네스로 `lover`와 `best_friends` 1턴의 deferred canonical 불변·pending·apply·과잉 생성 없음 검증
 - [x] 나머지 `amputee_fwb`·`ntr_lite`·`altered`도 실제 1턴 deferred/apply를 통과하고 비유의 신체 손상 오인·숨은 사실 공개 생성·시나리오 혼입이 없음을 확인
 - [x] 실제 `ntr_lite`에서 확인된 Updater 재시도 진동을 막기 위해 모든 이전 검증 거부 사유를 correction prompt에 누적
+- [x] gameplay Updater가 기존 Event·Memory 문서를 patch하지 못하도록 차단하고, 한 턴에 서로 다른 복수 durable Event를 생성할 수 있음을 프롬프트에 명시
+- [x] compiled prompt 회귀 게이트를 버전 관리되지 않는 저작 원고 해시에서 구조 fingerprint로 분리하고, 매 턴 필요한 런타임 자산을 버전 관리에 포함
+- [x] 산문 헤더 파서를 DB 의존 모듈에서 분리해 Wiki 상태 모듈이 그래프 드라이버를 import하지 않게 정리
 
 ## 즉시 검증 — 실제 LLM
 
@@ -146,7 +150,7 @@ vault 계약이 바뀌면 연결된 `WikiRAG/` 문서와 `docs/wiki_v2_format.md
 
 - [x] Sites UI에서 updater 성공·실패와 변경된 문서/section을 표시한다.
 - [x] turn debug에서 start state, 선택 문서, 세 prompt 구간을 쉽게 대조할 수 있게 한다.
-- [x] compiled prompt 계약과 현재 5개 시나리오의 Fixed/Genre/Dynamic snapshot 회귀 검증을 고정한다.
+- [x] compiled prompt 계약과 저작된 전체 시나리오의 Fixed/Genre/Dynamic 구조 fingerprint 회귀 검증을 고정한다. 저작 원고 편집은 비치명적 drift 통지로만 보고한다.
 - [x] pending 또는 failed `commit.md`의 상태 조회·즉시 반영·재시도·건너뛰기 API를 제공한다.
 - [x] Sites UI에 Wiki commit 제어 버튼과 실패 사유·변경 section 표시를 연결한다.
 - [x] Sites UI에서 Obsidian 수동 수정 후 상태를 다시 읽는 흐름을 안내한다.

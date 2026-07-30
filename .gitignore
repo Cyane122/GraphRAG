@@ -32,6 +32,7 @@ tmp_*.log
 
 *.zip
 *.json
+!src/wiki/prompts/scene_types.json
 !.claude/settings.json
 !.mcp.json
 !.codex/hooks.json

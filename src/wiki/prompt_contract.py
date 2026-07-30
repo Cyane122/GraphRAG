@@ -25,7 +25,7 @@ _ACTOR_BARE_FILE_REFERENCE_RE = re.compile(
 _ACTOR_WIKILINK_RE = re.compile(r"\[\[")
 _ACTOR_FRONTMATTER_FIELD_RE = re.compile(
     r"^\s*(?:id|type|schema_version|visibility|created_at|world_id|thread_id|"
-    r"profile_id|owner|participants|tags|aliases|pov_mode|rating)\s*:",
+    r"profile_id|owner|participants|tags|aliases|pov_mode|rating|scene_type|description)\s*:",
     re.IGNORECASE | re.MULTILINE,
 )
 

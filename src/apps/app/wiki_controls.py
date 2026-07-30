@@ -36,6 +36,7 @@ from src.apps.app.models import (
     overridden_wiki_system_names,
     resolve_wiki_systems,
 )
+from src.apps.app.settings import load_settings
 from src.apps.app.storage import ConversationStore
 from src.config import MODEL_PRO_UPDATER, WIKI_VAULT_ROOT, wiki_system_defaults
 from src.simulation.state.models import WikiTurnUpdateRequest
@@ -199,6 +200,7 @@ async def _run_wiki_update(
         if assistant_message.wiki_commit_id == current.commit_id:
             assistant_message.wiki_commit_id = None
     try:
+        settings = load_settings()
         update_result = await update_accepted_turn(
             WikiTurnUpdateRequest(
                 vault_root=Path(WIKI_VAULT_ROOT),
@@ -211,6 +213,7 @@ async def _run_wiki_update(
                 actor_profile_id=state.npc_id,
                 user_message_id=user_message.id,
                 assistant_message_id=assistant_message.id,
+                thinking_level=settings.wiki_updater_thinking_level,
                 wiki_systems=resolve_wiki_systems(
                     state.wiki_system_overrides,
                     wiki_system_defaults(),

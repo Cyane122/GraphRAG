@@ -30,6 +30,7 @@ from src.wiki.context import (
     initialize_wiki_thread,
     load_wiki_setup,
     read_wiki_actor_assets,
+    read_wiki_scene_prompt_assets,
     read_wiki_thread_documents,
     scene_datetime_and_location,
 )
@@ -40,6 +41,7 @@ from src.wiki.models import (
     WikiDocument,
     WikiMetadata,
     WikiPromptBundle,
+    WikiScenePromptAsset,
 )
 from src.wiki.recall import select_recall_documents
 from src.wiki.prompt_contract import (
@@ -137,6 +139,13 @@ def _situation_rules_body(document: WikiDocument) -> str:
             continue
         rendered.append(f"{'#' * max(1, depth - 1)} {title}" if depth >= 3 else line)
     return "\n".join(rendered).strip()
+
+
+def _scene_prompt_body(asset: WikiScenePromptAsset) -> str:
+    """선택된 scene prompt에서 저장 metadata를 제거하고 독립 본문만 반환합니다."""
+    body = _remove_actor_metadata(document_body(asset.document.content))
+    validate_actor_document_body(body, asset.document)
+    return body
 
 
 def _static_block_label(document: WikiDocument) -> str:
@@ -277,6 +286,7 @@ def _world_config(
     setup: WikiConversationSetup,
     assets: list[WikiDocument],
     thread_documents: list[WikiDocument],
+    scene_prompts: list[WikiScenePromptAsset],
 ) -> dict:
     """Markdown 자산을 기존 PromptBuilder가 이해하는 world_config로 변환합니다."""
     scenario_document = next(
@@ -313,6 +323,10 @@ def _world_config(
         "pc_name_kor": setup.pc_name,
         "npc_name_kor": setup.npc_name,
         "unified_blacklist": False,
+        "scene_specific_prompts": {
+            asset.scene_type: _scene_prompt_body(asset)
+            for asset in scene_prompts
+        },
         "prompt": {
             "pov": {"mode": setup.pov_mode},
             "sections": {
@@ -438,7 +452,13 @@ def build_wiki_prompt_bundle(
     selected_scene_types = normalize_prompt_scene_types(
         scene_types or _scene_types(user_input, recent_story)
     )
-    world_config = _world_config(setup, assets, thread_documents)
+    scene_prompts = read_wiki_scene_prompt_assets(
+        vault_root,
+        setup.world_id,
+        setup.scenario_id,
+        selected_scene_types,
+    )
+    world_config = _world_config(setup, assets, thread_documents, scene_prompts)
     builder = PromptBuilder(
         world_config=world_config,
         char_name=setup.npc_name,

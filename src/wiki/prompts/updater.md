@@ -72,6 +72,7 @@ Rules:
 - Shared current time, place, positions, movement, activity, and immediate pressure belong only in `scene/current.md`.
 - Character documents own only that person's current physical, emotional, need, personality-ledger, and configured reproductive state.
 - Relationship documents own directional durable relationship development; Events own objective occurrences; Memories own one owner's subjective recollection and interpretation.
+- Event and Memory documents are created through `creations` only. Turn extraction never patches an existing `event` or `memory` document, so do not return a `patches` entry targeting either type.
 - Goals own durable objectives and progress; Items own persistent object condition, storage, and access; Secrets own private truth, knowers, public clues, and exposure state.
 - When one turn affects several domains, record only each domain's distinct consequence. Use stable ID fields for supported links instead of copying another document's prose.
 - Return only changed sections. Omit unchanged documents and sections.
@@ -99,6 +100,7 @@ Rules:
 - Do not modify `thread.md`.
 - `creations` may contain only a genuinely durable event that changes later choices, access, obligations, conflict, or shared knowledge. Routine dialogue, movement, meals, affection, and momentary emotion are not events.
 - A created event ID must use `event:<stable-ascii-slug>`. Do not reuse an existing supplied document ID or create more than one record for the same occurrence.
+- One accepted turn may create several distinct Event documents when it contains separate durable occurrences with different participants, place, or consequence. Still never create two records for the same occurrence.
 - Event fields must be non-empty single lines. Write event facts in English except for Korean proper nouns, titles, dialogue, and exact source wording.
 - `creations[].evidence` follows the same exact-quote and player-authority rules as patches. Actor prose cannot establish a player action inside an event.
 - A memory is subjective and belongs to exactly one supplied thread character profile. Use `memory:<stable-ascii-slug>` and an exact `owner` profile ID.

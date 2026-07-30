@@ -25,6 +25,7 @@ from src.apps.app.models import (
 )
 from src.apps.app.storage import ConversationStore
 from src.apps.app.wiki_controls import skip_wiki_commit
+from src.apps.app.settings import load_settings
 import src.apps.app.wiki_service as wiki_service
 from src.apps.app.wiki_service import (
     _message_payload,
@@ -154,6 +155,7 @@ async def _replace_wiki_update(
     """기존 commit.md를 보관하고 현재 메시지 쌍으로 새 변경안을 생성합니다."""
     skip_wiki_commit(state, store, reason)
     try:
+        settings = load_settings()
         update_result = await update_accepted_turn(
             WikiTurnUpdateRequest(
                 vault_root=Path(wiki_service.WIKI_VAULT_ROOT),
@@ -166,6 +168,7 @@ async def _replace_wiki_update(
                 actor_profile_id=state.npc_id,
                 user_message_id=user_message.id,
                 assistant_message_id=assistant_message.id,
+                thinking_level=settings.wiki_updater_thinking_level,
                 wiki_systems=resolve_wiki_systems(
                     state.wiki_system_overrides,
                     wiki_system_defaults(),

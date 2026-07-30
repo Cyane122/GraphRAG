@@ -54,7 +54,11 @@ from src.apps.app.conversation_lifecycle import (
     rename_wiki_conversation,
     set_wiki_conversation_archived,
 )
-from src.apps.app.settings import load_settings, save_settings
+from src.apps.app.settings import (
+    load_settings,
+    normalize_thinking_level,
+    save_settings,
+)
 from src.apps.app.runtime import ActiveConversation, discover_world_profiles, resolve_opening_scene
 from src.apps.app.message_ops import (
     activate_variant,
@@ -664,6 +668,16 @@ def create_app() -> FastAPI:
         settings = load_settings()
         if body.output_repair_enabled is not None:
             settings.output_repair_enabled = body.output_repair_enabled
+        if body.actor_thinking_level is not None:
+            settings.actor_thinking_level = normalize_thinking_level(
+                body.actor_thinking_level,
+                settings.actor_thinking_level,
+            )
+        if body.wiki_updater_thinking_level is not None:
+            settings.wiki_updater_thinking_level = normalize_thinking_level(
+                body.wiki_updater_thinking_level,
+                settings.wiki_updater_thinking_level,
+            )
         save_settings(settings)
         return settings.model_dump()
 

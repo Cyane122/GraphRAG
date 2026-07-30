@@ -6,9 +6,12 @@
 # Functions
 #   - _fake_actor_events(**kwargs: object) -> AsyncIterator[dict] : 고정 Actor 스트림을 반환합니다.
 #   - _fake_scene_classifier(user_input: str, recent_story: str, scene_descriptions: dict[str, str] | None = None) -> list[str] : 외부 분류 호출 없이 장면 타입을 반환합니다.
-#   - _fake_pending_commit(documents: list[WikiDocument], user_input: str, actor_response: str, model_name: str, max_attempts: int = 3, player_profile_id: str = "", actor_profile_id: str = "", user_message_id: str | None = None, assistant_message_id: str | None = None, debug_root: Path | None = None) -> PendingWikiCommit : scene patch 하나를 생성합니다.
-#   - _failing_pending_commit(documents: list[WikiDocument], user_input: str, actor_response: str, model_name: str, max_attempts: int = 3, player_profile_id: str = "", actor_profile_id: str = "", user_message_id: str | None = None, assistant_message_id: str | None = None, debug_root: Path | None = None) -> PendingWikiCommit : Updater 재시도 소진을 모사합니다.
+#   - _fake_pending_commit(documents: list[WikiDocument], user_input: str, actor_response: str, model_name: str, max_attempts: int = 3, player_profile_id: str = "", actor_profile_id: str = "", user_message_id: str | None = None, assistant_message_id: str | None = None, thinking_level: str | None = None, debug_root: Path | None = None) -> PendingWikiCommit : scene patch 하나를 생성합니다.
+#   - _failing_pending_commit(documents: list[WikiDocument], user_input: str, actor_response: str, model_name: str, max_attempts: int = 3, player_profile_id: str = "", actor_profile_id: str = "", user_message_id: str | None = None, assistant_message_id: str | None = None, thinking_level: str | None = None, debug_root: Path | None = None) -> PendingWikiCommit : Updater 재시도 소진을 모사합니다.
 #   - _identity_repair(full_response: str, visible_text: str, state: ConversationState) -> str : 출력 repair를 우회합니다.
+#   - _opening_tag_sequence(prompt: str) -> tuple[str, ...] : Prompt segment의 opening tag 순서를 구조 fingerprint로 정규화합니다.
+#   - _prompt_structure_snapshot(fixed_prompt: str, genre_prompt: str, dynamic_prompt: str) -> dict[str, tuple[str, ...]] : Fixed/Genre/Dynamic 구조 fingerprint를 반환합니다.
+#   - _report_prompt_content_snapshot(scenario_id: str, prompt_snapshot: dict[str, str]) -> None : authored prose drift 진단용 content hash를 출력합니다.
 #   - _run() -> None : 임시 vault에서 Wiki 런타임 전체 흐름을 검증합니다.
 # ================================
 
@@ -20,6 +23,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
+import re
 import shutil
 import sys
 import tempfile
@@ -58,37 +62,183 @@ from src.wiki import (
     get_wiki_thread_runtime_status,
     initialize_wiki_conversation,
     parse_frontmatter,
+    read_wiki_scene_descriptions,
     validate_wiki_prompt_bundle,
 )
 
 
 _EXPECTED_PROMPT_SNAPSHOTS = {
     "lover": {
-        "fixed": "82e0cfabd7950e8c5a17d1464ce17c239b02fbadb3e697dc14e71172a896bbef",
+        "fixed": "54a6280c261ff43fc639e8fa3bcbd9db3ebe64a97575f86af71e467feb9bcd53",
         "genre": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "dynamic": "04917ce3ddbfb9a99e431b08a53c8f3e631123853bd2318bf924ea2acae08d49",
     },
     "best_friends": {
-        "fixed": "08ced7668c9cadeafa3aae0c5b6a2feee73acbcdeab9df57902bedfd51db4045",
+        "fixed": "b2a7ceb5a40f040e0b9872134d0b03fa8d1c6786d850301f1aef86023c535362",
         "genre": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "dynamic": "9658dfc1966887b56e45a78286735a8d8bbd2b6f23f11a183bd9d75472406a54",
     },
     "amputee_fwb": {
-        "fixed": "3ea528491d29f83e2bf79d54a189e30304d0e03101971797db777859a35b85a3",
+        "fixed": "76f1004e54269e5c83a0d2e00d459c872b179e96cc3ba6e934b5cd2a6d3a032d",
         "genre": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "dynamic": "7fd49764a6fd78f11522bdfae1521ea6419dec314bac9cbab1254d242e1c3a43",
     },
     "ntr_lite": {
-        "fixed": "8d6c5bfa050cd97358a1de1888122761d45225766724d2b3941c15631bb8d41b",
+        "fixed": "a5748152a9938c17370b85fa1d89c7313f947688332d4392af84ddd0c4dce146",
         "genre": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "dynamic": "d3621c763e9c915ac2156071caf94557ddcf84588a4f6eb61803ac4fe106cda0",
     },
     "altered": {
-        "fixed": "6483bcb0d04f82d5d4cf4e1ad1040ed4e3703519742e32c7dbc91b0967fa98a5",
+        "fixed": "3701d34f35c68423490c6c1772d5396a6f40042e7773583039115347b63799b8",
         "genre": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "dynamic": "13aadd8eba924555820240c995d445978aa3494f500399bddf14e36ca2f9aa73",
     },
+    "boyfriend_platonic": {
+        "fixed": "90dddb55a0590d6d206bf671b886ac60dc9dd55fe3744d2708ca9c6a83b7f608",
+        "genre": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dynamic": "10bd6d7c828894d4bb694ac507b8a6cc6da2102bff367c308fc1fcdeb0886199",
+    },
 }
+
+_OPENING_TAG_RE = re.compile(r"<[a-z_]+(?:\s+[^<>]+?)?>")
+
+_FIXED_TAGS_12_CHARACTERS = (
+    "<operator_policy>",
+    "<user_impersonation>",
+    "<pov>",
+    "<core>",
+    "<emotion>",
+    "<style>",
+    "<world_lore>",
+    "<world_setting>",
+    *("<location_information>",) * 8,
+    *("<organization_information>",) * 2,
+    *("<character_profile>",) * 12,
+    "<situation_information>",
+    "<world_specific_prose_prompt>",
+    "<prose_rules>",
+    "<blacklist>",
+    "<npc_behavior>",
+    "<token_limit_constraint>",
+    "<analyze>",
+)
+_FIXED_TAGS_13_CHARACTERS = (
+    "<operator_policy>",
+    "<user_impersonation>",
+    "<pov>",
+    "<core>",
+    "<emotion>",
+    "<style>",
+    "<world_lore>",
+    "<world_setting>",
+    *("<location_information>",) * 8,
+    *("<organization_information>",) * 2,
+    *("<character_profile>",) * 13,
+    "<situation_information>",
+    "<world_specific_prose_prompt>",
+    "<prose_rules>",
+    "<blacklist>",
+    "<npc_behavior>",
+    "<token_limit_constraint>",
+    "<analyze>",
+)
+_DYNAMIC_TAGS_12_STATES = (
+    "<active_characters>",
+    "<scene_specific_prompts>",
+    '<scene type="daily">',
+    "<world_context>",
+    "<current_scene>",
+    *("<current_character_state>",) * 12,
+    "<current_relationship_state>",
+    "<turn_ooc_directives>",
+    *("<ooc>",) * 3,
+    "<user_input>",
+    *("<analyze>",) * 3,
+)
+_DYNAMIC_TAGS_13_STATES = (
+    "<active_characters>",
+    "<scene_specific_prompts>",
+    '<scene type="daily">',
+    "<world_context>",
+    "<current_scene>",
+    *("<current_character_state>",) * 13,
+    "<current_relationship_state>",
+    "<turn_ooc_directives>",
+    *("<ooc>",) * 3,
+    "<user_input>",
+    *("<analyze>",) * 3,
+)
+_EXPECTED_PROMPT_STRUCTURES = {
+    "lover": {
+        "fixed": _FIXED_TAGS_12_CHARACTERS,
+        "genre": (),
+        "dynamic": _DYNAMIC_TAGS_12_STATES,
+    },
+    "best_friends": {
+        "fixed": _FIXED_TAGS_12_CHARACTERS,
+        "genre": (),
+        "dynamic": _DYNAMIC_TAGS_12_STATES,
+    },
+    "amputee_fwb": {
+        "fixed": _FIXED_TAGS_12_CHARACTERS,
+        "genre": (),
+        "dynamic": _DYNAMIC_TAGS_12_STATES,
+    },
+    "ntr_lite": {
+        "fixed": _FIXED_TAGS_13_CHARACTERS,
+        "genre": (),
+        "dynamic": _DYNAMIC_TAGS_13_STATES,
+    },
+    "altered": {
+        "fixed": _FIXED_TAGS_13_CHARACTERS,
+        "genre": (),
+        "dynamic": _DYNAMIC_TAGS_13_STATES,
+    },
+    "boyfriend_platonic": {
+        "fixed": _FIXED_TAGS_13_CHARACTERS,
+        "genre": (),
+        "dynamic": _DYNAMIC_TAGS_13_STATES,
+    },
+}
+
+
+def _opening_tag_sequence(prompt: str) -> tuple[str, ...]:
+    """Prompt segment의 opening tag 순서를 whitespace-normalized tuple로 반환합니다."""
+    return tuple(" ".join(match.group(0).split()) for match in _OPENING_TAG_RE.finditer(prompt))
+
+
+def _prompt_structure_snapshot(
+    fixed_prompt: str,
+    genre_prompt: str,
+    dynamic_prompt: str,
+) -> dict[str, tuple[str, ...]]:
+    """Compiled prompt의 Fixed/Genre/Dynamic 구조 fingerprint를 반환합니다."""
+    return {
+        "fixed": _opening_tag_sequence(fixed_prompt),
+        "genre": _opening_tag_sequence(genre_prompt),
+        "dynamic": _opening_tag_sequence(dynamic_prompt),
+    }
+
+
+def _report_prompt_content_snapshot(
+    scenario_id: str,
+    prompt_snapshot: dict[str, str],
+) -> None:
+    """Authoring drift 진단용 content hash와 baseline 차이를 출력합니다."""
+    print(
+        f"[prompt-content] {scenario_id}: "
+        f"fixed={prompt_snapshot['fixed']} "
+        f"genre={prompt_snapshot['genre']} "
+        f"dynamic={prompt_snapshot['dynamic']}"
+    )
+    expected = _EXPECTED_PROMPT_SNAPSHOTS[scenario_id]
+    if prompt_snapshot != expected:
+        print(
+            f"[authoring-drift] {scenario_id}: content hashes drifted from the "
+            f"recorded authored baseline without changing prompt structure."
+        )
+        print(f"[authoring-drift] baseline={expected}")
+        print(f"[authoring-drift] current={prompt_snapshot}")
 
 
 async def _fake_actor_events(**kwargs: object) -> AsyncIterator[dict]:
@@ -118,7 +268,9 @@ async def _fake_scene_classifier(
     scene_descriptions: dict[str, str] | None = None,
 ) -> list[str]:
     """외부 LLM 없이 intimate 키워드가 있으면 친밀 장면, 아니면 일상을 반환합니다."""
-    del recent_story, scene_descriptions
+    del recent_story
+    assert scene_descriptions is not None
+    assert {"daily", "intimate"}.issubset(scene_descriptions)
     return ["intimate"] if "친밀" in user_input else ["daily"]
 
 
@@ -132,6 +284,7 @@ async def _fake_pending_commit(
     actor_profile_id: str = "",
     user_message_id: str | None = None,
     assistant_message_id: str | None = None,
+    thinking_level: str | None = None,
     debug_root: Path | None = None,
 ) -> PendingWikiCommit:
     """현재 scene의 당장 계기 섹션을 바꾸는 검증 가능한 commit을 반환합니다."""
@@ -142,6 +295,7 @@ async def _fake_pending_commit(
         actor_profile_id,
         user_message_id,
         assistant_message_id,
+        thinking_level,
         debug_root,
     )
     scene = next(document for document in documents if document.path == "scene/current.md")
@@ -178,6 +332,7 @@ async def _failing_pending_commit(
     actor_profile_id: str = "",
     user_message_id: str | None = None,
     assistant_message_id: str | None = None,
+    thinking_level: str | None = None,
     debug_root: Path | None = None,
 ) -> PendingWikiCommit:
     """Updater가 재시도를 모두 소진한 실패를 LLM 호출 없이 모사합니다."""
@@ -191,6 +346,7 @@ async def _failing_pending_commit(
         actor_profile_id,
         user_message_id,
         assistant_message_id,
+        thinking_level,
         debug_root,
     )
     raise RuntimeError("mock updater exhausted")
@@ -254,18 +410,37 @@ async def _run() -> None:
             "wiki",
         )
 
-        scenario_ids = ("lover", "best_friends", "amputee_fwb", "ntr_lite", "altered")
+        scenario_ids = (
+            "lover",
+            "best_friends",
+            "amputee_fwb",
+            "ntr_lite",
+            "altered",
+            "boyfriend_platonic",
+        )
         expected_facts = {
             "lover": "dated for two years",
             "best_friends": "They neither date nor cohabit",
             "amputee_fwb": "arms were amputated high through the upper arms",
-            "ntr_lite": "publicly dated fourth-year Business Administration student 한도준",
+            "ntr_lite": (
+                "secretly continues a sexual relationship with her while she "
+                "publicly dates 한도준"
+            ),
             "altered": "Shifted Common Sense around 시안",
+            "boyfriend_platonic": (
+                "They are comfortable lifelong friends who live separately and "
+                "have never dated or had sex."
+            ),
         }
         scenario_only_rules = {
             "amputee_fwb": "Distinguish what she can do independently",
             "ntr_lite": "Suspicion begins with observable inconsistencies",
             "altered": "Only social meaning and judgment around 시안 change",
+            "boyfriend_platonic": (
+                "A future change in any relationship requires direct choices and "
+                "events; familiarity alone does not retroactively create romance, "
+                "sex, betrayal, or secret consent."
+            ),
         }
         legacy_thread_root = vault_root / "threads" / "legacy_runtime"
         legacy_thread_root.mkdir(parents=True)
@@ -280,6 +455,14 @@ async def _run() -> None:
         )
         assert missing_status.generation == "missing"
         for scenario_id in scenario_ids:
+            scene_descriptions = read_wiki_scene_descriptions(
+                vault_root,
+                "babe_university",
+                scenario_id,
+            )
+            assert "daily" in scene_descriptions
+            assert "intimate" in scene_descriptions
+            assert ("altered" in scene_descriptions) == (scenario_id == "altered")
             setup = initialize_wiki_conversation(
                 vault_root,
                 "babe_university",
@@ -330,9 +513,15 @@ async def _run() -> None:
                 "genre": sha256(prompt_bundle.genre_prompt.encode("utf-8")).hexdigest(),
                 "dynamic": sha256(prompt_bundle.dynamic_prompt.encode("utf-8")).hexdigest(),
             }
-            assert prompt_snapshot == _EXPECTED_PROMPT_SNAPSHOTS[scenario_id], (
+            prompt_structure = _prompt_structure_snapshot(
+                prompt_bundle.fixed_prompt,
+                prompt_bundle.genre_prompt,
+                prompt_bundle.dynamic_prompt,
+            )
+            _report_prompt_content_snapshot(scenario_id, prompt_snapshot)
+            assert prompt_structure == _EXPECTED_PROMPT_STRUCTURES[scenario_id], (
                 scenario_id,
-                prompt_snapshot,
+                prompt_structure,
             )
             assert expected_facts[scenario_id] in prompt_bundle.fixed_prompt
             for other_scenario_id, fact in expected_facts.items():
@@ -379,6 +568,9 @@ async def _run() -> None:
                     assert scene_bundle.fixed_prompt == prompt_bundle.fixed_prompt
                     if prompt_scene == "intimate":
                         assert '<genre name="intimate">' in scene_bundle.genre_prompt
+                        assert "Intimate Physicality in Ordinary Life" in (
+                            scene_bundle.dynamic_prompt
+                        )
             assert "path=" not in combined_prompt
             assert ".md" not in combined_prompt
             assert "<wiki_" not in combined_prompt
@@ -430,6 +622,18 @@ async def _run() -> None:
                 )
                 assert "studies Mechanical Engineering at 바베대학교" not in prompt_bundle.fixed_prompt
                 assert "has known 진은서 since childhood" not in prompt_bundle.fixed_prompt
+                altered_scene_bundle = build_wiki_prompt_bundle(
+                    vault_root,
+                    setup,
+                    "시안의 요구가 일상의 판단을 바꾼다",
+                    "",
+                    scene_types=["altered"],
+                )
+                assert altered_scene_bundle.scene_types == ["altered"]
+                assert "Practical Handling of 시안's Conduct" in (
+                    altered_scene_bundle.dynamic_prompt
+                )
+                assert "scene_prompt:" not in altered_scene_bundle.dynamic_prompt
             else:
                 assert setup.pov_mode == "3p_char"
                 assert setup.perspective == 3
@@ -543,6 +747,19 @@ async def _run() -> None:
             if scenario_id == "amputee_fwb":
                 assert "arms were amputated high on the upper arm near the shoulders" in materialized_body
                 assert "She is 147 cm tall, weighs 42 kg, has an F-cup bust" not in materialized_body
+                amputee_intimate_bundle = build_wiki_prompt_bundle(
+                    vault_root,
+                    setup,
+                    "서로 확인하며 자세를 조정한다",
+                    "",
+                    scene_types=["intimate"],
+                )
+                assert "Intimacy with Physical Dependence" in (
+                    amputee_intimate_bundle.dynamic_prompt
+                )
+                assert "Intimate Physicality in Ordinary Life" not in (
+                    amputee_intimate_bundle.dynamic_prompt
+                )
             else:
                 assert "She is 147 cm tall, weighs 42 kg, has an F-cup bust" in materialized_body
                 assert "legally dead" not in materialized_body

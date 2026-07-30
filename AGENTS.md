@@ -92,6 +92,25 @@ Read `docs/architecture.md` and the affected `architecture_wiki/` documents
 before changing these boundaries. Update them when runtime flow, state
 ownership, prompt contracts, commit lifecycle, or conflict policy changes.
 
+## User Interface Ownership
+
+`hosted-ui/` is the active user interface. Implement new user-facing screens,
+controls, and interaction changes there.
+
+`frontend/app/` is the legacy local client. Do not add features to it. Limit
+changes to critical fixes and to keeping it working against the current engine
+API. A new control does not need to be mirrored there.
+
+Both clients call the same engine over its JSON API, so a change that only
+exposes existing engine behavior is UI-only work and belongs in `hosted-ui/`.
+When a feature also needs engine support, keep the engine change in `src/` and
+the presentation in `hosted-ui/`; do not move product decisions into the client
+or business rules into either client.
+
+`hosted-ui/` is a separate Next.js project with its own Git repository and
+package manifest. Do not assume the parent repository's Python toolchain,
+tests, or commit state apply to it.
+
 ## Graph And Wiki State Rules
 
 - Graph grouped writes use `async with async_driver.transaction() as tx:`.
@@ -118,18 +137,20 @@ under `wiki_v2/worlds/`, use the `author-wikirag-worlds` skill.
 
 ## Python Requirements
 
-For every Python edit, use the `python-dev-style` skill and follow these laws:
+- Preserve the project file-header block (`# ====`) and keep its path,
+  responsibility, classes, functions, and signatures synchronized with the
+  file.
+- Type every parameter and return value of changed or new functions.
+- Give changed or new functions a concise docstring, and update nearby
+  comments and docstrings when behavior changes.
+- Keep domain logic in owning modules; preserve package ownership and
+  dependency direction.
+- Avoid `Any` where possible, broad import cycles, speculative abstractions,
+  and unrelated cleanup.
+- Validate proportionately to the scope and risk of the change.
 
-- Preserve the project file-header block and keep its path, responsibility,
-  classes, functions, and signatures synchronized.
-- Type every function parameter and return value.
-- Give every function, public or private, a concise docstring.
-- Update nearby comments and docstrings when behavior changes.
-- Keep domain logic in owning modules instead of generic utility modules.
-- Avoid broad import cycles and speculative abstractions.
-
-The detailed sequence and skill boundaries are in `docs/dev_workflow.md` and
-`docs/skill_index.md`.
+The development sequence is in `docs/dev_workflow.md`; skill and plugin
+boundaries are in `docs/skill_index.md`.
 
 ## Safety
 

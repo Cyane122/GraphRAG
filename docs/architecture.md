@@ -18,9 +18,10 @@ application:
   depend on Kuzu.
 - **Shared runtime** provides conversation storage, input routing, provider-agnostic
   Actor streaming, output guards, and the accepted-turn Updater contract.
-- **Local UI** is served from `frontend/app/`.
 - **Hosted UI** lives in `hosted-ui/` and calls the local engine through JSON and
-  NDJSON endpoints.
+  NDJSON endpoints. It is the active user interface and owns new user-facing work.
+- **Local UI** is served from `frontend/app/`. It is the legacy client, kept
+  working against the current engine API but no longer receiving new features.
 
 The main backend entry point is `python -m src.apps.app`.
 
@@ -178,7 +179,10 @@ Actor prompts have three segments:
 
 Supported shared classifier labels are `daily`, `bonding`, `intimate`, `formal`,
 `tense`, `conflict`, `vulnerable`, `action`, and `ambient`. Compilation maps legacy
-labels to a supported non-empty asset.
+labels to a supported non-empty asset. Wiki world and active-scenario
+`scenes/<scene_type>.md` documents may add or override classifier keys through stripped
+frontmatter descriptions. Their selected bodies enter Dynamic; inactive bodies and
+selection metadata do not enter any Actor segment.
 
 Never put current time, current location, recent events, relationship state, needs,
 schedules, memories, or user input into Fixed.
@@ -220,8 +224,8 @@ Updater inputs retain paths and revisions because validated patching requires th
 | Graph persistence | `src/simulation/state/graph_apply.py`, `src/core/database/` |
 | Long-running systems | `src/simulation/systems/` |
 | Wiki runtime and commit planning | `src/wiki/` |
-| Local chat client | `frontend/app/` |
-| Hosted client | `hosted-ui/` |
+| Chat client (active) | `hosted-ui/` |
+| Chat client (legacy) | `frontend/app/` |
 | Authoring and graph tools | `src/apps/world_editor/`, `src/apps/graph_viewer/` |
 
 ## 8. Design Invariants

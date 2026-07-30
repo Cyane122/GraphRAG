@@ -32,6 +32,7 @@ from anthropic import (
 )
 from google.genai import types
 
+from src.apps.app.settings import load_settings
 from src.config import (
     ANTHROPIC_API_KEY,
     ANTHROPIC_CLAUDE_OPUS_4_6_MODEL,
@@ -188,7 +189,9 @@ def _build_generation_config(model_name: str, system_text: str, max_token: int) 
         "automatic_function_calling": types.AutomaticFunctionCallingConfig(disable=True),
     }
     if model_name.lower().startswith("gemini"):
-        config["thinking_config"] = types.ThinkingConfig(thinking_level="HIGH")
+        config["thinking_config"] = types.ThinkingConfig(
+            thinking_level=load_settings().actor_thinking_level
+        )
     return types.GenerateContentConfig(**config)
 
 

@@ -13,6 +13,8 @@
 #   - get_wiki_thread_runtime_status(vault_root: Path, thread_id: str) -> WikiThreadRuntimeStatus : 현재 런타임 생성 thread와 이전 형식 thread를 구분합니다.
 #   - load_wiki_setup(vault_root: Path, world_id: str, scenario_id: str, thread_id: str) -> WikiConversationSetup : 런타임 메타데이터와 첫 장면을 읽습니다.
 #   - read_wiki_actor_assets(vault_root: Path, world_id: str, scenario_id: str) -> list[WikiDocument] : Fixed prompt용 world 문서를 읽습니다.
+#   - read_wiki_scene_prompt_assets(vault_root: Path, world_id: str, scenario_id: str, scene_types: list[str] | None = None) -> list[WikiScenePromptAsset] : 월드 씬 프롬프트에 시나리오 override를 적용해 읽습니다.
+#   - read_wiki_scene_descriptions(vault_root: Path, world_id: str, scenario_id: str) -> dict[str, str] : 공용 분류 설명에 Wiki 전용 scene key를 합칩니다.
 #   - read_wiki_thread_documents(vault_root: Path, thread_id: str) -> list[WikiDocument] : Actor와 Updater가 사용할 thread 문서를 읽습니다.
 #   - document_body(content: str) -> str : frontmatter를 제외한 Markdown 본문을 반환합니다.
 #   - scene_datetime_and_location(content: str) -> tuple[datetime, str] : 현재 장면의 한국어 또는 영어 시각과 장소를 해석합니다.
@@ -29,6 +31,7 @@ from src.wiki.manual_audit import ensure_audit_baseline
 from src.wiki.models import (
     WikiConversationSetup,
     WikiDocument,
+    WikiScenePromptAsset,
     WikiThreadRuntimeStatus,
 )
 from src.wiki.scaffold import render_wiki_template, scaffold_thread
@@ -42,6 +45,7 @@ _H1_RE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
 _VALID_POV_MODES = {"1p_user", "1p_char", "3p_user", "3p_char"}
 _THREAD_RUNTIME_MARKER = ".wikirag-runtime.json"
 _THREAD_RUNTIME_FORMAT_VERSION = 1
+_SCENE_TYPE_CATALOG_PATH = Path(__file__).with_name("prompts") / "scene_types.json"
 _KOREAN_DATETIME_RE = re.compile(
     r"(?P<year>\d{4})년\s*(?P<month>\d{1,2})월\s*(?P<day>\d{1,2})일"
     r"(?:\s+[^,\n]*요일)?\s*(?P<period>오전|오후|저녁|밤|새벽)?\s*"
@@ -483,6 +487,77 @@ def read_wiki_actor_assets(
     )
     store = WikiStore(world_root)
     return [store.read_document(path.as_posix()) for path in relative_paths]
+
+
+def _read_scene_prompt_asset(
+    store: WikiStore,
+    world_root: Path,
+    path: Path,
+) -> WikiScenePromptAsset:
+    """한 scene prompt 문서의 metadata와 파일명 key가 일치하는지 검증합니다."""
+    document = store.read_document(path.relative_to(world_root).as_posix())
+    metadata = document.metadata
+    if metadata is None or metadata.type != "scene_prompt":
+        raise WikiContextError(f"Scene prompt requires type scene_prompt: {document.path}")
+    extra = metadata.model_extra or {}
+    scene_type = str(extra.get("scene_type") or "").strip()
+    description = str(extra.get("description") or "").strip()
+    if path.stem != scene_type:
+        raise WikiContextError(
+            f"Scene prompt filename must match scene_type {scene_type!r}: {document.path}"
+        )
+    return WikiScenePromptAsset(
+        scene_type=scene_type,
+        description=description,
+        document=document,
+    )
+
+
+def read_wiki_scene_prompt_assets(
+    vault_root: Path,
+    world_id: str,
+    scenario_id: str,
+    scene_types: list[str] | None = None,
+) -> list[WikiScenePromptAsset]:
+    """월드 씬 프롬프트를 읽고 같은 key의 시나리오 문서로 교체합니다."""
+    world_root = _world_root(vault_root, world_id)
+    scenario_root = _scenario_root(vault_root, world_id, scenario_id)
+    selected = set(scene_types) if scene_types is not None else None
+    store = WikiStore(world_root)
+    inherited: dict[str, WikiScenePromptAsset] = {}
+    for directory in (world_root / "scenes", scenario_root / "scenes"):
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.glob("*.md")):
+            asset = _read_scene_prompt_asset(store, world_root, path)
+            if selected is None or asset.scene_type in selected:
+                inherited[asset.scene_type] = asset
+    return [inherited[scene_type] for scene_type in sorted(inherited)]
+
+
+def read_wiki_scene_descriptions(
+    vault_root: Path,
+    world_id: str,
+    scenario_id: str,
+) -> dict[str, str]:
+    """공용 Wiki scene 설명에 월드·시나리오 scene prompt 설명을 덮어 합칩니다."""
+    try:
+        raw_catalog = json.loads(_SCENE_TYPE_CATALOG_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise WikiContextError("Wiki scene type catalog is unreadable") from exc
+    if not isinstance(raw_catalog, dict):
+        raise WikiContextError("Wiki scene type catalog must be a JSON object")
+    descriptions = {
+        str(scene_type): str(description)
+        for scene_type, description in raw_catalog.items()
+        if _IDENTIFIER_RE.fullmatch(str(scene_type))
+        and str(description).strip()
+    }
+    for asset in read_wiki_scene_prompt_assets(vault_root, world_id, scenario_id):
+        descriptions[asset.scene_type] = asset.description
+    if "daily" not in descriptions:
+        raise WikiContextError("Wiki scene type catalog requires daily")
+    return descriptions
 
 
 def read_wiki_thread_documents(vault_root: Path, thread_id: str) -> list[WikiDocument]:

@@ -17,7 +17,7 @@ from pathlib import Path
 import re
 
 from src.core.llm import extract_json_from_llm, get_model, get_response_text
-from src.simulation.state.apply.time_plan import parse_prose_header_datetime
+from src.simulation.prose_headers import parse_prose_header_datetime
 from src.simulation.systems.world_dynamics.organic_models import (
     calculate_pregnancy_probability,
     normalize_contraception_value,

@@ -1,8 +1,9 @@
 # Development Workflow
 
 The standard agent-assisted development sequence for this repository. It is short
-on purpose; the detailed law lives in `AGENTS.md`, and skill procedures live in the
-`python-*` skills (see `docs/skill_index.md`).
+on purpose; the detailed law lives in `AGENTS.md`, and orchestrated Python
+implementation runs through the manual `/python-dev` plugin (see
+`docs/skill_index.md`).
 
 There is **no lint or build step** and **no pytest**. Validation means
 `python -m py_compile <changed files>` and the standalone smoke scripts
@@ -16,13 +17,13 @@ There is **no lint or build step** and **no pytest**. Validation means
    before changing anything. Find local conventions in neighboring files.
 2. **Plan** — decide the smallest change that satisfies the request. Surface
    assumptions and risky areas first.
-3. **Implement** — make the change (see the `python-dev-style` / `python-refactor-safe`
-   skills for how).
+3. **Implement** — make the change. Delegate non-trivial implementation to
+   Codex, normally via `/python-dev implement`.
 4. **Test / validate** — run `python -m py_compile` on changed files and any
    relevant `tests/smoke_*.py`. If a change touches runtime behavior, run the
    matching command from `AGENTS.md` (e.g. `python -m src.apps.app`).
 5. **Sync Python headers** — **mandatory** after any Python change that affects the
-   header (see the rule below). Use the `python-file-header` skill.
+   header (see the rule below).
 6. **Update the changelog** — only if the change is **meaningful** (see definition
    below). History lives in `docs/changelog.md`.
 7. **Update architecture docs** — only if the architecture actually changed (module
@@ -82,5 +83,5 @@ it, never invented.
 | Detailed architecture | `docs/architecture.md` |
 | History | `docs/changelog.md` |
 | Changelog inclusion policy | `.ai/changelog-policy.md` |
-| Which skill to use | `docs/skill_index.md` |
+| Which skill or plugin to use | `docs/skill_index.md` |
 | Encoding rules (no PowerShell for Korean) | `AGENTS.md` → Encoding Rules |

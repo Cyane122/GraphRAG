@@ -38,6 +38,27 @@ not depend on the hook to repair a vague task. Model availability can differ by
 account; follow `.ai/routing.md` and use its verified fallback when a preferred
 model is unavailable.
 
+## Python Development
+
+Python work runs through the manual `python-dev` plugin
+(`/python-dev plan|implement|review`), a local skills-dir plugin at
+`~/.claude/skills/python-dev/`. It activates only when the user explicitly
+invokes `/python-dev`; there is no automatic or chained skill triggering.
+
+Claude owns investigation, scope, design, the bounded Codex brief, diff
+review, and the final report. Codex owns non-trivial Python implementation and
+its validation. Continue follow-up fixes in the existing Codex thread with
+`codex-reply`; Claude does not directly edit non-trivial behavior code.
+
+Ponytail's minimal-implementation principles apply to implementation choices
+but never override repository invariants, acceptance criteria, safety, data
+integrity, or required validation. Do not auto-run `/ponytail-review`; use it
+only on real signs of over-implementation or when the user requests it.
+
+Superpowers must not start a separate implementation agent chain, worktree
+workflow, or subagent-driven development path that bypasses the Claude to
+Codex split. Borrowing its brainstorming or verification principles is fine.
+
 ## Review Loop
 
 For non-trivial changes:

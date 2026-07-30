@@ -134,30 +134,60 @@ Updater에는 선택된 thread 문서 전문, 사용자 입력, 수락된 Actor 
 
 ## 현재 구현된 범위
 
-- Markdown/frontmatter parser와 15종 템플릿
+### 저장소와 커밋
+
+- Markdown/frontmatter parser, 15종 문서 타입(`WikiDocumentType`)과 17개 템플릿 파일
 - world/thread scaffold와 경로 안전성
 - section patch와 문서·섹션 revision 검증
 - 다중 문서 논리 적용과 실패 시 rollback
-- Gemini Pro updater 재시도
 - `commit.md` 보류와 다음 턴 적용·archive
+- 적용 전·후 hash와 section diff의 commit archive 기록
+- 적용된 commit의 inverse patch, 3-way 충돌 탐지와 사용자 선택 복구
+- baseline 비교로 외부 Obsidian 편집을 별도 `manual` commit으로 기록·inverse
+- 문서 ID 중복·frontmatter 진단, `schema_version` migration registry,
+  기존 thread의 누락 H3를 미리 보고 적용하는 audited migration
+
+### 프롬프트와 Actor
+
 - 기존 `PromptBuilder`와 Actor streaming 연결
+- Actor-visible 컴파일 계약(wikilink·경로·frontmatter 누출 컴파일 시 거부)
+- 공용 장면 분류와 8종 scene prompt 정규화
+- 현재 5개 시나리오의 Fixed/Genre/Dynamic hash snapshot 회귀 검증
+- Actor별 private Memory owner 격리, Secret knower-scoping과
+  hidden/suspected 누설의 출력 guard 검사
+- 누적 문서의 결정적 recall(문서 수·token 이중 예산)
+
+### Updater와 상태
+
+- Graph/Wiki 공용 mode-aware 단일 accepted-turn Updater와 재시도
+- Event·Memory·Goal·Item·Secret 신규 문서 생성 `CreateDocument`와 inverse
+- Actor-owner 자연어 관계 변화 원장
+- accepted header 기반 결정적 시각·장소 병합과 needs 벡터
+- 기본-off 게이트의 기억 왜곡, 목격자 gossip, 성격 변화 원장, opt-in 생식 상태
+
+### 제품 표면
+
 - 최신 미반영 응답의 reroll, 사용자/응답 edit, variant 선택과 delete
-- commit 상태 조회, 즉시 반영, 재시도와 건너뛰기 백엔드 제어
+- 중간 과거 턴의 원본 보존 분기
+- commit 상태 조회, 즉시 반영, 재시도와 건너뛰기 백엔드 제어와 Sites UI 연결
+- 대화 이름 변경, 보관/복원, canonical Markdown ZIP 내보내기, 영구 삭제
+- Explorer 문서 목록 읽기 API (`GET .../wiki/documents`)
+- 호출별 지연·토큰 계측 (`logs/llm_latency.jsonl`)
 - `babe_university` 5개 시나리오
 - Graph/Wiki 대화와 usernote namespace 분리
 - `GraphRAG Chat`을 통한 실제 LLM 테스트 경로
 
 ## 아직 없는 범위
 
-- 적용된 과거 commit의 inverse patch, 3-way merge와 사용자 선택 복구
 - 파일 watcher와 변경 알림 stream
 - ID, link, backlink, 전문·임베딩 검색 index
-- Actor별 private memory와 secret 권한
-- Markdown World Editor와 Wiki Explorer
-- commit diff와 수동 편집 이력
-- Event·Memory·Goal·Item·Secret 신규 문서 생성을 위한 `CreateDocument`
-- needs, schedule, social, reputation, personality 등 Graph 장기 시스템 parity
-- 장기 플레이 품질·비용 측정
-- 독립 저장소 승격
+- 저장소 수준의 문서 생성·이름 변경·보관 API
+- Markdown World Editor와 Wiki Explorer UI (문서 tree, diff, 시점 복원)
+- 누적 Event·Memory의 압축·통합 정책
+- Updater 지연 최적화. 현재 updater 호출은 Actor 스트림의 `complete` 앞을
+  막고 있고 실측 중앙값이 42초다. 생성 토큰의 80%가 thinking이며
+  `thinking_level`을 지정하지 않아 모델 기본값으로 동작한다.
+- 20턴 이상 실제 장기 플레이의 품질·비용 실측
+- Kuzu 비의존 독립 실행 진입점과 별도 저장소 승격
 
 구현 우선순위는 [[TODO#WikiRAG 다음 마일스톤]]에서 관리한다.

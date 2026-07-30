@@ -77,6 +77,7 @@ SHA-256 snapshot을 고정한다. 같은 일상 장면에서 사용자 입력과
 | `organizations/*.md` | 기관 목적, 운영 리듬, 역할, 문화와 구성원 |
 | `prose.md` | 해당 작품에서만 달라지는 장르 감각·대화 관습·생활 장면 작법 |
 | `scenario.md` | 현재 관계와 사건에만 적용되는 사실·톤·묘사 규정 |
+| `scenes/*.md` | 해당 장면 종류에서만 달라지는 진행 순서·감각 초점·물리·대화·리듬 제약 |
 
 한 사실을 요약본과 상세본으로 여러 문서에 반복하지 않는다. 장면 종결, 범용
 POV, 감정 표시, NPC 주체성과 친밀 장면의 공통 계약은 PromptBuilder가 소유한다.
@@ -95,11 +96,21 @@ Prompt 조립 전에는 실제 asset이 있는 8개 key로 정규화한다. `vul
 0-byte asset은 장면 목표, 연속성, 과잉 전개 방지, 열린 종결 규칙을 가진 공용
 Markdown으로 채웠다. `intimate`는 기존 전용 Genre overlay도 함께 사용한다.
 
+Wiki 월드는 `worlds/<world_id>/scenes/<scene_type>.md`로 월드 공통 장면 규정을,
+`scenarios/<scenario_id>/scenes/<scene_type>.md`로 선택 상황 전용 override를 둘 수
+있다. 같은 key는 시나리오 문서가 월드 문서를 교체하며 둘 다 없을 때만 공용
+PromptBuilder asset으로 fallback한다. 각 문서의 `description`은 공용 분류 목록에
+합쳐지므로 `altered`처럼 Wiki 월드만 가진 key도 분류 대상이 된다.
+
+분류와 선택에 쓰인 경로, ID, `scene_type`, `description`은 prompt에 넣지 않는다.
+활성 key의 독립 Markdown 본문만 Dynamic XML wrapper 안에 들어가며, 비활성 문서와
+같은 key의 가려진 월드 문서는 읽기 결과에 포함되지 않는다.
+
 ## Dynamic
 
 순서:
 
-1. 현재 header와 scene-specific prompt
+1. 현재 header와 선택된 Wiki world/scenario scene-specific prompt. 없으면 공용 prompt
 2. 현재 `scene/current.md`
 3. thread character의 `현재 상태`. `Reproductive State`는 이 블록에서 통째로 제거한다. 주기 정보는 활성 Actor 캐릭터의 정본에서 뽑아 공용 checklist의 `CYCLE:` 한 줄로만 전달하며, 정수 대신 국면과 `pregnancy_risk`만 노출한다(Graph와 동일한 `_cycle_status` 경로를 재사용하고 국면·임신 단계 표를 복제하지 않는다). 정본과 `updater_documents`는 손대지 않는다
 4. actor visibility를 가진 기타 상태 문서. Memory·Relationship·Goal·Item은 `owner`가 현재 Actor profile과 일치하고, Secret은 현재 Actor가 owner 또는 knower인 문서만 포함

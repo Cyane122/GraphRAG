@@ -45,6 +45,7 @@ from src.wiki import (
     apply_pending_wiki_commit,
     build_wiki_prompt_bundle,
     get_wiki_thread_runtime_status,
+    read_wiki_scene_descriptions,
 )
 from src.wiki.models import WikiDocument
 from src.wiki.secret_guard import find_hidden_secret_leaks
@@ -256,7 +257,17 @@ async def stream_wiki_turn(
 
     yield {"type": "status", "content": "최신 Wiki 문서를 읽고 프롬프트를 조립하는 중입니다."}
     setup = _setup_from_state(state)
-    scene_types = await classify_scene_types(content, recent_story)
+    scene_descriptions = await asyncio.to_thread(
+        read_wiki_scene_descriptions,
+        WIKI_VAULT_ROOT,
+        setup.world_id,
+        setup.scenario_id,
+    )
+    scene_types = await classify_scene_types(
+        content,
+        recent_story,
+        scene_descriptions,
+    )
     bundle = await asyncio.to_thread(
         build_wiki_prompt_bundle,
         WIKI_VAULT_ROOT,
@@ -354,6 +365,7 @@ async def stream_wiki_turn(
         update_error = ""
         pending_commit_id = None
         try:
+            settings = load_settings()
             update_result = await update_accepted_turn(
                 WikiTurnUpdateRequest(
                     vault_root=Path(WIKI_VAULT_ROOT),
@@ -361,17 +373,18 @@ async def stream_wiki_turn(
                     user_input=content,
                     actor_response=full_response,
                     model_name=MODEL_PRO_UPDATER,
-                max_attempts=3,
-                player_profile_id=setup.pc_id,
-                actor_profile_id=setup.npc_id,
-                user_message_id=user_message.id,
-                assistant_message_id=assistant_message.id,
-                wiki_systems=resolve_wiki_systems(
-                    state.wiki_system_overrides,
-                    wiki_system_defaults(),
+                    max_attempts=3,
+                    player_profile_id=setup.pc_id,
+                    actor_profile_id=setup.npc_id,
+                    user_message_id=user_message.id,
+                    assistant_message_id=assistant_message.id,
+                    thinking_level=settings.wiki_updater_thinking_level,
+                    wiki_systems=resolve_wiki_systems(
+                        state.wiki_system_overrides,
+                        wiki_system_defaults(),
+                    ),
                 ),
             )
-        )
             pending = update_result.pending_wiki_commit
             if pending is None:
                 raise RuntimeError("Wiki Updater returned no pending commit")

@@ -54,6 +54,7 @@ class WikiTurnUpdateRequest(BaseModel):
     actor_profile_id: str = ""
     user_message_id: str | None = None
     assistant_message_id: str | None = None
+    thinking_level: str | None = None
     wiki_systems: dict[str, bool] | None = None
 
 

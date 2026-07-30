@@ -87,6 +87,7 @@ async def update_accepted_turn(
         actor_profile_id=request.actor_profile_id,
         user_message_id=request.user_message_id,
         assistant_message_id=request.assistant_message_id,
+        thinking_level=request.thinking_level,
         debug_root=(
             request.vault_root
             / "threads"

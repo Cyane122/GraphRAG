@@ -44,6 +44,7 @@
 #   - WikiAuditBaseline : thread canonical Markdown baseline
 #   - WikiManualAuditResult : 외부 Markdown 편집 감사 결과
 #   - WikiPromptBundle : 기존 PromptBuilder가 조립한 Wiki Actor prompt
+#   - WikiScenePromptAsset : 장면 분류 설명과 Actor용 Markdown을 묶은 정적 씬 프롬프트
 #   - WikiPromptContractError : Actor prompt의 메타데이터·세그먼트 경계 위반 예외
 #   - WikiInverseConflict : inverse와 수동 편집이 겹친 section 비교 자료
 #   - WikiInversePlan : applied commit의 inverse 계획 또는 적용 결과
@@ -51,7 +52,7 @@
 # Functions
 #   - apply_section_patches(document: WikiDocument, patches: list[SectionPatch]) -> str : 섹션 패치를 메모리에서 검증·적용합니다.
 #   - document_revision(content: str) -> str : Markdown content revision을 계산합니다.
-#   - plan_pending_commit(documents: list[WikiDocument], user_input: str, actor_response: str, model_name: str, max_attempts: int = 3, player_profile_id: str = "", actor_profile_id: str = "", user_message_id: str | None = None, assistant_message_id: str | None = None, debug_root: Path | None = None) -> PendingWikiCommit : 출처 권한을 검증하고 선택적으로 시도별 진단 자료를 남기는 Wiki commit 계획을 생성합니다.
+#   - plan_pending_commit(documents: list[WikiDocument], user_input: str, actor_response: str, model_name: str, max_attempts: int = 3, player_profile_id: str = "", actor_profile_id: str = "", user_message_id: str | None = None, assistant_message_id: str | None = None, thinking_level: str | None = None, debug_root: Path | None = None) -> PendingWikiCommit : 출처 권한을 검증하고 선택적으로 시도별 진단 자료를 남기는 Wiki commit 계획을 생성합니다.
 #   - parse_frontmatter(content: str) -> WikiMetadata | None : YAML frontmatter를 검증해 반환합니다.
 #   - parse_markdown_sections(content: str) -> dict[tuple[str, ...], MarkdownSection] : Markdown 섹션 경로를 파싱합니다.
 #   - render_wiki_template(template_name: str, values: Mapping[str, str]) -> str : Markdown 문서 템플릿을 렌더링합니다.
@@ -60,6 +61,7 @@
 #   - initialize_wiki_conversation(vault_root: Path, world_id: str, scenario_id: str, thread_id: str) -> WikiConversationSetup : Wiki thread를 초기화합니다.
 #   - get_wiki_thread_runtime_status(vault_root: Path, thread_id: str) -> WikiThreadRuntimeStatus : thread 런타임 세대를 진단합니다.
 #   - resolve_wiki_opening_scene(vault_root: Path, world_id: str, scenario_id: str) -> str : 첫 장면 원문을 반환합니다.
+#   - read_wiki_scene_descriptions(vault_root: Path, world_id: str, scenario_id: str) -> dict[str, str] : 공용 분류 설명에 Wiki 전용 scene key를 합칩니다.
 #   - build_wiki_prompt_bundle(vault_root: Path, setup: WikiConversationSetup, user_input: str, recent_story: str = "", turn_ooc_directives: str = "") -> WikiPromptBundle : PromptBuilder로 Wiki prompt를 조립합니다.
 #   - validate_wiki_prompt_bundle(bundle: WikiPromptBundle) -> None : 컴파일된 Actor prompt의 메타데이터·세그먼트 계약을 검증합니다.
 #   - apply_pending_wiki_commit(vault_root: Path, thread_id: str) -> PendingWikiCommit | None : 다음 입력 직전 Wiki commit을 적용합니다.
@@ -77,7 +79,11 @@
 
 from src.wiki.commit import PendingCommitExists, WikiCommitError, WikiCommitQueue
 from src.wiki.commit_planner import WikiCommitPlanningError, plan_pending_commit
-from src.wiki.context import WikiContextError, get_wiki_thread_runtime_status
+from src.wiki.context import (
+    WikiContextError,
+    get_wiki_thread_runtime_status,
+    read_wiki_scene_descriptions,
+)
 from src.wiki.diagnostics import WikiDiagnostic, diagnose_wiki_scope
 from src.wiki.explorer import WikiDocumentSummary, list_wiki_documents
 from src.wiki.recall import estimate_recall_tokens, select_recall_documents
@@ -115,6 +121,7 @@ from src.wiki.models import (
     WikiConversationSetup,
     WikiMetadata,
     WikiPromptBundle,
+    WikiScenePromptAsset,
     WikiScaffoldResult,
     WikiThreadRuntimeStatus,
     WikiThreadMigrationPlan,
@@ -188,6 +195,7 @@ __all__ = [
     "WikiMetadata",
     "WikiPathError",
     "WikiPromptBundle",
+    "WikiScenePromptAsset",
     "WikiPromptContractError",
     "WikiRevisionConflict",
     "WikiScaffoldError",
@@ -212,6 +220,7 @@ __all__ = [
     "plan_manual_edit_audit",
     "ensure_audit_baseline",
     "refresh_audit_baseline",
+    "read_wiki_scene_descriptions",
     "initialize_wiki_conversation",
     "parse_frontmatter",
     "parse_markdown_sections",

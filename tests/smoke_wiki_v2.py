@@ -7,7 +7,7 @@
 #   - _generate_with_one_retry(document: WikiDocument) -> PendingWikiCommit : 첫 실패 뒤 유효한 Updater 결과를 반환합니다.
 #   - _check_retry_exhaustion(document: WikiDocument) -> None : 모든 Updater 시도 실패 시 예외와 시도별 원문 진단 자료를 검증합니다.
 #   - _expect_update_rejected(documents: list[WikiDocument], payload: dict, user_input: str, actor_response: str, player_profile_id: str = "", actor_profile_id: str = "") -> None : 정책 위반 Updater 결과가 거부되는지 검증합니다.
-#   - _check_update_policy(character: WikiDocument, scene: WikiDocument) -> None : 플레이어 출처·정적 섹션·장면·관계 원자성 정책을 검증합니다.
+#   - _check_update_policy(character: WikiDocument, scene: WikiDocument) -> None : 플레이어 출처·정적 섹션·장면·관계 원자성·event/memory patch 금지 정책을 검증합니다.
 #   - _check_accepted_header_sync(scene: WikiDocument) -> None : accepted 헤더의 시간·장소 hard guard와 결정적 scene patch를 검증합니다.
 #   - _generate_event_creation(character: WikiDocument, scene: WikiDocument) -> PendingWikiCommit : 검증된 durable event 신규 문서 commit을 만듭니다.
 #   - _generate_goal_creation(character: WikiDocument) -> PendingWikiCommit : owner=Actor인 durable goal 신규 문서 commit을 만듭니다.
@@ -1184,12 +1184,28 @@ async def _check_update_policy(
     character: WikiDocument,
     scene: WikiDocument,
 ) -> None:
-    """플레이어 출처, 정적 섹션, 장면 원자성과 활동 정본 정책을 검증합니다."""
+    """플레이어 출처, 정적 섹션, 장면 원자성, event/memory patch 금지를 검증합니다."""
     event = WikiDocument(
         path="events/existing-outage.md",
         revision=document_revision(_EVENT_DOCUMENT),
         content=_EVENT_DOCUMENT,
         metadata=parse_frontmatter(_EVENT_DOCUMENT),
+    )
+    memory_content = (
+        "---\nid: memory:existing-outage-memory\ntype: memory\nschema_version: 1\n"
+        "thread_id: thread_001\nowner: character_profile:character_a\n"
+        "visibility: [actor, updater]\ncreated_at: 2026-07-21T00:00:00+00:00\n---\n"
+        "# Character A Remembers the Outage\n\n## 주관적 기억\n\n### 기억하는 내용\n\n"
+        "- 기억 내용: 정전이 갑자기 찾아왔다.\n\n### 해석과 감정\n\n"
+        "- 해석: 누군가 일부러 전원을 끊었을지도 모른다.\n- 감정: 불안하다.\n\n"
+        "### 확신과 왜곡 가능성\n\n- 확신: 정전이 있었다는 사실에는 높음.\n"
+        "- 왜곡 가능성: 시간이 지나면 원인을 더 음모처럼 기억할 수 있다.\n"
+    )
+    memory = WikiDocument(
+        path="memories/existing-outage-memory.md",
+        revision=document_revision(memory_content),
+        content=memory_content,
+        metadata=parse_frontmatter(memory_content),
     )
     npc_content = (
         _CHARACTER_DOCUMENT
@@ -1232,6 +1248,65 @@ async def _check_update_policy(
         player_profile_id="character_profile:character_a",
     )
 
+    multiple_events_payload = {
+        "summary": "서로 다른 두 사건 생성",
+        "patches": [],
+        "creations": [{
+            "document_type": "event",
+            "document_id": "event:library-confession",
+            "title": "Library Confession",
+            "occurred_at": "2026-07-23 13:05",
+            "location": "대학 도서관 복도",
+            "participants": ["캐릭터 A", "NPC"],
+            "witnesses": [],
+            "facts": ["NPC confessed a hidden feeling to Character A in the library hallway."],
+            "direct_results": ["The confession changes how both participants must address the relationship."],
+            "lasting_effects": ["The confession becomes a durable reference point between them."],
+            "evidence": "NPC는 도서관 복도에서 캐릭터 A에게 오래 숨겨 온 마음을 고백했다.",
+            "evidence_source": "actor_response",
+            "confidence": 0.94,
+        }, {
+            "document_type": "event",
+            "document_id": "event:student-council-fight",
+            "title": "Student Council Office Fight",
+            "occurred_at": "2026-07-23 13:05",
+            "location": "학생회실",
+            "participants": ["학생회 간부 둘"],
+            "witnesses": [],
+            "facts": ["A separate fight broke out in the student council office over missing budget papers."],
+            "direct_results": ["The office was locked down while staff separated the participants."],
+            "lasting_effects": ["The missing papers dispute now blocks routine office access."],
+            "evidence": "같은 시각 학생회실에서는 사라진 예산 서류 때문에 몸싸움이 벌어졌다.",
+            "evidence_source": "actor_response",
+            "confidence": 0.93,
+        }],
+    }
+    multiple_events_model = Mock()
+    multiple_events_model.generate_content_async = AsyncMock(
+        return_value=SimpleNamespace(
+            text=json.dumps(multiple_events_payload, ensure_ascii=False)
+        )
+    )
+    with patch("src.wiki.commit_planner.get_model", return_value=multiple_events_model):
+        multiple_events_pending = await plan_pending_commit(
+            documents=[character, scene],
+            user_input="상황을 지켜본다.",
+            actor_response=(
+                "NPC는 도서관 복도에서 캐릭터 A에게 오래 숨겨 온 마음을 고백했다. "
+                "같은 시각 학생회실에서는 사라진 예산 서류 때문에 몸싸움이 벌어졌다."
+            ),
+            model_name="test-updater",
+            max_attempts=1,
+            actor_profile_id="character_profile:character_a",
+        )
+    assert len(multiple_events_pending.creations) == 2
+    assert {
+        creation.document for creation in multiple_events_pending.creations
+    } == {
+        "events/library-confession.md",
+        "events/student-council-fight.md",
+    }
+
     actor_evidence_for_player_memory = {
         "summary": "Actor 근거로 플레이어 기억 생성",
         "patches": [],
@@ -1261,6 +1336,83 @@ async def _check_update_policy(
         "캐릭터 A는 정전을 수상하게 기억했다.",
         player_profile_id="character_profile:character_a",
     )
+
+    event_patch_payload = {
+        "summary": "기존 event 문서 수정",
+        "patches": [{
+            "document": event.path,
+            "base_revision": event.revision,
+            "section_path": ["사건 내용", "객관적으로 발생한 일"],
+            "replacement_markdown": (
+                "### 객관적으로 발생한 일\n\n"
+                "- 발생 내용: The outage record was rewritten after the fact."
+            ),
+            "evidence": "정전 기록을 나중에 다시 고쳐 썼다.",
+            "evidence_source": "actor_response",
+            "confidence": 0.9,
+        }],
+    }
+    event_patch_model = Mock()
+    event_patch_model.generate_content_async = AsyncMock(
+        return_value=SimpleNamespace(
+            text=json.dumps(event_patch_payload, ensure_ascii=False)
+        )
+    )
+    with patch("src.wiki.commit_planner.get_model", return_value=event_patch_model):
+        try:
+            await plan_pending_commit(
+                documents=[character, scene, event],
+                user_input="기록을 본다.",
+                actor_response="정전 기록을 나중에 다시 고쳐 썼다.",
+                model_name="test-updater",
+                max_attempts=1,
+            )
+        except WikiCommitPlanningError as exc:
+            assert "events/existing-outage.md" in str(exc)
+            assert "Gameplay updater cannot patch immutable event documents" in str(exc)
+        else:
+            raise AssertionError("Event document patch must be rejected")
+
+    memory_patch_payload = {
+        "summary": "기존 memory 문서 수정",
+        "patches": [{
+            "document": memory.path,
+            "base_revision": memory.revision,
+            "section_path": ["주관적 기억", "해석과 감정"],
+            "replacement_markdown": (
+                "### 해석과 감정\n\n"
+                "- 해석: 이제는 누군가 일부러 전원을 끊었다고 거의 확신한다.\n"
+                "- 감정: 더 강한 불안과 의심."
+            ),
+            "evidence": "정전 기억이 점점 더 수상하게 느껴진다.",
+            "evidence_source": "player_input",
+            "confidence": 0.9,
+        }],
+    }
+    memory_patch_model = Mock()
+    memory_patch_model.generate_content_async = AsyncMock(
+        return_value=SimpleNamespace(
+            text=json.dumps(memory_patch_payload, ensure_ascii=False)
+        )
+    )
+    with patch("src.wiki.commit_planner.get_model", return_value=memory_patch_model):
+        try:
+            await plan_pending_commit(
+                documents=[character, scene, event, memory],
+                user_input="정전 기억이 점점 더 수상하게 느껴진다.",
+                actor_response="캐릭터 A는 잠시 침묵했다.",
+                model_name="test-updater",
+                max_attempts=1,
+                player_profile_id="character_profile:character_a",
+            )
+        except WikiCommitPlanningError as exc:
+            assert "memories/existing-outage-memory.md" in str(exc)
+            assert (
+                "Gameplay updater cannot patch memory documents; gated memory distortion "
+                "owns their mutable section"
+            ) in str(exc)
+        else:
+            raise AssertionError("Memory document patch must be rejected")
 
     player_from_actor_patch = {
         "summary": "Actor가 만든 플레이어 상태",
@@ -1847,6 +1999,8 @@ def _check_scaffolds(root: Path) -> None:
         "PROFILE_ID": "character_profile:sample",
         "TITLE": "예제 문서",
         "DISPLAY_NAME": "데모 월드",
+        "SCENE_TYPE": "intimate",
+        "DESCRIPTION": "Adult physical intimacy with world-specific constraints.",
         "CREATED_AT": "2026-07-21T00:00:00+00:00",
     }
     template_cases = {
@@ -1864,6 +2018,7 @@ def _check_scaffolds(root: Path) -> None:
         "scenario_opening_scene.md": ("scenario", ("DOCUMENT_ID", "WORLD_ID", "CREATED_AT"), "world_id"),
         "scenario_start_state.md": ("scenario", ("DOCUMENT_ID", "WORLD_ID", "CREATED_AT"), "world_id"),
         "scene.md": ("scene", ("DOCUMENT_ID", "THREAD_ID", "WORLD_ID", "TITLE", "CREATED_AT"), "thread_id"),
+        "scene_prompt.md": ("scene_prompt", ("DOCUMENT_ID", "WORLD_ID", "SCENE_TYPE", "DESCRIPTION", "TITLE", "CREATED_AT"), "world_id"),
         "secret.md": ("secret", ("DOCUMENT_ID", "THREAD_ID", "OWNER_ID", "TITLE", "CREATED_AT"), "thread_id"),
         "thread.md": ("thread", ("DOCUMENT_ID", "WORLD_ID", "TITLE", "CREATED_AT"), "world_id"),
         "world.md": ("world", ("DOCUMENT_ID", "DISPLAY_NAME", "CREATED_AT"), None),
@@ -1875,6 +2030,7 @@ def _check_scaffolds(root: Path) -> None:
         document_ids = {
             "prose": "world:demo_world:prose",
             "scene": "thread:thread_001:scene:sample",
+            "scene_prompt": "scene_prompt:demo_world:intimate",
             "thread": "thread:thread_001",
             "world": "world:demo_world",
         }
@@ -1905,7 +2061,7 @@ def _check_scaffolds(root: Path) -> None:
         rendered = render_case(template_name)
         metadata = parse_frontmatter(rendered)
         assert metadata is not None and metadata.type == expected_type
-        if template_name == "scenario_opening_scene.md":
+        if template_name in {"scenario_opening_scene.md", "scene_prompt.md"}:
             expected_visibility = ["actor", "player"]
         elif expected_type == "memory":
             expected_visibility = ["actor", "updater"]
@@ -1929,6 +2085,9 @@ def _check_scaffolds(root: Path) -> None:
                 all_values["PARTICIPANT_A_ID"],
                 all_values["PARTICIPANT_B_ID"],
             ]
+        if expected_type == "scene_prompt":
+            assert metadata.model_extra["scene_type"] == all_values["SCENE_TYPE"]
+            assert metadata.model_extra["description"] == all_values["DESCRIPTION"]
         assert parse_markdown_sections(rendered)
 
     scenario_template = render_case("scenario.md")

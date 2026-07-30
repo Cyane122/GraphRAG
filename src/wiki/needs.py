@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 
-from src.simulation.state.apply.time_plan import parse_prose_header_datetime
+from src.simulation.prose_headers import parse_prose_header_datetime
 from src.simulation.systems.needs.models import NEED_BASE_RATES, NEED_DEFAULTS
 from src.wiki.context import scene_datetime_and_location
 from src.wiki.markdown import document_revision, parse_markdown_sections
