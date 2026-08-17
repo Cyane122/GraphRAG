@@ -12,6 +12,7 @@
 #   - _opening_tag_sequence(prompt: str) -> tuple[str, ...] : Prompt segment의 opening tag 순서를 구조 fingerprint로 정규화합니다.
 #   - _prompt_structure_snapshot(fixed_prompt: str, genre_prompt: str, dynamic_prompt: str) -> dict[str, tuple[str, ...]] : Fixed/Genre/Dynamic 구조 fingerprint를 반환합니다.
 #   - _report_prompt_content_snapshot(scenario_id: str, prompt_snapshot: dict[str, str]) -> None : authored prose drift 진단용 content hash를 출력합니다.
+#   - _assert_world_prompt_additions(vault_root: Path) -> None : Wiki cot_append와 blacklist 상속·조립을 검증합니다.
 #   - _run() -> None : 임시 vault에서 Wiki 런타임 전체 흐름을 검증합니다.
 # ================================
 
@@ -46,6 +47,7 @@ import src.apps.app.wiki_controls as wiki_controls
 import src.apps.app.wiki_message_ops as wiki_message_ops
 import src.apps.app.wiki_service as wiki_service
 import src.wiki as wiki_package
+from src.wiki.context import scene_datetime_and_location
 from src.wiki.markdown import document_revision, parse_markdown_sections
 from src.wiki.document_creation import prepare_created_document
 from src.wiki.models import (
@@ -363,6 +365,47 @@ async def _identity_repair(
     return full_response
 
 
+def _assert_world_prompt_additions(vault_root: Path) -> None:
+    """Wiki prompt 추가문의 시나리오 override와 월드 fallback을 검증합니다."""
+    world_root = vault_root / "worlds" / "babe_university"
+    world_cot = "- WIKI_WORLD_COT_SENTINEL"
+    scenario_cot = "- WIKI_SCENARIO_COT_SENTINEL"
+    world_blacklist = "- WIKI_WORLD_BLACKLIST_SENTINEL"
+    (world_root / "cot_append.md").write_text(world_cot, encoding="utf-8")
+    (world_root / "blacklist.md").write_text(world_blacklist, encoding="utf-8")
+    scenario_cot_path = world_root / "scenarios" / "lover" / "cot_append.md"
+    scenario_cot_path.write_text(scenario_cot, encoding="utf-8")
+    setup = initialize_wiki_conversation(
+        vault_root,
+        "babe_university",
+        "lover",
+        "prompt_additions_smoke",
+    )
+
+    overridden = build_wiki_prompt_bundle(
+        vault_root,
+        setup,
+        "테스트 입력",
+        scene_types=["daily"],
+    )
+    assert overridden.fixed_prompt.count(world_blacklist) == 1
+    assert overridden.dynamic_prompt.count(scenario_cot) == 1
+    assert world_cot not in overridden.dynamic_prompt
+
+    scenario_cot_path.unlink()
+    inherited = build_wiki_prompt_bundle(
+        vault_root,
+        setup,
+        "테스트 입력",
+        scene_types=["daily"],
+    )
+    assert inherited.dynamic_prompt.count(world_cot) == 1
+    assert scenario_cot not in inherited.dynamic_prompt
+    (world_root / "cot_append.md").unlink()
+    (world_root / "blacklist.md").unlink()
+    shutil.rmtree(vault_root / "threads" / "prompt_additions_smoke")
+
+
 async def _run() -> None:
     """임시 vault에서 생성, 조립, queue와 다음 입력 적용을 순서대로 검증합니다."""
     temporary_root = Path(tempfile.mkdtemp(prefix="wiki_runtime_"))
@@ -387,6 +430,11 @@ async def _run() -> None:
             Path("wiki_v2/worlds/babe_university"),
             vault_root / "worlds" / "babe_university",
         )
+        _assert_world_prompt_additions(vault_root)
+        parsed_scene_time, _location = scene_datetime_and_location(
+            "- 2026년 5월 22일 금요일, 07시 20분. 전세버스 내부이다."
+        )
+        assert parsed_scene_time == datetime(2026, 5, 22, 7, 20)
         store = ConversationStore(temporary_root / "data" / "threads")
         app_runtime.WIKI_VAULT_ROOT = vault_root
         app_service.WIKI_VAULT_ROOT = vault_root
@@ -1129,6 +1177,32 @@ async def _run() -> None:
             for message in deleted["messages"]
         )
         assert not (thread_root / "commit.md").exists()
+
+        no_commit_thread_id = "delete_without_applied_commit"
+        (vault_root / "threads" / no_commit_thread_id / "commits").mkdir(parents=True)
+        no_commit_state = ConversationState(
+            thread_id=no_commit_thread_id,
+            world_mode="wiki",
+            world_id="babe_university",
+            wiki_update_status="applied",
+            messages=[
+                {"id": "user_without_commit", "role": "user", "content": "삭제할 입력"},
+                {
+                    "id": "assistant_without_commit",
+                    "role": "assistant",
+                    "content": "삭제할 응답",
+                    "parent_user_id": "user_without_commit",
+                },
+            ],
+        )
+        no_commit_deleted = wiki_message_ops.delete_wiki_message(
+            no_commit_state,
+            "assistant_without_commit",
+            store,
+        )
+        assert [message["id"] for message in no_commit_deleted["messages"]] == [
+            "user_without_commit"
+        ]
     finally:
         shutil.rmtree(temporary_root)
 

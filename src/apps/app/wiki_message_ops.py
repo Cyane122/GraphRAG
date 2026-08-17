@@ -1,14 +1,14 @@
 # ================================
 # src/apps/app/wiki_message_ops.py
 #
-# Wiki 대화의 최신 미반영 메시지 리롤·수정·버전 선택·삭제를 처리합니다.
+# Wiki 대화의 최신 메시지 리롤·수정·버전 선택·삭제와 적용 상태 복구를 처리합니다.
 #
 # Functions
 #   - rebuild_wiki_derived_state(state: ConversationState) -> None : 현재 메시지에서 Actor history, recent story와 preview를 다시 만듭니다.
 #   - reroll_wiki_assistant(state: ConversationState, assistant_id: str, store: ConversationStore, actor_model: str | None = None) -> dict : 최신 Wiki 응답을 다시 생성합니다.
 #   - edit_wiki_message(state: ConversationState, message_id: str, content: str, store: ConversationStore, actor_model: str | None = None) -> dict : 최신 Wiki 메시지를 수정하고 변경안을 다시 생성합니다.
 #   - activate_wiki_variant(state: ConversationState, message_id: str, version_index: int, store: ConversationStore) -> dict : 최신 Wiki 응답의 저장 버전을 활성화합니다.
-#   - delete_wiki_message(state: ConversationState, message_id: str, store: ConversationStore) -> dict : 최신 Wiki 메시지와 미반영 변경안을 삭제합니다.
+#   - delete_wiki_message(state: ConversationState, message_id: str, store: ConversationStore) -> dict : 최신 Wiki 메시지와 연결된 변경 상태를 삭제합니다.
 # ================================
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ from src.apps.app.wiki_service import (
 from src.config import MODEL_PRO_UPDATER, wiki_system_defaults
 from src.simulation.state.models import WikiTurnUpdateRequest
 from src.simulation.state.updater import update_accepted_turn
-from src.wiki import WikiCommitQueue, WikiStore
+from src.wiki import WikiCommitError, WikiCommitQueue, WikiStore
 
 
 _MAX_HISTORY_TURNS = 10
@@ -115,12 +115,17 @@ def _inverse_latest_applied_pair(
     if assistant_message.wiki_commit_id:
         source = queue.load_archive(assistant_message.wiki_commit_id)
     else:
-        source = queue.find_applied_turn_commit(
-            user_input=user_message.content,
-            actor_response=assistant_message.content,
-            user_message_id=user_message.id,
-            assistant_message_id=assistant_message.id,
-        )
+        try:
+            source = queue.find_applied_turn_commit(
+                user_input=user_message.content,
+                actor_response=assistant_message.content,
+                user_message_id=user_message.id,
+                assistant_message_id=assistant_message.id,
+            )
+        except WikiCommitError as exc:
+            if str(exc) != "Applied Wiki commit for the message pair was not found":
+                raise
+            return None
         assistant_message.wiki_commit_id = source.commit_id
     result = queue.apply_inverse(source.commit_id)
     if result.status == "already_reverted":
@@ -412,7 +417,7 @@ def delete_wiki_message(
     message_id: str,
     store: ConversationStore,
 ) -> dict:
-    """최신 미반영 Wiki 메시지를 삭제하고 연결된 변경안을 건너뜁니다."""
+    """최신 Wiki 메시지를 삭제하고 연결된 적용·미반영 변경을 정리합니다."""
     message = next(
         (candidate for candidate in state.messages if candidate.id == message_id),
         None,

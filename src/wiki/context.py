@@ -8,11 +8,13 @@
 #
 # Functions
 #   - _document_title(document: WikiDocument) -> str : Markdown H1 표시 제목을 반환합니다.
+#   - _scenario_character_allowlist(document: WikiDocument) -> list[str] | None : scenario.md의 world-level character allowlist를 검증해 반환합니다.
+#   - _validate_character_profile_id(value: str, field: str) -> str : scenario frontmatter의 character_profile ID 형식을 검증합니다.
 #   - _materialize_primary_relationship(store: WikiStore, setup: WikiConversationSetup, created_at: str) -> None : 활성 Actor 관점 관계 변화 문서를 생성합니다.
 #   - initialize_wiki_thread(vault_root: Path, world_id: str, scenario_id: str, thread_id: str) -> WikiConversationSetup : 새 Wiki thread와 초기 문서를 생성합니다.
 #   - get_wiki_thread_runtime_status(vault_root: Path, thread_id: str) -> WikiThreadRuntimeStatus : 현재 런타임 생성 thread와 이전 형식 thread를 구분합니다.
 #   - load_wiki_setup(vault_root: Path, world_id: str, scenario_id: str, thread_id: str) -> WikiConversationSetup : 런타임 메타데이터와 첫 장면을 읽습니다.
-#   - read_wiki_actor_assets(vault_root: Path, world_id: str, scenario_id: str) -> list[WikiDocument] : Fixed prompt용 world 문서를 읽습니다.
+#   - read_wiki_actor_assets(vault_root: Path, world_id: str, scenario_id: str) -> list[WikiDocument] : Fixed prompt용 world 문서와 선택 prompt 추가문을 읽습니다.
 #   - read_wiki_scene_prompt_assets(vault_root: Path, world_id: str, scenario_id: str, scene_types: list[str] | None = None) -> list[WikiScenePromptAsset] : 월드 씬 프롬프트에 시나리오 override를 적용해 읽습니다.
 #   - read_wiki_scene_descriptions(vault_root: Path, world_id: str, scenario_id: str) -> dict[str, str] : 공용 분류 설명에 Wiki 전용 scene key를 합칩니다.
 #   - read_wiki_thread_documents(vault_root: Path, thread_id: str) -> list[WikiDocument] : Actor와 Updater가 사용할 thread 문서를 읽습니다.
@@ -43,12 +45,13 @@ _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _FRONTMATTER_RE = re.compile(r"\A---\r?\n.*?\r?\n---\r?\n?", re.DOTALL)
 _H1_RE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
 _VALID_POV_MODES = {"1p_user", "1p_char", "3p_user", "3p_char"}
+_CHARACTER_PROFILE_PREFIX = "character_profile:"
 _THREAD_RUNTIME_MARKER = ".wikirag-runtime.json"
 _THREAD_RUNTIME_FORMAT_VERSION = 1
 _SCENE_TYPE_CATALOG_PATH = Path(__file__).with_name("prompts") / "scene_types.json"
 _KOREAN_DATETIME_RE = re.compile(
     r"(?P<year>\d{4})년\s*(?P<month>\d{1,2})월\s*(?P<day>\d{1,2})일"
-    r"(?:\s+[^,\n]*요일)?\s*(?P<period>오전|오후|저녁|밤|새벽)?\s*"
+    r"(?:\s+[^,\n]*요일)?\s*,?\s*(?P<period>오전|오후|저녁|밤|새벽)?\s*"
     r"(?P<hour>\d{1,2})시(?:\s*(?P<minute>\d{1,2})분)?"
 )
 _ENGLISH_DATETIME_RE = re.compile(
@@ -168,20 +171,72 @@ def _document_title(document: WikiDocument) -> str:
     return match.group(1).strip()
 
 
+def _validate_character_profile_id(value: str, field: str) -> str:
+    """scenario frontmatter에서 쓰는 character_profile ID 형식을 검증합니다."""
+    normalized = str(value or "").strip()
+    if not normalized.startswith(_CHARACTER_PROFILE_PREFIX):
+        raise WikiContextError(f"Invalid {field}: {value!r}")
+    slug = normalized.removeprefix(_CHARACTER_PROFILE_PREFIX)
+    _validate_identifier(slug, field)
+    return normalized
+
+
+def _scenario_character_allowlist(document: WikiDocument) -> list[str] | None:
+    """scenario.md의 optional characters allowlist를 검증해 반환합니다."""
+    if document.metadata is None:
+        return None
+    extra = document.metadata.model_extra or {}
+    if "characters" not in extra or extra["characters"] is None:
+        return None
+    raw_allowlist = extra["characters"]
+    if not isinstance(raw_allowlist, list):
+        raise WikiContextError("scenario characters must be a list of character_profile IDs")
+    allowlist: list[str] = []
+    for index, item in enumerate(raw_allowlist):
+        if not isinstance(item, str):
+            raise WikiContextError(
+                "scenario characters must be a list of character_profile IDs"
+            )
+        allowlist.append(
+            _validate_character_profile_id(item, f"scenario characters[{index}]")
+        )
+    return allowlist
+
+
 def _profile_documents(vault_root: Path, world_id: str, scenario_id: str) -> list[WikiDocument]:
-    """공통 및 선택 시나리오 전용 character profile을 읽습니다."""
+    """공통 profile에 scenario allowlist를 적용하고 전용 profile을 함께 읽습니다."""
     world_root = _world_root(vault_root, world_id)
     scenario_root = _scenario_root(vault_root, world_id, scenario_id)
-    paths = sorted((world_root / "characters").glob("*.md"))
-    paths.extend(sorted((scenario_root / "characters").glob("*.md")))
     store = WikiStore(world_root)
-    documents: list[WikiDocument] = []
-    for path in paths:
+    scenario = store.read_document(
+        (scenario_root / "scenario.md").relative_to(world_root).as_posix()
+    )
+    allowlist = _scenario_character_allowlist(scenario)
+    allowed_ids = set(allowlist) if allowlist is not None else None
+    world_documents: list[WikiDocument] = []
+    scenario_documents: list[WikiDocument] = []
+    available_ids: set[str] = set()
+    for path in sorted((world_root / "characters").glob("*.md")):
         document = store.read_document(path.relative_to(world_root).as_posix())
         if document.metadata is None or document.metadata.type != "character_profile":
             raise WikiContextError(f"Expected character_profile document: {path}")
-        documents.append(document)
-    return documents
+        available_ids.add(document.metadata.id)
+        if allowed_ids is None or document.metadata.id in allowed_ids:
+            world_documents.append(document)
+    for path in sorted((scenario_root / "characters").glob("*.md")):
+        document = store.read_document(path.relative_to(world_root).as_posix())
+        if document.metadata is None or document.metadata.type != "character_profile":
+            raise WikiContextError(f"Expected character_profile document: {path}")
+        available_ids.add(document.metadata.id)
+        scenario_documents.append(document)
+    if allowlist is not None:
+        missing_ids = [profile_id for profile_id in allowlist if profile_id not in available_ids]
+        if missing_ids:
+            raise WikiContextError(
+                "scenario characters references unknown profile IDs: "
+                + ", ".join(missing_ids)
+            )
+    return world_documents + scenario_documents
 
 
 def _known_scenario_ids(vault_root: Path, world_id: str) -> set[str]:
@@ -240,10 +295,9 @@ def load_wiki_setup(
         safe_world_id,
     )
     scenario = WikiStore(scenario_root).read_document("scenario.md")
+    scenario_extra = scenario.metadata.model_extra or {} if scenario.metadata is not None else {}
     scenario_pov_mode = (
-        str(getattr(scenario.metadata, "pov_mode", "") or "").strip()
-        if scenario.metadata is not None
-        else ""
+        str(scenario_extra.get("pov_mode", "") or "").strip()
     )
     if scenario_pov_mode:
         if scenario_pov_mode not in _VALID_POV_MODES:
@@ -251,6 +305,12 @@ def load_wiki_setup(
                 f"Unsupported scenario pov_mode: {scenario_pov_mode}"
             )
         pov_mode = scenario_pov_mode
+    scenario_npc_profile_id = str(scenario_extra.get("npc_profile_id", "") or "").strip()
+    if scenario_npc_profile_id:
+        npc_profile_id = _validate_character_profile_id(
+            scenario_npc_profile_id,
+            "scenario npc_profile_id",
+        )
     try:
         pc_document = by_id[pc_profile_id]
         npc_document = by_id[npc_profile_id]
@@ -473,7 +533,7 @@ def read_wiki_actor_assets(
     world_id: str,
     scenario_id: str,
 ) -> list[WikiDocument]:
-    """Fixed prompt에 사용할 공통 자산과 선택 시나리오 문서를 읽습니다."""
+    """Fixed prompt 자산과 Graph 방식의 선택 prompt 추가문을 읽습니다."""
     world_root = _world_root(vault_root, world_id)
     scenario_root = _scenario_root(vault_root, world_id, scenario_id)
     relative_paths = [Path("world.md"), Path("prose.md")]
@@ -485,6 +545,14 @@ def read_wiki_actor_assets(
     relative_paths.append(
         (scenario_root / "scenario.md").relative_to(world_root)
     )
+    cot_append_path = scenario_root / "cot_append.md"
+    if not cot_append_path.is_file():
+        cot_append_path = world_root / "cot_append.md"
+    if cot_append_path.is_file():
+        relative_paths.append(cot_append_path.relative_to(world_root))
+    blacklist_path = world_root / "blacklist.md"
+    if blacklist_path.is_file():
+        relative_paths.append(blacklist_path.relative_to(world_root))
     store = WikiStore(world_root)
     return [store.read_document(path.as_posix()) for path in relative_paths]
 

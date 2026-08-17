@@ -53,6 +53,7 @@ SHA-256 snapshot을 고정한다. 같은 일상 장면에서 사용자 입력과
 
 - `world_lore`: `world.md`, 공통 장소·조직, 선택된 관계·사건 정보, thread character의 정적 section
 - `world_specific_prose_prompt`: `prose.md`
+- `additional_blacklist`: optional `blacklist.md`
 
 제외:
 
@@ -67,6 +68,11 @@ SHA-256 snapshot을 고정한다. 같은 일상 장면에서 사용자 입력과
 `world_lore` 안에 다시 복제하지 않는다. 공용 `CORE`, `POV`, `EMOTION`,
 `STYLE`, `NPC_BEHAVIOR`가 담당하는 출력 언어·제한 시점·감정 증거·물리
 연속성·관계 변화·열린 종결 규정도 world prose에서 반복하지 않는다.
+
+월드 루트의 optional `blacklist.md`는 Graph와 같은 `additional_blacklist` 슬롯으로
+들어간다. optional `cot_append.md`는 턴 checklist의 `world_cot_append` 슬롯으로
+들어가며, 선택 시나리오의 `cot_append.md`가 있으면 월드 파일을 교체한다. 추가문은
+world lore로 직렬화하지 않고 파일 경로와 선택 과정도 prompt에 노출하지 않는다.
 
 ## 정적 문서의 정본 책임
 

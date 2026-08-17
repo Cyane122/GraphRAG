@@ -289,6 +289,14 @@ def _world_config(
     scene_prompts: list[WikiScenePromptAsset],
 ) -> dict:
     """Markdown 자산을 기존 PromptBuilder가 이해하는 world_config로 변환합니다."""
+    cot_append_document = next(
+        (document for document in assets if Path(document.path).name == "cot_append.md"),
+        None,
+    )
+    blacklist_document = next(
+        (document for document in assets if Path(document.path).name == "blacklist.md"),
+        None,
+    )
     scenario_document = next(
         document for document in assets if document.path.endswith("/scenario.md")
     )
@@ -322,6 +330,12 @@ def _world_config(
         "pov_mode": setup.pov_mode,
         "pc_name_kor": setup.pc_name,
         "npc_name_kor": setup.npc_name,
+        "world_cot_append": (
+            document_body(cot_append_document.content) if cot_append_document else ""
+        ),
+        "additional_blacklist": (
+            document_body(blacklist_document.content) if blacklist_document else ""
+        ),
         "unified_blacklist": False,
         "scene_specific_prompts": {
             asset.scene_type: _scene_prompt_body(asset)

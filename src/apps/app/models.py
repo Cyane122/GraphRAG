@@ -27,6 +27,7 @@
 #   - SimulatePregnancyRequest : Request body for simulating N internal ejaculations.
 #
 # Functions
+#   - actor_model_catalog() -> dict[str, str | list[dict[str, str]]] : Return the ordered Actor model catalog for the hosted UI.
 #   - normalize_actor_model(model_name: str | None) -> str : Return a supported Actor model id.
 #   - normalize_wiki_system_overrides(overrides: Mapping[str, object] | None) -> dict[str, bool] : 저장용 Wiki system override를 canonical bool dict로 정리합니다.
 #   - resolve_wiki_systems(overrides: Mapping[str, object] | None, defaults: Mapping[str, bool]) -> dict[str, bool] : override와 기본값을 합쳐 대화의 유효 Wiki system 표를 만듭니다.
@@ -49,7 +50,9 @@ WikiUpdateStatus = Literal["idle", "queued", "failed", "applied", "skipped"]
 
 SUPPORTED_ACTOR_MODELS = {
     "gemini-3.1-pro-preview": "Gemini 3.1 Pro Preview",
+    "gemini-3.7-flash": "Gemini 3.7 Flash",
     "gemini-3.6-flash": "Gemini 3.6 Flash",
+    "claude-opus-5": "Claude Opus 5",
     "claude-sonnet-5": "Claude Sonnet 5",
     "claude-sonnet-4-6": "Claude Sonnet 4.6",
     "claude-opus-4-6": "Claude Opus 4.6",
@@ -61,6 +64,21 @@ SUPPORTED_ACTOR_MODELS = {
 }
 DEFAULT_ACTOR_MODEL = "gemini-3.1-pro-preview"
 ACTOR_MODEL_ALIASES: dict[str, str] = {}
+
+
+def actor_model_catalog() -> dict[str, str | list[dict[str, str]]]:
+    """Return the ordered Actor model catalog for the hosted UI."""
+    models: list[dict[str, str]] = []
+    for model_id, label in SUPPORTED_ACTOR_MODELS.items():
+        provider = "Other"
+        if model_id.startswith("gemini"):
+            provider = "Gemini"
+        elif model_id.startswith("claude"):
+            provider = "Claude"
+        elif model_id.startswith("deepseek"):
+            provider = "DeepSeek"
+        models.append({"id": model_id, "label": label, "provider": provider})
+    return {"default": DEFAULT_ACTOR_MODEL, "models": models}
 
 
 def normalize_actor_model(model_name: str | None) -> str:

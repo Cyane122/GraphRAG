@@ -30,6 +30,7 @@ from fastapi.staticfiles import StaticFiles
 from src.config import HOSTED_UI_ORIGINS, WORLD_ID
 from src.apps.app.models import (
     AppSettingsRequest,
+    actor_model_catalog,
     ConversationCreateRequest,
     ConversationState,
     LocationMoveRequest,
@@ -139,6 +140,11 @@ def create_app() -> FastAPI:
     def api_worlds(world_mode: WorldMode = Query(default="graph", alias="mode")) -> dict:
         """Return selectable world/scenario profiles."""
         return {"mode": world_mode, "worlds": discover_world_profiles(world_mode)}
+
+    @app.get("/api/models")
+    def api_models() -> dict[str, str | list[dict[str, str]]]:
+        """Return the hosted UI Actor model catalog."""
+        return actor_model_catalog()
 
     @app.get("/api/console/stream")
     async def api_console_stream(

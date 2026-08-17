@@ -53,8 +53,15 @@
 - [x] 실제 LLM 격리 하네스로 `lover`·`best_friends` 1턴의 deferred canonical 불변, pending commit, apply 성공과 무의미한 Event/Memory 미생성을 검증한다.
 - [x] `amputee_fwb`·`ntr_lite`·`altered`까지 현재 5개 시나리오 실제 1턴 deferred/apply와 시나리오별 위험 경계를 검증한다.
 - [x] Updater correction prompt에 모든 이전 검증 거부 사유를 누적해 위치 중복·exact quote·section 범위 수정이 재시도 사이에서 진동하지 않게 한다.
+- [x] Secret의 공개 상태 값을 런타임 소유로 고정하고 gameplay Updater가 바꾸거나 누락시키면 거부한다. 같은 섹션의 공개 단서·오해 갱신은 계속 허용한다.
+- [x] Updater patch 본문과 생성 문서 본문이 Actor body 계약(wikilink·파일명·frontmatter 필드 금지)을 커밋 전에 통과해야 한다. 이전에는 프롬프트 조립 시점에만 검사해 잘못된 patch가 정본에 먼저 기록됐다.
+- [ ] 기존 Secret에 knower를 추가하는 경로를 설계한다. frontmatter `knowers`가 Actor 가시성의 유일한 권한인데 생성 시점에만 기록되고, `PendingWikiCommit`에는 frontmatter를 바꾸는 연산이 없다. 공개 상태만 뒤집히면 출력 가드는 열리고 knower는 얼어붙으므로 현재는 상태 변경 자체를 금지해 불일치를 막아 두었다.
 - [x] gameplay Updater의 기존 Event·Memory 문서 patch를 거부한다. 두 종류는 `creations`로만 만들고, Memory의 가변 섹션은 게이트형 왜곡 postprocessor가 소유한다.
 - [x] 한 턴이 서로 다른 참여자·장소·결과를 갖는 복수 durable Event를 생성할 수 있음을 프롬프트에 명시하고, 같은 발생의 중복 기록 금지는 유지한다.
+- [x] 여러 턴에 걸친 사건을 Event 하나로 담는다. Goal·Item·Secret의 "정체성 + 상태" 2섹션 패턴을 Event에 적용해 `## 진행 상태`만 가변으로 두고 `## 발생 정보`·`## 사건 내용`은 불변을 유지한다. 상태 기본값은 종료이며, 종료 기록의 재개방·상태 줄 누락·잘못된 값·중복은 커밋 전에 거부한다. 기존 Event 26건은 새 섹션이 없어 진행 갱신 대상이 아니다. `schema_version`은 올리지 않았다 — `migrate_document_content`가 런타임 어디에서도 호출되지 않아 마이그레이션 기구가 배선되지 않은 상태다.
+- [x] 한 턴에 서로 다른 별개 사건이 있을 때 각각 기록되도록 판별 기준과 예시를 프롬프트에 준다. 허용 규칙만으로는 실측 42건 중 0건이었다.
+- [x] 생성된 Event마다 같은 응답 안에서 `related_event_id`가 일치하는 Actor 소유 Memory를 요구한다. 프롬프트가 "모든 사건에 기억을 만들지 말라"고 지시해 사건만 남고 기억이 비는 경우가 실측에서 약 3분의 1이었다. 플레이어 소유 Memory는 Player Input에 인용 가능한 근거가 있을 때만 추가로 만들며, Actor 서술을 플레이어 기억의 근거로 대체하는 것은 계속 금지한다.
+- [x] Player Input이 플레이어 캐릭터의 신체·감정 상태를 명시하면 해당 `현재 상태` 섹션을 갱신하도록 프롬프트에 긍정 규칙을 추가한다. 금지 규칙만 있어 근거가 있어도 생략되는 쏠림이 있었고, Actor 서술이 플레이어 상태의 권한이 될 수 없다는 불변식은 그대로 유지한다.
 - [x] compiled prompt 회귀 게이트를 저작 원고 전문 해시에서 구간별 구조 fingerprint로 옮긴다. 저작 편집은 비치명적 drift 통지로 보고하고 조립 회귀만 실패시킨다.
 - [x] 매 턴 필요한 런타임 자산이 광범위 무시 규칙에 걸려 버전 관리에서 빠져 있던 문제를 수정한다.
 - [x] 임시 vault smoke 검증
@@ -268,7 +275,7 @@ wiki_v2/
 - [x] 시도별 요청·모델 원문·검증 오류를 thread 진단 폴더에 비정본 파일로 보존한다.
 - [x] NPC 행동의 대상인 플레이어 언급과 플레이어 주체 행동을 구분한다.
 - [x] 공동 이동과 `함께 가자` 같은 제안을 구분하고 scene H2 legacy 별칭을 안전하게 정규화한다.
-- [ ] 허용되지 않은 비밀 공개와 존재하지 않는 링크를 검사한다.
+- [x] 허용되지 않은 비밀 공개와 존재하지 않는 링크를 검사한다. 공개 상태 변경은 거부하고, patch·생성 본문의 wikilink는 커밋 전에 거부하며, Memory의 관련 Event ID는 기존 또는 같은 응답 생성분만 허용한다.
 - [x] 검증을 통과한 patch만 `commit.md`에 보관할 수 있게 한다.
 - [x] 정상 처리 시 전체 턴에 하나의 updater 호출을 사용하는 기본 함수를 만든다.
 - [x] Graph와 Wiki 앱 호출자가 동일한 mode-aware accepted-turn Updater 요청 모델을 사용한다.
@@ -376,7 +383,8 @@ wiki_v2/
 ## Phase 11 — 품질 검증과 독립 저장소 준비
 
 - [x] 문서 파서, 섹션 교체, revision, rollback을 `tests/smoke_wiki_v2.py`에서 검증한다.
-- [x] 저작된 전체 시나리오의 Fixed/Genre/Dynamic 구조 fingerprint와 Fixed cache 안정성을 `tests/smoke_wiki_runtime.py`에서 검증한다. 전문 해시는 저작 drift 진단 출력으로만 남는다.
+- [x] 기준 월드의 Fixed/Genre/Dynamic 구조 fingerprint와 Fixed cache 안정성을 `tests/smoke_wiki_runtime.py`에서 검증한다. 전문 해시는 저작 drift 진단 출력으로만 남는다. 이 게이트는 기준 월드 콘텐츠에 묶인 end-to-end 검사이므로 다른 월드로 일반화하지 않는다.
+- [x] 저작된 전체 월드·시나리오를 자동 발견해 월드 무관 prompt 계약을 `tests/smoke_wiki_world_contract.py`에서 검증한다. 경로·내부 ID·저작 placeholder 누출, 물질화되지 않은 분기 선택기, vault 자산 수와 prompt block 수 불일치를 잡는다. 월드나 시나리오를 추가해도 테스트 수정이 필요 없다.
 - [ ] 파일 감지와 동시 수정 시나리오를 검증한다.
 - [x] Actor와 updater를 포함한 장기 플레이 smoke 시나리오를 만든다. (`scripts/run_wiki_long_play.py` — 사람이 작성한 Markdown 턴 스크립트를 격리 임시 저장소에서 무인 연속 실행하고, 턴마다 생성 중 canonical 무변경(deferred) 불변식을 검증한다. LLM 없는 회귀는 `tests/smoke_wiki_long_play.py`. 다만 2026-07-26 결정으로 기본 검증 경로는 실제 플레이이며, 이 하네스는 좁은 회귀 재현용 보조 도구다.)
 - [ ] 잘못된 사실 추가, 기존 사실 누락, 비밀 누출을 평가한다. (실제 플레이 중 `commits/` archive의 section diff로 관찰하고 판정은 사람이 한다.)

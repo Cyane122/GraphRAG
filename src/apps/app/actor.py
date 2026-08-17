@@ -38,6 +38,7 @@ from src.config import (
     ANTHROPIC_CLAUDE_OPUS_4_6_MODEL,
     ANTHROPIC_CLAUDE_OPUS_4_7_MODEL,
     ANTHROPIC_CLAUDE_OPUS_4_8_MODEL,
+    ANTHROPIC_CLAUDE_OPUS_5_MODEL,
     ANTHROPIC_CLAUDE_OPUS_MODEL,
     ANTHROPIC_CLAUDE_SONNET_5_MODEL,
     ANTHROPIC_CLAUDE_SONNET_MODEL,
@@ -215,6 +216,8 @@ def _resolve_claude_model_name(model_name: str) -> str:
     lowered = model_name.lower()
     if "sonnet-5" in lowered:
         return ANTHROPIC_CLAUDE_SONNET_5_MODEL
+    if "opus-5" in lowered:
+        return ANTHROPIC_CLAUDE_OPUS_5_MODEL
     if "opus-4-6" in lowered:
         return ANTHROPIC_CLAUDE_OPUS_4_6_MODEL
     if "opus-4-7" in lowered:
@@ -239,11 +242,11 @@ def _resolve_deepseek_model_name(model_name: str) -> str:
 def _claude_sampling_kwargs(resolved_model: str) -> dict:
     """Return sampling params accepted by the resolved model.
 
-    Opus 4.7/4.8·Fable은 temperature/top_p/top_k를 보내면 400을 반환하므로 제외한다.
+    Opus 5·Opus 4.7/4.8·Fable은 temperature/top_p/top_k를 보내면 400을 반환하므로 제외한다.
     그 외(Opus 4.6·Sonnet 4.6·Sonnet 5 등)는 롤플레이 다양성을 위해 temperature=1.0을 유지한다.
     """
     lowered = resolved_model.lower()
-    if "opus-4-7" in lowered or "opus-4-8" in lowered or "fable" in lowered:
+    if "opus-5" in lowered or "opus-4-7" in lowered or "opus-4-8" in lowered or "fable" in lowered:
         return {}
     return {"temperature": 1.0}
 

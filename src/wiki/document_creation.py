@@ -118,6 +118,9 @@ def _prepare_event_document(
         "- 발생 내용:": _fact_lines("발생 내용", request.facts),
         "- 직접 결과:": _fact_lines("직접 결과", request.direct_results),
         "- 남은 영향:": _fact_lines("남은 영향", request.lasting_effects),
+        "- 상태: concluded": f"- 상태: {request.status}",
+        "- 진행 경과:": f"- 진행 경과: {request.progress}",
+        "- 종료 시각:": f"- 종료 시각: {request.conclusion_time}",
     }
     content = _replace_markers(content, replacements, "Event")
     metadata = parse_frontmatter(content)

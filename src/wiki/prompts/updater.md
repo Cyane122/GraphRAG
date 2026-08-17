@@ -31,6 +31,9 @@ The output schema is:
       "facts": ["The missing presentation files were recovered from the library workstation."],
       "direct_results": ["The submission can proceed before the deadline."],
       "lasting_effects": ["The recovered file remains available to both participants."],
+      "status": "concluded",
+      "progress": "The missing presentation files were found and the interruption ended in this turn.",
+      "conclusion_time": "2026-07-23 13:05",
       "evidence": "사라졌던 발표 파일이 도서관 컴퓨터의 임시 폴더에서 발견됐다.",
       "evidence_source": "actor_response",
       "confidence": 0.92
@@ -64,6 +67,7 @@ Rules:
 - A complete scene patch may combine NPC or environment consequences from Actor Response with a player position, action, or shared movement explicitly established by Player Input. In that case keep `evidence_source: "actor_response"` and set `player_evidence` to one exact contiguous quote from Player Input that establishes the player-side change. Otherwise use `player_evidence: null`.
 - `player_evidence` is allowed only on the complete current-scene patch. It never authorizes player emotion, belief, consent, desire, or relationship stance outside the observable scene fact it quotes.
 - Player character dialogue, action, movement, thought, sensation, emotion, decision, and current state may use `player_input` only. Actor narration is never authority for the player character.
+- When Player Input explicitly establishes the player character's physical or emotional state, patch `현재 상태 > 신체 상태와 감정 상태` with `evidence_source: "player_input"`.
 - Actor Response may establish NPC actions, NPC current state, environment, time, and consequences that do not invent player behavior.
 - A proposal, plan, question, or destination does not prove that the player moved, accepted, arrived, or completed the action.
 - Omit any change whose confidence is below 0.55.
@@ -71,8 +75,8 @@ Rules:
 - Store each durable fact in exactly one canonical home; do not repeat the same fact across documents.
 - Shared current time, place, positions, movement, activity, and immediate pressure belong only in `scene/current.md`.
 - Character documents own only that person's current physical, emotional, need, personality-ledger, and configured reproductive state.
-- Relationship documents own directional durable relationship development; Events own objective occurrences; Memories own one owner's subjective recollection and interpretation.
-- Event and Memory documents are created through `creations` only. Turn extraction never patches an existing `event` or `memory` document, so do not return a `patches` entry targeting either type.
+- Relationship documents own directional durable relationship development; Events own objective occurrences and Event progress; Memories own one owner's subjective recollection and interpretation.
+- Event and Memory documents are created through `creations`. Turn extraction may patch only an existing Event's `## 진행 상태`; `## 발생 정보`, `## 사건 내용`, and every Memory section remain read-only, so do not return a `patches` entry targeting any other Event section or any Memory document.
 - Goals own durable objectives and progress; Items own persistent object condition, storage, and access; Secrets own private truth, knowers, public clues, and exposure state.
 - When one turn affects several domains, record only each domain's distinct consequence. Use stable ID fields for supported links instead of copying another document's prose.
 - Return only changed sections. Omit unchanged documents and sections.
@@ -100,12 +104,14 @@ Rules:
 - Do not modify `thread.md`.
 - `creations` may contain only a genuinely durable event that changes later choices, access, obligations, conflict, or shared knowledge. Routine dialogue, movement, meals, affection, and momentary emotion are not events.
 - A created event ID must use `event:<stable-ascii-slug>`. Do not reuse an existing supplied document ID or create more than one record for the same occurrence.
-- One accepted turn may create several distinct Event documents when it contains separate durable occurrences with different participants, place, or consequence. Still never create two records for the same occurrence.
-- Event fields must be non-empty single lines. Write event facts in English except for Korean proper nouns, titles, dialogue, and exact source wording.
+- When an activity will plainly continue past this turn, create one Event with `status: "ongoing"`, a single-line `progress`, and an empty `conclusion_time`. Update only that Event's `## 진행 상태` on later turns, then conclude it by patching the same section to `status: "concluded"` with a filled `conclusion_time` when the activity ends. Do not create a new Event for a step already covered by an ongoing Event.
+- One accepted turn may create several distinct Event documents when it contains separate durable occurrences with different participants, place, or consequence. Successive steps of one continuing activity are not separate Events. Example: one confession in the library corridor and one fight in the student council office are two Events, but arriving, arguing, and leaving during one ongoing confrontation are one Event. Still never create two records for the same occurrence.
+- Event fields must be non-empty single lines. Use `status` (`ongoing` or `concluded`), `progress`, and `conclusion_time` for the `## 진행 상태` section. Write event facts in English except for Korean proper nouns, titles, dialogue, and exact source wording.
 - `creations[].evidence` follows the same exact-quote and player-authority rules as patches. Actor prose cannot establish a player action inside an event.
 - A memory is subjective and belongs to exactly one supplied thread character profile. Use `memory:<stable-ascii-slug>` and an exact `owner` profile ID.
-- Create a memory only for a durable perception or interpretation that is likely to affect the owner's later judgment. Do not make a memory for every event or routine exchange.
+- For every Event created in the same response, create at least one Actor-owned memory with `related_event_id` equal to that Event's `document_id`. Make it a durable subjective recollection or interpretation likely to affect the owner's later judgment, not a routine exchange or an objective restatement of the Event.
 - An Actor-owned memory requires `actor_response` evidence. A player-owned memory requires `player_input` evidence. Do not create memories for other profiles in the current turn.
+- For the same Event, also create a player-owned memory when Player Input contains a qualifying exact quote for that memory. Omit the player-owned memory when that evidence does not exist; this is normal and never a reason to fall back to Actor evidence.
 - `related_event_id` must identify an existing supplied Event or an Event created in the same response.
 - Preserve uncertainty and possible distortion explicitly. A memory is not an objective event log and must not silently gain facts its evidence does not establish.
 - `creations` may also establish a durable goal, item, or secret owned by exactly one active thread character profile. Their `owner` follows the same authority as a memory: an Actor-owned document requires `actor_response` evidence, a player-owned document requires `player_input` evidence, and no other profile may be created this turn.
@@ -113,9 +119,11 @@ Rules:
 - An item uses `document_type: "item"`, `document_id: "item:<stable-ascii-slug>"`, `owner`, and single-line fields `kind`, `appearance`, `function`, `constraint`, `storage_location`, `access_state`, `status` (available|lost|transferred|consumed|hidden), `recent_change`. Create an item only for an object that stays meaningful across turns, not disposable scenery.
 - A secret uses `document_type: "secret"`, `document_id: "secret:<stable-ascii-slug>"`, `owner`, optional `knowers` (a list of profile ids who also know the secret), and single-line fields `actual_content`, `who_knows`, `concealment`, `status` (hidden|suspected|revealed), `public_clue`, `misunderstanding`, `exposure_condition`, `exposure_result`. Create a secret only for concealed information whose exposure would change trust, choices, or access.
 - To update an existing goal, patch only its `## 진행 상태` section; for an item, only its `## 현재 상태`; for a secret, only its `## 공개 상태`. The identity sections (`## 목표 정체성`, `## 물품 정체성`, `## 비밀 정체성`) are read-only during turn extraction.
+- A secret's disclosure status line is runtime-owned: when patching `공개 상태`, copy the existing `- 상태:` line verbatim and never change it.
 - Advance a goal's `status` or step only on visible, earned progress. Most turns change no goal, and mere thoughts are not progress unless they become a concrete decision or behavior.
 - Reveal a secret (status hidden -> suspected -> revealed) only when the accepted turn shows it was actually exposed, suspected, or confessed. Routine conversation does not reveal a secret.
 - All goal, item, and secret fields must be non-empty single lines. Write them in English except for Korean proper nouns, titles, dialogue, and exact source wording.
+- Never write a `[[wikilink]]`, a Markdown filename, or a bare `key:` metadata line into `replacement_markdown` or into any created document field.
 - Do not create relationships, locations, organizations, or character documents.
 - Do not convert figurative language into physical facts.
 - Routine politeness or proximity is not a durable relationship change.

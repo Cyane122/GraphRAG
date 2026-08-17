@@ -242,6 +242,14 @@ class CreateEventDocument(_CreateDocumentBase):
     facts: list[str] = Field(min_length=1, max_length=12)
     direct_results: list[str] = Field(default_factory=list, max_length=12)
     lasting_effects: list[str] = Field(default_factory=list, max_length=12)
+    status: Literal["ongoing", "concluded"] = "concluded"
+    progress: str = Field(
+        default="The occurrence concluded in this turn.",
+        min_length=1,
+        max_length=240,
+    )
+    conclusion_time: str = Field(default="", max_length=160)
+
     @field_validator(
         "occurred_at",
         "location",
@@ -250,6 +258,7 @@ class CreateEventDocument(_CreateDocumentBase):
         "facts",
         "direct_results",
         "lasting_effects",
+        "progress",
     )
     @classmethod
     def _values_must_be_single_line(
@@ -265,6 +274,26 @@ class CreateEventDocument(_CreateDocumentBase):
         ):
             raise ValueError("CreateDocument values must be non-empty single lines")
         return normalized[0] if isinstance(value, str) else normalized
+
+    @field_validator("conclusion_time")
+    @classmethod
+    def _conclusion_time_must_be_single_line(cls, value: str) -> str:
+        """Event 종료 시각은 줄바꿈 없는 단일 행으로만 저장합니다."""
+        normalized = value.strip()
+        if "\n" in normalized or "\r" in normalized:
+            raise ValueError("CreateDocument values must be non-empty single lines")
+        return normalized
+
+    @model_validator(mode="after")
+    def _normalize_progress_fields(self) -> "CreateEventDocument":
+        """단일 턴 Event의 기본 진행 상태와 종료 시각을 정규화합니다."""
+        if self.status == "ongoing":
+            if self.conclusion_time:
+                raise ValueError("Ongoing events must leave conclusion_time empty")
+            return self
+        if not self.conclusion_time:
+            self.conclusion_time = self.occurred_at
+        return self
 
 
 class CreateMemoryDocument(_CreateDocumentBase):

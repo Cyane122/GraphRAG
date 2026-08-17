@@ -49,7 +49,7 @@ vault 계약이 바뀌면 연결된 `WikiRAG/` 문서와 `docs/wiki_v2_format.md
 | 적용된 과거 턴 변경 | 텍스트만 바뀌고 graph는 유지되는 위험한 한계 | 완료 — 최신 applied 턴은 audited inverse, 중간 과거 턴은 이후 commit을 복사본에서 역순 inverse하는 원본 보존 분기 | in-place 과거 편집을 금지하고 원본 보존 분기를 기본 정책으로 유지 | P1 |
 | 현재 장면·시각·장소 | GlobalState/DynamicState와 accepted header | 완료 | `scene/current.md` 전체 H2와 accepted header 기반 결정적 시각·장소 guard | P1 |
 | 캐릭터 현재 상태·관계 | 다단계 extractor/updater | 완료·장기 LLM 검증 필요 — 현재 5개 시나리오 실제 1턴 deferred/apply 통과 | 현재 상태 source 권한 + Actor-owner 자연어 관계 원장, append-only 보존과 과잉 변화 억제 | P1 |
-| Event·Memory 생성 | 새 graph node 생성 | 완료 — 생성 전용 계약을 강제하고 한 턴의 복수 durable Event 생성을 허용 | durable Event와 owner-private Memory `CreateDocument`, source turn/commit, inverse | P1 |
+| Event·Memory 생성 | 새 graph node 생성 | 완료 — Event마다 `related_event_id`가 일치하는 Actor 소유 Memory를 요구하고, 한 턴의 복수 durable Event 판별 기준을 명시하며, 여러 턴에 걸친 사건은 `## 진행 상태`만 가변인 단일 Event로 담음(발생 기록은 불변) | durable Event와 owner-private Memory `CreateDocument`, source turn/commit, inverse | P1 |
 | Goal·Item·Secret 생성·갱신 | 전용 시스템 | 코드 완료·실제 LLM 검증 필요 — 단일 Updater 생성·갱신·권한, Actor-visible knower-scoping, hidden/suspected 은닉 계약 구현 | 신규 문서 생성, 갱신, visibility와 공개 범위 검증 | P2 |
 | usernote·OOC | 지원 | 완료·실제 LLM 검증 필요 | 다음 prompt 반영과 상태 변경 결과 표시 | P2 |
 | 변경 이력·감사 | pending/state audit | 완료 — 자동 commit diff/hash, 진단, schema 계약, 상태 migration, baseline 기반 외부 편집 manual archive/inverse | 실시간 watcher는 P3 편의 기능으로 별도 | P2 |
@@ -116,6 +116,8 @@ vault 계약이 바뀌면 연결된 `WikiRAG/` 문서와 `docs/wiki_v2_format.md
 - [x] gameplay Updater가 기존 Event·Memory 문서를 patch하지 못하도록 차단하고, 한 턴에 서로 다른 복수 durable Event를 생성할 수 있음을 프롬프트에 명시
 - [x] compiled prompt 회귀 게이트를 버전 관리되지 않는 저작 원고 해시에서 구조 fingerprint로 분리하고, 매 턴 필요한 런타임 자산을 버전 관리에 포함
 - [x] 산문 헤더 파서를 DB 의존 모듈에서 분리해 Wiki 상태 모듈이 그래프 드라이버를 import하지 않게 정리
+- [x] Secret 공개 상태를 런타임 소유로 고정해 출력 가드만 열리고 knower는 얼어붙는 반쪽 전환을 차단
+- [x] Updater patch·생성 본문의 Actor body 계약 위반을 프롬프트 조립 시점이 아니라 커밋 전에 거부
 
 ## 즉시 검증 — 실제 LLM
 
@@ -150,7 +152,7 @@ vault 계약이 바뀌면 연결된 `WikiRAG/` 문서와 `docs/wiki_v2_format.md
 
 - [x] Sites UI에서 updater 성공·실패와 변경된 문서/section을 표시한다.
 - [x] turn debug에서 start state, 선택 문서, 세 prompt 구간을 쉽게 대조할 수 있게 한다.
-- [x] compiled prompt 계약과 저작된 전체 시나리오의 Fixed/Genre/Dynamic 구조 fingerprint 회귀 검증을 고정한다. 저작 원고 편집은 비치명적 drift 통지로만 보고한다.
+- [x] compiled prompt 계약과 Fixed/Genre/Dynamic 구조 fingerprint 회귀 검증을 고정한다. 저작 원고 편집은 비치명적 drift 통지로만 보고한다. Fingerprint baseline은 기준 월드 하나에 고정하고, 저작된 전체 월드·시나리오는 월드 무관 계약(누출 차단, 자산 수 정합, 선택기 잔재)으로 자동 발견해 검증한다.
 - [x] pending 또는 failed `commit.md`의 상태 조회·즉시 반영·재시도·건너뛰기 API를 제공한다.
 - [x] Sites UI에 Wiki commit 제어 버튼과 실패 사유·변경 section 표시를 연결한다.
 - [x] Sites UI에서 Obsidian 수동 수정 후 상태를 다시 읽는 흐름을 안내한다.

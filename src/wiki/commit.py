@@ -125,7 +125,7 @@ class WikiCommitQueue:
         user_hash = sha256(user_input.encode("utf-8")).hexdigest()
         actor_hash = sha256(actor_response.encode("utf-8")).hexdigest()
         candidates: list[PendingWikiCommit] = []
-        archive_root = self.store.resolve_path("commits")
+        archive_root = self.store.root / "commits"
         if not archive_root.is_dir():
             raise WikiCommitError("Wiki commit archive directory does not exist")
         for path in archive_root.glob("*.md"):

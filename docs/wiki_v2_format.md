@@ -11,11 +11,14 @@ wiki_v2/
 ├─ worlds/<world_id>/
 │  ├─ world.md
 │  ├─ prose.md
+│  ├─ cot_append.md
+│  ├─ blacklist.md
 │  ├─ scenes/<scene_type>.md
 │  ├─ scenarios/<scenario_id>/
 │  │  ├─ scenario.md
 │  │  ├─ start_state.md
 │  │  ├─ opening_scene.md
+│  │  ├─ cot_append.md
 │  │  └─ scenes/<scene_type>.md
 │  ├─ characters/
 │  ├─ locations/
@@ -65,6 +68,13 @@ world 프로필을 암묵적으로 되돌려 쓰지 않는다.
 PromptBuilder의 공용 장면 프롬프트를 사용한다. frontmatter의 `scene_type`은 파일명과
 일치해야 하며 `description`은 분류기가 이 key를 선택할 조건을 영어 한 문장으로
 설명한다. 이 metadata와 경로, 분류 key는 Actor prompt에 포함하지 않는다.
+
+`cot_append.md`와 `blacklist.md`는 선택적인 UTF-8 Markdown prompt 자산이며
+frontmatter를 사용하지 않는다. 월드의 `cot_append.md`는 턴별 사전 출력 checklist에
+추가되고, 선택 시나리오에 같은 파일이 있으면 월드 파일을 교체한다. 월드 루트의
+`blacklist.md`는 공용 blacklist의 world-specific 항목에 추가되며 Fixed prompt에
+정확히 한 번 들어간다. 두 파일이 없으면 공용 PromptBuilder 동작은 바뀌지 않는다.
+파일명은 Graph 월드와 같은 밑줄 표기 `cot_append.md`를 사용한다.
 
 ### 정적 문서의 정본 책임
 
@@ -233,6 +243,21 @@ Wiki 채팅이 가능한 `world.md`는 다음 런타임 확장 필드를 추가�
 선택적으로 가질 수 있다. 새 thread를 만들 때 값이 있으면 월드 기본 시점을
 덮어쓰고, 없으면 `world.md`의 시점을 그대로 사용한다.
 
+같은 위치에서 `scenario.md`는 선택적으로 `npc_profile_id`를 가질 수 있다. 값이
+있으면 새 thread의 기본 Actor profile이 `world.md` 값을 덮어쓰고, 없으면 월드
+기본 NPC를 그대로 사용한다. 이 값은 `character_profile:` prefix를 가진 기존
+profile ID여야 하며, 잘못된 prefix나 존재하지 않는 ID는 런타임이 즉시 오류로
+거부한다.
+
+`scenario.md`의 optional `characters` 필드는 해당 시나리오에서 world-level
+`characters/*.md` 중 어떤 `character_profile`을 thread로 물질화할지 제한하는
+allowlist다. 값이 없거나 `null`이면 기존처럼 world-level profile 전체를 포함한다.
+값이 있으면 `character_profile:` ID 문자열 목록이어야 하며, 빈 리스트는 world
+인물을 하나도 물질화하지 않겠다는 뜻으로 유효하다. 이 필터는 world-level
+`characters/*.md`에만 적용되고 `scenarios/<scenario_id>/characters/*.md`는
+목록과 무관하게 항상 포함한다. Allowlist에 적은 ID가 world-level과
+scenario-level 어디에도 없으면 cast를 조용히 줄이지 않고 즉시 오류로 실패한다.
+
 문서 종류에 따라 `world_id`, `thread_id`, `profile_id`, `owner`,
 `participants`를 추가한다. Frontmatter는 문서의 안정적인 정체성과 접근 경계만
 담는다. Updater가 바꿀 수 있어야 하는 상태, 시각, 위치, 진행 단계는 H2/H3
@@ -370,9 +395,12 @@ commit으로 기록한다. 문서 전체 replacement도 exact after revision일 
 Gameplay Updater의 신규 문서 생성은 durable Event와 owner-private Memory를
 허용한다. Event는
 `document_type: event`, `event:<stable-ascii-slug>` ID, 단일 행 제목·시각·장소,
-참여자·목격자, 발생 사실·직접 결과·남은 영향과 exact-quote 근거를 구조화해
-반환한다. 런타임이 `event.md` template으로 `events/<slug>.md`를 렌더링하므로
-모델이 frontmatter나 vault 경로를 직접 작성하지 않는다.
+참여자·목격자, 발생 사실·직접 결과·남은 영향, `status`·`progress`·`conclusion_time`
+과 exact-quote 근거를 구조화해 반환한다. 렌더링된 Event는 read-only
+`## 발생 정보`, read-only `## 사건 내용`, 그리고 진행 누적만 가능한 `## 진행 상태`
+를 가진다. Gameplay Updater는 이 마지막 H2만 patch할 수 있다. 런타임이
+`event.md` template으로 `events/<slug>.md`를 렌더링하므로 모델이 frontmatter나
+vault 경로를 직접 작성하지 않는다.
 
 Memory는 `document_type: memory`, `memory:<stable-ascii-slug>` ID, 정확한
 `character_profile:*` owner, 관련 Event ID, 형성 계기·시각·장소, 기억 내용,

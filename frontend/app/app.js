@@ -45,9 +45,11 @@ const WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
 
 const ACTOR_MODELS = [
   { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro Preview", provider: "Gemini" },
+  { id: "gemini-3.7-flash", label: "Gemini 3.7 Flash", provider: "Gemini" },
   { id: "gemini-3.6-flash", label: "Gemini 3.6 Flash", provider: "Gemini" },
   { id: "gemini-3.5-flash", label: "Gemini 3.5 Flash", provider: "Gemini" },
   { id: "gemini-3-flash-preview", label: "Gemini 3 Flash Preview", provider: "Gemini" },
+  { id: "claude-opus-5", label: "Claude Opus 5", provider: "Claude" },
   { id: "claude-sonnet-5", label: "Claude Sonnet 5", provider: "Claude" },
   { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6", provider: "Claude" },
   { id: "claude-opus-4-6", label: "Claude Opus 4.6", provider: "Claude" },

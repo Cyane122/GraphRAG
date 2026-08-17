@@ -28,7 +28,7 @@ from src.simulation.prose_headers import (
     parse_prose_header_location,
     parse_prose_header_text,
 )
-from src.wiki.context import scene_datetime_and_location
+from src.wiki.context import document_body, scene_datetime_and_location
 from src.wiki.document_creation import prepare_created_document
 from src.wiki.markdown import (
     apply_section_patches,
@@ -47,6 +47,10 @@ from src.wiki.models import (
     WikiDocument,
     WikiUpdaterResult,
 )
+from src.wiki.prompt_contract import (
+    WikiPromptContractError,
+    validate_actor_document_body,
+)
 from src.wiki.updater_debug import (
     create_updater_debug_run,
     finish_updater_debug_run,
@@ -62,6 +66,10 @@ _SCENE_SECTION_ALIASES = ("현재 장면", "시작 기준")
 _RELATIONSHIP_SECTION = "Relationship Development"
 _RELATIONSHIP_EMPTY_SENTINEL = (
     "- No durable relationship change has occurred since the story began."
+)
+_SECRET_STATUS_RE = re.compile(
+    r"(?m)^-\s*상태:\s*(hidden|suspected|revealed)\s*$",
+    re.IGNORECASE,
 )
 _TIME_PLACE_HEADING_PATTERN = (
     r"(?:Time and Place|시작 시각과 장소|현재 시각과 장소)"
@@ -277,6 +285,27 @@ def _relationship_bullets(markdown: str) -> set[str]:
     }
 
 
+def _secret_disclosure_status(markdown: str) -> str | None:
+    """Secret section Markdown에서 공개 상태 값을 추출합니다."""
+    match = _SECRET_STATUS_RE.search(markdown)
+    return match.group(1).casefold() if match is not None else None
+
+
+def _validate_actor_body_contract(
+    body: str,
+    document: WikiDocument,
+    *,
+    operation: str,
+) -> None:
+    """Actor body contract 위반을 planner 예외로 변환합니다."""
+    try:
+        validate_actor_document_body(body, document)
+    except WikiPromptContractError as exc:
+        raise WikiCommitPlanningError(
+            f"{operation} violates Actor body contract for {document.path}: {exc}"
+        ) from exc
+
+
 def _validate_patch_policy(
     patch: SectionPatch,
     document: WikiDocument,
@@ -401,12 +430,45 @@ def _validate_patch_policy(
             raise WikiCommitPlanningError(
                 f"Player-owned {metadata.type} state requires evidence from Player Input"
             )
+        if metadata.type == "secret":
+            original_status = _secret_disclosure_status(original_markdown)
+            replacement_status = _secret_disclosure_status(patch.replacement_markdown)
+            if original_status != replacement_status:
+                raise WikiCommitPlanningError(
+                    "Runtime-owned secret disclosure status cannot be patched by the "
+                    f"gameplay model: {patch.document}"
+                )
         return
 
     if metadata.type == "event":
-        raise WikiCommitPlanningError(
-            f"Gameplay updater cannot patch immutable event documents: {patch.document}"
-        )
+        if not section_path or section_path[0] != "진행 상태":
+            raise WikiCommitPlanningError(
+                "event updates may modify only the '진행 상태' "
+                f"section: {patch.document}"
+            )
+        original_status = None
+        for line in original_markdown.splitlines():
+            if line.startswith("- 상태:"):
+                original_status = line.partition(":")[2].strip().casefold()
+                break
+        replacement_statuses: list[str] = []
+        for line in patch.replacement_markdown.splitlines():
+            if line.startswith("- 상태:"):
+                replacement_statuses.append(
+                    line.partition(":")[2].strip().casefold()
+                )
+        if replacement_statuses != ["ongoing"] and replacement_statuses != ["concluded"]:
+            raise WikiCommitPlanningError(
+                "event progress must include exactly one '- 상태:' line with "
+                f"'ongoing' or 'concluded': {patch.document}"
+            )
+        replacement_status = replacement_statuses[0]
+        if original_status == "concluded" and replacement_status == "ongoing":
+            raise WikiCommitPlanningError(
+                "Event progress cannot reopen a concluded record: "
+                f"{patch.document}"
+            )
+        return
 
     if metadata.type == "memory":
         raise WikiCommitPlanningError(
@@ -501,6 +563,11 @@ def _validate_result(
             player_reference_tokens=player_reference_tokens,
             active_character_documents=active_character_documents,
         )
+        _validate_actor_body_contract(
+            patch.replacement_markdown,
+            by_path[patch.document],
+            operation="Updater patch",
+        )
         patch.base_section_revision = document_revision(section.markdown)
         patch.base_markdown = section.markdown
         grouped.setdefault(patch.document, []).append(patch)
@@ -515,6 +582,7 @@ def _validate_result(
         player_reference_tokens=player_reference_tokens,
         player_profile_id=player_profile_id,
         actor_profile_id=actor_profile_id,
+        thread_id=_active_thread_id(documents),
     )
 
 
@@ -527,8 +595,9 @@ def _validate_document_creations(
     player_reference_tokens: set[str],
     player_profile_id: str,
     actor_profile_id: str,
+    thread_id: str,
 ) -> None:
-    """새 event/memory의 근거·고유 ID·owner 권한 경계를 검증합니다."""
+    """새 Wiki 문서의 근거·고유 ID·owner 권한·Event-Memory 결속을 검증합니다."""
     existing_ids = {
         document.metadata.id
         for document in documents
@@ -547,6 +616,8 @@ def _validate_document_creations(
         for creation in creations
         if isinstance(creation, CreateEventDocument)
     }
+    created_at = datetime.now(timezone.utc)
+    event_titles = _event_titles_by_id(documents, creations)
     seen_ids: set[str] = set()
     for creation in creations:
         source_text = (
@@ -621,7 +692,45 @@ def _validate_document_creations(
                     "Actor-sourced CreateDocument cannot establish player action; "
                     f"conflicting lines: {' | '.join(player_conflicts[:3])}"
                 )
+        created = prepare_created_document(
+            creation,
+            thread_id,
+            "validation",
+            created_at,
+            related_event_title=(
+                event_titles[creation.related_event_id]
+                if isinstance(creation, CreateMemoryDocument)
+                else None
+            ),
+        )
+        _validate_actor_body_contract(
+            document_body(created.content),
+            WikiDocument(
+                path=created.document,
+                revision="validation",
+                content=created.content,
+                metadata=None,
+            ),
+            operation="CreateDocument",
+        )
         seen_ids.add(creation.document_id)
+    created_memory_event_ids = {
+        creation.related_event_id
+        for creation in creations
+        if isinstance(creation, CreateMemoryDocument)
+    }
+    missing_event_memory_ids = sorted(
+        event_id
+        for event_id in created_event_ids
+        if event_id not in created_memory_event_ids
+    )
+    if missing_event_memory_ids:
+        raise WikiCommitPlanningError(
+            "Missing matching Memory for created Event(s): "
+            f"{', '.join(missing_event_memory_ids)}. "
+            "Each created Event requires at least one Memory created in the same "
+            "response with `related_event_id` equal to the Event `document_id`."
+        )
 
 
 def _creation_proposed_lines(creation: CreateDocument) -> str:

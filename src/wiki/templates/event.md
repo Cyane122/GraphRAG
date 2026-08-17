@@ -30,3 +30,9 @@ created_at: {{CREATED_AT_YAML}}
 
 - 직접 결과:
 - 남은 영향:
+
+## 진행 상태
+
+- 상태: concluded
+- 진행 경과:
+- 종료 시각:

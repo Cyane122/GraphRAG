@@ -7,7 +7,7 @@
 #   - _generate_with_one_retry(document: WikiDocument) -> PendingWikiCommit : 첫 실패 뒤 유효한 Updater 결과를 반환합니다.
 #   - _check_retry_exhaustion(document: WikiDocument) -> None : 모든 Updater 시도 실패 시 예외와 시도별 원문 진단 자료를 검증합니다.
 #   - _expect_update_rejected(documents: list[WikiDocument], payload: dict, user_input: str, actor_response: str, player_profile_id: str = "", actor_profile_id: str = "") -> None : 정책 위반 Updater 결과가 거부되는지 검증합니다.
-#   - _check_update_policy(character: WikiDocument, scene: WikiDocument) -> None : 플레이어 출처·정적 섹션·장면·관계 원자성·event/memory patch 금지 정책을 검증합니다.
+#   - _check_update_policy(character: WikiDocument, scene: WikiDocument) -> None : 플레이어 출처·정적 섹션·event-memory 결속·장면·관계 원자성과 Event/Memory patch 경계를 검증합니다.
 #   - _check_accepted_header_sync(scene: WikiDocument) -> None : accepted 헤더의 시간·장소 hard guard와 결정적 scene patch를 검증합니다.
 #   - _generate_event_creation(character: WikiDocument, scene: WikiDocument) -> PendingWikiCommit : 검증된 durable event 신규 문서 commit을 만듭니다.
 #   - _generate_goal_creation(character: WikiDocument) -> PendingWikiCommit : owner=Actor인 durable goal 신규 문서 commit을 만듭니다.
@@ -16,6 +16,7 @@
 #   - _check_recall() -> None : 예산 초과 시 최근성·구조 관련성 recall 축소를 검증합니다.
 #   - _check_diagnostics(vault_root: Path) -> None : 중복 문서 ID와 잘못된 frontmatter 진단을 검증합니다.
 #   - _check_scaffolds(root: Path) -> None : world/thread 템플릿과 frontmatter 로딩을 검증합니다.
+#   - _check_wiki_context_scenario_overrides(root: Path) -> None : scenario.md의 npc override와 cast allowlist를 검증합니다.
 #   - main() -> None : 임시 vault에서 Wiki V2 핵심 흐름을 검증합니다.
 # ================================
 
@@ -55,6 +56,12 @@ from src.wiki import (  # noqa: E402
     scaffold_world,
 )
 from src.wiki.commit_planner import _synchronize_accepted_header  # noqa: E402
+from src.wiki.context import (  # noqa: E402
+    WikiContextError,
+    _profile_documents,
+    initialize_wiki_thread,
+    load_wiki_setup,
+)
 
 
 _CHARACTER_DOCUMENT = """---
@@ -172,6 +179,52 @@ created_at: 2026-07-21T00:00:00+00:00
 ### 객관적으로 발생한 일
 
 - 발생 내용: The library power failed.
+
+## 진행 상태
+
+- 상태: concluded
+- 진행 경과: The outage was resolved in the same turn.
+- 종료 시각: 2026-07-23 13:00
+"""
+
+_ONGOING_EVENT_DOCUMENT = """---
+id: event:ongoing-search
+type: event
+schema_version: 1
+thread_id: thread_001
+visibility: [actor, updater, player]
+created_at: 2026-07-21T00:00:00+00:00
+---
+# Ongoing Search
+
+## 발생 정보
+
+### 시각과 장소
+
+- 시각: 2026-07-23 13:00
+- 장소: 대학 도서관
+
+### 참여자와 목격자
+
+- 참여자: 캐릭터 A; NPC
+- 목격자: None.
+
+## 사건 내용
+
+### 객관적으로 발생한 일
+
+- 발생 내용: The search for the missing files began in the library.
+
+### 직접 결과와 남은 영향
+
+- 직접 결과: The participants started checking the workstations.
+- 남은 영향: The search is still underway.
+
+## 진행 상태
+
+- 상태: ongoing
+- 진행 경과: The participants are still checking each workstation.
+- 종료 시각:
 """
 
 _RELATIONSHIP_DOCUMENT = """---
@@ -580,6 +633,209 @@ async def _check_goal_item_secret(character: WikiDocument) -> PendingWikiCommit:
         "그녀에게는 갚지 못한 큰 빚이 있다.",
         [revealed_document],
     )
+
+    secret_status_patch_payload = {
+        "summary": "비밀 상태 변경",
+        "patches": [{
+            "document": secret_document.path,
+            "base_revision": secret_document.revision,
+            "section_path": ["공개 상태", "공개 단서와 오해"],
+            "replacement_markdown": (
+                "### 공개 단서와 오해\n\n"
+                "- 상태: revealed\n"
+                "- 공개 단서: 가끔 전화를 급히 피한다.\n"
+                "- 오해: 그저 바쁜 것으로 보인다."
+            ),
+            "evidence": "캐릭터 A는 가끔 전화를 급히 피했다.",
+            "evidence_source": "actor_response",
+            "confidence": 0.9,
+        }],
+        "creations": [],
+    }
+    secret_status_patch_model = Mock()
+    secret_status_patch_model.generate_content_async = AsyncMock(
+        return_value=SimpleNamespace(
+            text=json.dumps(secret_status_patch_payload, ensure_ascii=False)
+        )
+    )
+    with patch(
+        "src.wiki.commit_planner.get_model",
+        return_value=secret_status_patch_model,
+    ):
+        try:
+            await plan_pending_commit(
+                documents=[character, secret_document],
+                user_input="지켜본다.",
+                actor_response="캐릭터 A는 가끔 전화를 급히 피했다.",
+                model_name="test-updater",
+                max_attempts=1,
+                actor_profile_id="character_profile:character_a",
+            )
+        except WikiCommitPlanningError as exc:
+            assert "secrets/hidden-debt.md" in str(exc)
+            assert "Runtime-owned secret disclosure status cannot be patched" in str(exc)
+        else:
+            raise AssertionError("Secret disclosure status patch must be rejected")
+
+    secret_clue_patch_payload = {
+        "summary": "비밀 공개 단서 갱신",
+        "patches": [{
+            "document": secret_document.path,
+            "base_revision": secret_document.revision,
+            "section_path": ["공개 상태", "공개 단서와 오해"],
+            "replacement_markdown": (
+                "### 공개 단서와 오해\n\n"
+                "- 상태: hidden\n"
+                "- 공개 단서: 가끔 전화를 급히 피하고 독촉장을 가방 깊숙이 숨긴다.\n"
+                "- 오해: 그저 바쁜 것으로 보인다."
+            ),
+            "evidence": "캐릭터 A는 가끔 전화를 급히 피하고 독촉장을 가방 깊숙이 숨겼다.",
+            "evidence_source": "actor_response",
+            "confidence": 0.9,
+        }],
+        "creations": [],
+    }
+    secret_clue_patch_model = Mock()
+    secret_clue_patch_model.generate_content_async = AsyncMock(
+        return_value=SimpleNamespace(
+            text=json.dumps(secret_clue_patch_payload, ensure_ascii=False)
+        )
+    )
+    with patch("src.wiki.commit_planner.get_model", return_value=secret_clue_patch_model):
+        secret_clue_pending = await plan_pending_commit(
+            documents=[character, secret_document],
+            user_input="지켜본다.",
+            actor_response="캐릭터 A는 가끔 전화를 급히 피하고 독촉장을 가방 깊숙이 숨겼다.",
+            model_name="test-updater",
+            max_attempts=1,
+            actor_profile_id="character_profile:character_a",
+        )
+    assert secret_clue_pending.patches[0].document == "secrets/hidden-debt.md"
+    assert secret_clue_pending.patches[0].section_path == ("공개 상태", "공개 단서와 오해")
+
+    wikilink_patch_payload = {
+        "summary": "목표 patch에 wikilink 삽입",
+        "patches": [{
+            "document": goal_document.path,
+            "base_revision": goal_document.revision,
+            "section_path": ["진행 상태", "현재 단계와 다음 행동"],
+            "replacement_markdown": (
+                "### 현재 단계와 다음 행동\n\n"
+                "- 상태: active\n"
+                "- 현재 단계: [[vault-note]]를 확인했다.\n"
+                "- 다음 행동: 모의고사를 본다."
+            ),
+            "evidence": "캐릭터 A는 참고 메모를 확인했다.",
+            "evidence_source": "actor_response",
+            "confidence": 0.9,
+        }],
+        "creations": [],
+    }
+    wikilink_patch_model = Mock()
+    wikilink_patch_model.generate_content_async = AsyncMock(
+        return_value=SimpleNamespace(
+            text=json.dumps(wikilink_patch_payload, ensure_ascii=False)
+        )
+    )
+    with patch("src.wiki.commit_planner.get_model", return_value=wikilink_patch_model):
+        try:
+            await plan_pending_commit(
+                documents=[character, goal_document],
+                user_input="지켜본다.",
+                actor_response="캐릭터 A는 참고 메모를 확인했다.",
+                model_name="test-updater",
+                max_attempts=1,
+                actor_profile_id="character_profile:character_a",
+            )
+        except WikiCommitPlanningError as exc:
+            assert "goals/pass-exam.md" in str(exc)
+            assert "wikilink" in str(exc)
+        else:
+            raise AssertionError("Wikilink patch must be rejected at planning time")
+
+    wikilink_creation_payload = {
+        "summary": "wikilink가 섞인 목표 생성",
+        "patches": [],
+        "creations": [{
+            "document_type": "goal",
+            "document_id": "goal:linked-note",
+            "title": "Linked Note Goal",
+            "owner": "character_profile:character_a",
+            "desired_outcome": "준비를 끝낸다.",
+            "success_look": "지원서 초안을 완성한다.",
+            "motivation": "장학금 기회를 놓치지 않는다.",
+            "priority": "높음",
+            "current_step": "[[vault-note]]를 읽는 중.",
+            "next_action": "요건을 정리한다.",
+            "obstacles": "준비 시간이 부족하다.",
+            "completion_conditions": "제출 가능한 초안이 생긴다.",
+            "evidence": "캐릭터 A는 오늘부터 장학금 신청 준비를 시작하겠다고 마음먹었다.",
+            "evidence_source": "actor_response",
+            "confidence": 0.9,
+        }],
+    }
+    wikilink_creation_model = Mock()
+    wikilink_creation_model.generate_content_async = AsyncMock(
+        return_value=SimpleNamespace(
+            text=json.dumps(wikilink_creation_payload, ensure_ascii=False)
+        )
+    )
+    with patch(
+        "src.wiki.commit_planner.get_model",
+        return_value=wikilink_creation_model,
+    ):
+        try:
+            await plan_pending_commit(
+                documents=[character],
+                user_input="지켜본다.",
+                actor_response="캐릭터 A는 오늘부터 장학금 신청 준비를 시작하겠다고 마음먹었다.",
+                model_name="test-updater",
+                max_attempts=1,
+                actor_profile_id="character_profile:character_a",
+            )
+        except WikiCommitPlanningError as exc:
+            assert "goals/linked-note.md" in str(exc)
+            assert "wikilink" in str(exc)
+        else:
+            raise AssertionError("Wikilink creation must be rejected at planning time")
+
+    normal_creation_payload = {
+        "summary": "정상 목표 생성",
+        "patches": [],
+        "creations": [{
+            "document_type": "goal",
+            "document_id": "goal:scholarship-plan",
+            "title": "Scholarship Plan",
+            "owner": "character_profile:character_a",
+            "desired_outcome": "장학금 신청 준비를 마친다.",
+            "success_look": "제출 가능한 신청서 초안이 완성된다.",
+            "motivation": "학비 부담을 줄인다.",
+            "priority": "높음",
+            "current_step": "요건을 정리하는 중.",
+            "next_action": "증빙 서류 목록을 적는다.",
+            "obstacles": "제출 기한이 가깝다.",
+            "completion_conditions": "신청서를 제출한다.",
+            "evidence": "캐릭터 A는 오늘부터 장학금 신청 준비를 시작하겠다고 마음먹었다.",
+            "evidence_source": "actor_response",
+            "confidence": 0.9,
+        }],
+    }
+    normal_creation_model = Mock()
+    normal_creation_model.generate_content_async = AsyncMock(
+        return_value=SimpleNamespace(
+            text=json.dumps(normal_creation_payload, ensure_ascii=False)
+        )
+    )
+    with patch("src.wiki.commit_planner.get_model", return_value=normal_creation_model):
+        normal_creation_pending = await plan_pending_commit(
+            documents=[character],
+            user_input="지켜본다.",
+            actor_response="캐릭터 A는 오늘부터 장학금 신청 준비를 시작하겠다고 마음먹었다.",
+            model_name="test-updater",
+            max_attempts=1,
+            actor_profile_id="character_profile:character_a",
+        )
+    assert normal_creation_pending.creations[0].document == "goals/scholarship-plan.md"
 
     # 존재하지 않는 profile을 knower로 넣으면 거부한다.
     unknown_knower_payload = json.loads(json.dumps(secret_payload))
@@ -1184,12 +1440,18 @@ async def _check_update_policy(
     character: WikiDocument,
     scene: WikiDocument,
 ) -> None:
-    """플레이어 출처, 정적 섹션, 장면 원자성, event/memory patch 금지를 검증합니다."""
+    """플레이어 출처, 정적 섹션, event-memory 결속과 Event/Memory patch 경계를 검증합니다."""
     event = WikiDocument(
         path="events/existing-outage.md",
         revision=document_revision(_EVENT_DOCUMENT),
         content=_EVENT_DOCUMENT,
         metadata=parse_frontmatter(_EVENT_DOCUMENT),
+    )
+    ongoing_event = WikiDocument(
+        path="events/ongoing-search.md",
+        revision=document_revision(_ONGOING_EVENT_DOCUMENT),
+        content=_ONGOING_EVENT_DOCUMENT,
+        metadata=parse_frontmatter(_ONGOING_EVENT_DOCUMENT),
     )
     memory_content = (
         "---\nid: memory:existing-outage-memory\ntype: memory\nschema_version: 1\n"
@@ -1248,8 +1510,8 @@ async def _check_update_policy(
         player_profile_id="character_profile:character_a",
     )
 
-    multiple_events_payload = {
-        "summary": "서로 다른 두 사건 생성",
+    event_without_memory_payload = {
+        "summary": "기억 없는 사건 생성",
         "patches": [],
         "creations": [{
             "document_type": "event",
@@ -1265,47 +1527,68 @@ async def _check_update_policy(
             "evidence": "NPC는 도서관 복도에서 캐릭터 A에게 오래 숨겨 온 마음을 고백했다.",
             "evidence_source": "actor_response",
             "confidence": 0.94,
-        }, {
-            "document_type": "event",
-            "document_id": "event:student-council-fight",
-            "title": "Student Council Office Fight",
-            "occurred_at": "2026-07-23 13:05",
-            "location": "학생회실",
-            "participants": ["학생회 간부 둘"],
-            "witnesses": [],
-            "facts": ["A separate fight broke out in the student council office over missing budget papers."],
-            "direct_results": ["The office was locked down while staff separated the participants."],
-            "lasting_effects": ["The missing papers dispute now blocks routine office access."],
-            "evidence": "같은 시각 학생회실에서는 사라진 예산 서류 때문에 몸싸움이 벌어졌다.",
-            "evidence_source": "actor_response",
-            "confidence": 0.93,
         }],
     }
-    multiple_events_model = Mock()
-    multiple_events_model.generate_content_async = AsyncMock(
+    event_without_memory_model = Mock()
+    event_without_memory_model.generate_content_async = AsyncMock(
         return_value=SimpleNamespace(
-            text=json.dumps(multiple_events_payload, ensure_ascii=False)
+            text=json.dumps(event_without_memory_payload, ensure_ascii=False)
         )
     )
-    with patch("src.wiki.commit_planner.get_model", return_value=multiple_events_model):
-        multiple_events_pending = await plan_pending_commit(
+    with patch(
+        "src.wiki.commit_planner.get_model",
+        return_value=event_without_memory_model,
+    ):
+        try:
+            await plan_pending_commit(
+                documents=[character, scene],
+                user_input="상황을 지켜본다.",
+                actor_response="NPC는 도서관 복도에서 캐릭터 A에게 오래 숨겨 온 마음을 고백했다.",
+                model_name="test-updater",
+                max_attempts=1,
+                actor_profile_id="character_profile:character_a",
+            )
+        except WikiCommitPlanningError as exc:
+            error_text = str(exc)
+            assert "event:library-confession" in error_text
+            assert (
+                "Each created Event requires at least one Memory created in the same "
+                "response with `related_event_id` equal to the Event `document_id`."
+            ) in error_text
+        else:
+            raise AssertionError(
+                "Created event without matching memory must be rejected"
+            )
+
+    matching_memory_pending = await _generate_event_creation(character, scene)
+    assert len(matching_memory_pending.creations) == 2
+    assert {
+        creation.document for creation in matching_memory_pending.creations
+    } == {
+        "events/library-power-outage.md",
+        "memories/character-a-remembers-outage.md",
+    }
+
+    no_event_payload = {
+        "summary": "변경 없음",
+        "patches": [],
+        "creations": [],
+    }
+    no_event_model = Mock()
+    no_event_model.generate_content_async = AsyncMock(
+        return_value=SimpleNamespace(text=json.dumps(no_event_payload, ensure_ascii=False))
+    )
+    with patch("src.wiki.commit_planner.get_model", return_value=no_event_model):
+        no_event_pending = await plan_pending_commit(
             documents=[character, scene],
             user_input="상황을 지켜본다.",
-            actor_response=(
-                "NPC는 도서관 복도에서 캐릭터 A에게 오래 숨겨 온 마음을 고백했다. "
-                "같은 시각 학생회실에서는 사라진 예산 서류 때문에 몸싸움이 벌어졌다."
-            ),
+            actor_response="캐릭터 A가 잠시 숨을 골랐다.",
             model_name="test-updater",
             max_attempts=1,
             actor_profile_id="character_profile:character_a",
         )
-    assert len(multiple_events_pending.creations) == 2
-    assert {
-        creation.document for creation in multiple_events_pending.creations
-    } == {
-        "events/library-confession.md",
-        "events/student-council-fight.md",
-    }
+    assert no_event_pending.creations == []
+    assert no_event_pending.patches == []
 
     actor_evidence_for_player_memory = {
         "summary": "Actor 근거로 플레이어 기억 생성",
@@ -1337,41 +1620,210 @@ async def _check_update_policy(
         player_profile_id="character_profile:character_a",
     )
 
-    event_patch_payload = {
-        "summary": "기존 event 문서 수정",
+    event_progress_patch_payload = {
+        "summary": "기존 event 진행 상태 갱신",
         "patches": [{
-            "document": event.path,
-            "base_revision": event.revision,
-            "section_path": ["사건 내용", "객관적으로 발생한 일"],
+            "document": ongoing_event.path,
+            "base_revision": ongoing_event.revision,
+            "section_path": ["진행 상태"],
             "replacement_markdown": (
-                "### 객관적으로 발생한 일\n\n"
-                "- 발생 내용: The outage record was rewritten after the fact."
+                "## 진행 상태\n\n"
+                "- 상태: concluded\n"
+                "- 진행 경과: The participants found the missing files and ended the search.\n"
+                "- 종료 시각: 2026-07-23 13:18"
             ),
-            "evidence": "정전 기록을 나중에 다시 고쳐 썼다.",
+            "evidence": "참가자들은 잃어버린 파일을 찾아 수색을 끝냈다.",
             "evidence_source": "actor_response",
             "confidence": 0.9,
         }],
     }
-    event_patch_model = Mock()
-    event_patch_model.generate_content_async = AsyncMock(
+    event_progress_patch_model = Mock()
+    event_progress_patch_model.generate_content_async = AsyncMock(
         return_value=SimpleNamespace(
-            text=json.dumps(event_patch_payload, ensure_ascii=False)
+            text=json.dumps(event_progress_patch_payload, ensure_ascii=False)
         )
     )
-    with patch("src.wiki.commit_planner.get_model", return_value=event_patch_model):
+    with patch(
+        "src.wiki.commit_planner.get_model",
+        return_value=event_progress_patch_model,
+    ):
+        event_progress_pending = await plan_pending_commit(
+            documents=[character, scene, ongoing_event],
+            user_input="기록을 본다.",
+            actor_response="참가자들은 잃어버린 파일을 찾아 수색을 끝냈다.",
+            model_name="test-updater",
+            max_attempts=1,
+        )
+    assert event_progress_pending.patches[0].document == "events/ongoing-search.md"
+    assert event_progress_pending.patches[0].section_path == ("진행 상태",)
+
+    event_identity_patch_payload = {
+        "summary": "기존 event 발생 정보 수정",
+        "patches": [{
+            "document": event.path,
+            "base_revision": event.revision,
+            "section_path": ["발생 정보", "시각과 장소"],
+            "replacement_markdown": (
+                "### 시각과 장소\n\n"
+                "- 시각: 2026-07-23 14:00\n"
+                "- 장소: 대학 도서관"
+            ),
+            "evidence": "도서관 정전은 오후 두 시였다.",
+            "evidence_source": "actor_response",
+            "confidence": 0.9,
+        }],
+    }
+    event_identity_patch_model = Mock()
+    event_identity_patch_model.generate_content_async = AsyncMock(
+        return_value=SimpleNamespace(
+            text=json.dumps(event_identity_patch_payload, ensure_ascii=False)
+        )
+    )
+    with patch(
+        "src.wiki.commit_planner.get_model",
+        return_value=event_identity_patch_model,
+    ):
         try:
             await plan_pending_commit(
                 documents=[character, scene, event],
                 user_input="기록을 본다.",
-                actor_response="정전 기록을 나중에 다시 고쳐 썼다.",
+                actor_response="도서관 정전은 오후 두 시였다.",
                 model_name="test-updater",
                 max_attempts=1,
             )
         except WikiCommitPlanningError as exc:
             assert "events/existing-outage.md" in str(exc)
-            assert "Gameplay updater cannot patch immutable event documents" in str(exc)
+            assert "event updates may modify only the '진행 상태' section" in str(exc)
         else:
-            raise AssertionError("Event document patch must be rejected")
+            raise AssertionError("Event identity section patch must be rejected")
+
+    event_reopen_patch_payload = {
+        "summary": "종결된 event 재개",
+        "patches": [{
+            "document": event.path,
+            "base_revision": event.revision,
+            "section_path": ["진행 상태"],
+            "replacement_markdown": (
+                "## 진행 상태\n\n"
+                "- 상태: ongoing\n"
+                "- 진행 경과: The outage unexpectedly resumed.\n"
+                "- 종료 시각:"
+            ),
+            "evidence": "정전이 다시 이어지는 듯했다.",
+            "evidence_source": "actor_response",
+            "confidence": 0.9,
+        }],
+    }
+    event_reopen_patch_model = Mock()
+    event_reopen_patch_model.generate_content_async = AsyncMock(
+        return_value=SimpleNamespace(
+            text=json.dumps(event_reopen_patch_payload, ensure_ascii=False)
+        )
+    )
+    with patch(
+        "src.wiki.commit_planner.get_model",
+        return_value=event_reopen_patch_model,
+    ):
+        try:
+            await plan_pending_commit(
+                documents=[character, scene, event],
+                user_input="기록을 본다.",
+                actor_response="정전이 다시 이어지는 듯했다.",
+                model_name="test-updater",
+                max_attempts=1,
+            )
+        except WikiCommitPlanningError as exc:
+            assert "events/existing-outage.md" in str(exc)
+            assert "Event progress cannot reopen a concluded record" in str(exc)
+        else:
+            raise AssertionError("Concluded event must not be reopened")
+
+    event_missing_status_patch_payload = {
+        "summary": "event 상태 줄 누락",
+        "patches": [{
+            "document": event.path,
+            "base_revision": event.revision,
+            "section_path": ["진행 상태"],
+            "replacement_markdown": (
+                "## 진행 상태\n\n"
+                "- 진행 경과: The outage was summarized without a status line.\n"
+                "- 종료 시각: 2026-07-23 13:00"
+            ),
+            "evidence": "정전 기록을 다시 요약했다.",
+            "evidence_source": "actor_response",
+            "confidence": 0.9,
+        }],
+    }
+    event_missing_status_patch_model = Mock()
+    event_missing_status_patch_model.generate_content_async = AsyncMock(
+        return_value=SimpleNamespace(
+            text=json.dumps(event_missing_status_patch_payload, ensure_ascii=False)
+        )
+    )
+    with patch(
+        "src.wiki.commit_planner.get_model",
+        return_value=event_missing_status_patch_model,
+    ):
+        try:
+            await plan_pending_commit(
+                documents=[character, scene, event],
+                user_input="기록을 본다.",
+                actor_response="정전 기록을 다시 요약했다.",
+                model_name="test-updater",
+                max_attempts=1,
+            )
+        except WikiCommitPlanningError as exc:
+            assert "events/existing-outage.md" in str(exc)
+            assert (
+                "event progress must include exactly one '- 상태:' line with "
+                "'ongoing' or 'concluded'"
+            ) in str(exc)
+        else:
+            raise AssertionError("Event progress without status line must be rejected")
+
+    event_invalid_status_patch_payload = {
+        "summary": "event 상태 값 오류",
+        "patches": [{
+            "document": event.path,
+            "base_revision": event.revision,
+            "section_path": ["진행 상태"],
+            "replacement_markdown": (
+                "## 진행 상태\n\n"
+                "- 상태: 진행중\n"
+                "- 진행 경과: The outage was described with an invalid status value.\n"
+                "- 종료 시각: 2026-07-23 13:00"
+            ),
+            "evidence": "정전 기록 상태를 잘못 적었다.",
+            "evidence_source": "actor_response",
+            "confidence": 0.9,
+        }],
+    }
+    event_invalid_status_patch_model = Mock()
+    event_invalid_status_patch_model.generate_content_async = AsyncMock(
+        return_value=SimpleNamespace(
+            text=json.dumps(event_invalid_status_patch_payload, ensure_ascii=False)
+        )
+    )
+    with patch(
+        "src.wiki.commit_planner.get_model",
+        return_value=event_invalid_status_patch_model,
+    ):
+        try:
+            await plan_pending_commit(
+                documents=[character, scene, event],
+                user_input="기록을 본다.",
+                actor_response="정전 기록 상태를 잘못 적었다.",
+                model_name="test-updater",
+                max_attempts=1,
+            )
+        except WikiCommitPlanningError as exc:
+            assert "events/existing-outage.md" in str(exc)
+            assert (
+                "event progress must include exactly one '- 상태:' line with "
+                "'ongoing' or 'concluded'"
+            ) in str(exc)
+        else:
+            raise AssertionError("Event progress with invalid status must be rejected")
 
     memory_patch_payload = {
         "summary": "기존 memory 문서 수정",
@@ -2171,11 +2623,282 @@ def _check_scaffolds(root: Path) -> None:
     assert (atomic_world / "prose.md").exists()
 
 
+def _check_wiki_context_scenario_overrides(root: Path) -> None:
+    """scenario.md의 optional NPC override와 world cast allowlist를 검증합니다."""
+
+    def replace_frontmatter_line(content: str, key: str, value: str) -> str:
+        """Frontmatter 안의 단일 scalar line을 키 기준으로 교체합니다."""
+        lines = content.splitlines()
+        if not lines or lines[0] != "---":
+            raise AssertionError("expected YAML frontmatter")
+        for index, line in enumerate(lines[1:], start=1):
+            if line == "---":
+                break
+            if line.startswith(f"{key}:"):
+                lines[index] = f"{key}: {value}"
+                updated = "\n".join(lines) + "\n"
+                if f"{key}: {value}" not in updated:
+                    raise AssertionError(f"{key} frontmatter override was not applied")
+                return updated
+        raise AssertionError(f"{key} frontmatter line not found")
+
+    def insert_frontmatter_lines(content: str, extra: str) -> str:
+        """Frontmatter 종료 구분자 직전에 추가 YAML 줄을 삽입합니다."""
+        if not extra:
+            return content
+        lines = content.splitlines()
+        if not lines or lines[0] != "---":
+            raise AssertionError("expected YAML frontmatter")
+        closing_index = -1
+        for index, line in enumerate(lines[1:], start=1):
+            if line == "---":
+                closing_index = index
+                break
+        if closing_index < 0:
+            raise AssertionError("frontmatter closing delimiter not found")
+        extra_lines = extra.splitlines()
+        updated_lines = lines[:closing_index] + extra_lines + lines[closing_index:]
+        updated = "\n".join(updated_lines) + "\n"
+        for line in extra_lines:
+            if line not in updated:
+                raise AssertionError(f"scenario frontmatter injection was not applied: {line}")
+        return updated
+
+    def build_case(
+        case_name: str,
+        scenario_extra: str = "",
+        include_scenario_character: bool = True,
+    ) -> Path:
+        """Wiki context 테스트용 최소 world/scenario 번들을 만듭니다."""
+        vault_root = root / case_name
+        scaffold_world(vault_root, "demo_world", "데모 월드")
+        world_root = vault_root / "worlds" / "demo_world"
+        store = WikiStore(world_root)
+        created_at = "2026-07-21T00:00:00+00:00"
+
+        world_document = store.read_document("world.md")
+        world_content = render_wiki_template(
+            "world.md",
+            {
+                "DOCUMENT_ID": "world:demo_world",
+                "DISPLAY_NAME": "데모 월드",
+                "CREATED_AT": created_at,
+            },
+        )
+        world_content = replace_frontmatter_line(
+            world_content,
+            "pc_profile_id",
+            "character_profile:pc",
+        )
+        world_content = replace_frontmatter_line(
+            world_content,
+            "npc_profile_id",
+            "character_profile:world_npc",
+        )
+        store.write_document(
+            "world.md",
+            world_content,
+            expected_revision=world_document.revision,
+        )
+        updated_world = store.read_document("world.md")
+        assert updated_world.metadata is not None
+        assert str(getattr(updated_world.metadata, "pc_profile_id", "") or "").strip() == (
+            "character_profile:pc"
+        )
+        assert str(getattr(updated_world.metadata, "npc_profile_id", "") or "").strip() == (
+            "character_profile:world_npc"
+        )
+
+        scenario_root = world_root / "scenarios" / "demo"
+        (scenario_root / "characters").mkdir(parents=True, exist_ok=True)
+        scenario_document = render_wiki_template(
+            "scenario.md",
+            {
+                "DOCUMENT_ID": "scenario:demo_world:demo",
+                "WORLD_ID": "demo_world",
+                "CREATED_AT": created_at,
+            },
+        )
+        scenario_document = insert_frontmatter_lines(scenario_document, scenario_extra)
+        created_scenario = store.create_document("scenarios/demo/scenario.md", scenario_document)
+        if scenario_extra:
+            for line in scenario_extra.splitlines():
+                assert line in created_scenario.content
+
+        start_state = render_wiki_template(
+            "scenario_start_state.md",
+            {
+                "DOCUMENT_ID": "scenario:demo_world:demo:start_state",
+                "WORLD_ID": "demo_world",
+                "CREATED_AT": created_at,
+            },
+        )
+        start_state = start_state.replace("- Time:", "- Time: 2026년 7월 21일 13시")
+        start_state = start_state.replace("- Place:", "- Place: 학생회관 라운지")
+        start_state = start_state.replace("- Relationship:", "- Relationship: 첫 대면 직전")
+        start_state = start_state.replace("- Immediate background:", "- Immediate background: 오리엔테이션 대기")
+        start_state = start_state.replace("- Positions:", "- Positions: 모든 인물이 라운지에 있다.")
+        start_state = start_state.replace("- Conditions:", "- Conditions: 다들 긴장했지만 대화 가능하다.")
+        start_state = start_state.replace("- Trigger:", "- Trigger: 사회자가 조 편성을 발표한다.")
+        store.create_document("scenarios/demo/start_state.md", start_state)
+
+        opening_scene = render_wiki_template(
+            "scenario_opening_scene.md",
+            {
+                "DOCUMENT_ID": "scenario:demo_world:demo:opening",
+                "WORLD_ID": "demo_world",
+                "CREATED_AT": created_at,
+            },
+        ).replace("첫 장면 원문을 작성하세요.", "라운지에 처음 모인 학생들이 서로를 살핀다.")
+        store.create_document("scenarios/demo/opening_scene.md", opening_scene)
+
+        for relative_path, profile_id, title in (
+            ("characters/pc.md", "character_profile:pc", "Player Character"),
+            ("characters/world_npc.md", "character_profile:world_npc", "World NPC"),
+            ("characters/alt_npc.md", "character_profile:alt_npc", "Scenario NPC"),
+            ("characters/bystander.md", "character_profile:bystander", "Bystander"),
+        ):
+            store.create_document(
+                relative_path,
+                render_wiki_template(
+                    "character_profile.md",
+                    {
+                        "DOCUMENT_ID": profile_id,
+                        "WORLD_ID": "demo_world",
+                        "TITLE": title,
+                        "CREATED_AT": created_at,
+                    },
+                ),
+            )
+        if include_scenario_character:
+            store.create_document(
+                "scenarios/demo/characters/guest.md",
+                render_wiki_template(
+                    "character_profile.md",
+                    {
+                        "DOCUMENT_ID": "character_profile:guest",
+                        "WORLD_ID": "demo_world",
+                        "TITLE": "Guest Character",
+                        "CREATED_AT": created_at,
+                    },
+                ),
+            )
+        return vault_root
+
+    override_root = build_case(
+        "context_override",
+        scenario_extra="npc_profile_id: character_profile:alt_npc\n",
+    )
+    override_setup = load_wiki_setup(
+        override_root,
+        "demo_world",
+        "demo",
+        "thread_override",
+    )
+    assert override_setup.npc_id == "character_profile:alt_npc"
+    assert override_setup.npc_name == "Scenario NPC"
+
+    default_root = build_case("context_default")
+    default_setup = load_wiki_setup(
+        default_root,
+        "demo_world",
+        "demo",
+        "thread_default",
+    )
+    assert default_setup.npc_id == "character_profile:world_npc"
+    assert default_setup.npc_name == "World NPC"
+
+    allowlist_root = build_case(
+        "context_allowlist",
+        scenario_extra=(
+            "npc_profile_id: character_profile:alt_npc\n"
+            "characters:\n"
+            "  - character_profile:pc\n"
+            "  - character_profile:alt_npc\n"
+        ),
+    )
+    allowlist_setup = initialize_wiki_thread(
+        allowlist_root,
+        "demo_world",
+        "demo",
+        "thread_allowlist",
+    )
+    allowlist_thread = allowlist_root / "threads" / "thread_allowlist" / "characters"
+    assert allowlist_setup.npc_id == "character_profile:alt_npc"
+    assert (allowlist_thread / "pc.md").is_file()
+    assert (allowlist_thread / "alt_npc.md").is_file()
+    assert (allowlist_thread / "guest.md").is_file()
+    assert not (allowlist_thread / "world_npc.md").exists()
+    assert not (allowlist_thread / "bystander.md").exists()
+
+    empty_allowlist_root = build_case(
+        "context_empty_allowlist",
+        scenario_extra="characters: []\n",
+    )
+    empty_allowlist_profiles = _profile_documents(
+        empty_allowlist_root,
+        "demo_world",
+        "demo",
+    )
+    empty_allowlist_ids = {
+        profile.metadata.id
+        for profile in empty_allowlist_profiles
+        if profile.metadata is not None
+    }
+    assert empty_allowlist_ids == {"character_profile:guest"}
+
+    def assert_context_error(case_name: str, scenario_extra: str) -> None:
+        """잘못된 scenario frontmatter가 WikiContextError로 실패하는지 검증합니다."""
+        invalid_root = build_case(case_name, scenario_extra=scenario_extra)
+        try:
+            load_wiki_setup(invalid_root, "demo_world", "demo", "thread_invalid")
+        except WikiContextError:
+            return
+        raise AssertionError(f"{case_name} must raise WikiContextError")
+
+    assert_context_error(
+        "context_unknown_character",
+        scenario_extra=(
+            "characters:\n"
+            "  - character_profile:pc\n"
+            "  - character_profile:missing\n"
+        ),
+    )
+    assert_context_error(
+        "context_invalid_characters_type",
+        scenario_extra="characters: character_profile:pc\n",
+    )
+    assert_context_error(
+        "context_invalid_character_item",
+        scenario_extra=(
+            "characters:\n"
+            "  - character_profile:pc\n"
+            "  - 17\n"
+        ),
+    )
+    assert_context_error(
+        "context_invalid_character_prefix",
+        scenario_extra=(
+            "characters:\n"
+            "  - character:pc\n"
+        ),
+    )
+    assert_context_error(
+        "context_invalid_npc_prefix",
+        scenario_extra="npc_profile_id: character:alt_npc\n",
+    )
+    assert_context_error(
+        "context_unknown_npc_id",
+        scenario_extra="npc_profile_id: character_profile:missing\n",
+    )
+
+
 def main() -> None:
     """임시 vault에서 섹션 선택부터 다음 턴 커밋까지 검증합니다."""
     with TemporaryDirectory() as temporary_directory:
         root = Path(temporary_directory)
         _check_scaffolds(root)
+        _check_wiki_context_scenario_overrides(root)
         _check_recall()
         _check_migrations()
         _check_diagnostics(root / "scaffold")
@@ -2207,6 +2930,16 @@ def main() -> None:
         assert (
             event_pending.creations[1].document
             == "memories/character-a-remembers-outage.md"
+        )
+        assert "## 발생 정보" in event_pending.creations[0].content
+        assert "## 사건 내용" in event_pending.creations[0].content
+        assert "## 진행 상태" in event_pending.creations[0].content
+        assert "- 상태: concluded" in event_pending.creations[0].content
+        assert "- 진행 경과: The occurrence concluded in this turn." in (
+            event_pending.creations[0].content
+        )
+        assert "- 종료 시각: 2026-07-23 13:10" in (
+            event_pending.creations[0].content
         )
         assert "visibility: [actor, updater]" in event_pending.creations[1].content
         assert "owner: \"character_profile:character_a\"" in (
