@@ -23,6 +23,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 from src.apps.app.models import ConversationState
 from src.apps.app.storage import ConversationStore
 from src.config import WIKI_VAULT_ROOT
+from src.wiki.paths import wiki_thread_root_for_vault
 
 
 def _require_wiki_state(state: ConversationState) -> None:
@@ -34,9 +35,9 @@ def _require_wiki_state(state: ConversationState) -> None:
 def _wiki_thread_paths(state: ConversationState) -> tuple[Path, Path]:
     """검증된 Wiki threads root와 대상 thread root를 반환합니다."""
     threads_root = (Path(WIKI_VAULT_ROOT).resolve() / "threads").resolve()
-    thread_root = (threads_root / state.thread_id).resolve()
-    if thread_root.parent != threads_root:
-        raise ValueError("Wiki thread path escapes the vault root")
+    thread_root = wiki_thread_root_for_vault(
+        Path(WIKI_VAULT_ROOT), state.thread_id
+    )
     return threads_root, thread_root
 
 

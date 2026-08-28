@@ -36,12 +36,16 @@ from src.wiki.models import (
     WikiScenePromptAsset,
     WikiThreadRuntimeStatus,
 )
+from src.wiki.paths import (
+    WikiContextError,
+    _IDENTIFIER_RE,
+    wiki_thread_root_for_vault,
+)
 from src.wiki.scaffold import render_wiki_template, scaffold_thread
 from src.wiki.store import WikiStore
 from src.wiki.variants import WikiVariantError, resolve_profile_variants
 
 
-_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _FRONTMATTER_RE = re.compile(r"\A---\r?\n.*?\r?\n---\r?\n?", re.DOTALL)
 _H1_RE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
 _VALID_POV_MODES = {"1p_user", "1p_char", "3p_user", "3p_char"}
@@ -60,10 +64,6 @@ _ENGLISH_DATETIME_RE = re.compile(
     r"(?P<month>[A-Za-z]+)\s+(?P<day>\d{1,2}),\s+(?P<year>\d{4})",
     re.IGNORECASE,
 )
-
-
-class WikiContextError(RuntimeError):
-    """Wiki 런타임에 필요한 문서나 메타데이터가 유효하지 않을 때 발생합니다."""
 
 
 def _write_thread_runtime_marker(
@@ -92,7 +92,7 @@ def get_wiki_thread_runtime_status(
 ) -> WikiThreadRuntimeStatus:
     """현재 런타임 표식 유무와 버전으로 thread 세대를 판별합니다."""
     safe_thread_id = _validate_identifier(thread_id, "thread_id")
-    thread_root = (vault_root.resolve() / "threads" / safe_thread_id).resolve()
+    thread_root = wiki_thread_root_for_vault(vault_root, safe_thread_id)
     expected_root = vault_root.resolve() / "threads"
     if not thread_root.is_relative_to(expected_root) or not thread_root.is_dir():
         return WikiThreadRuntimeStatus(
@@ -442,7 +442,7 @@ def initialize_wiki_thread(
 ) -> WikiConversationSetup:
     """새 Wiki thread를 만들고 선택한 시작 설정과 인물 문서를 물질화합니다."""
     setup = load_wiki_setup(vault_root, world_id, scenario_id, thread_id)
-    thread_root = vault_root / "threads" / setup.thread_id
+    thread_root = wiki_thread_root_for_vault(vault_root, setup.thread_id)
     manifest_path = thread_root / "thread.md"
     scene_path = thread_root / "scene" / "current.md"
     created_thread = not manifest_path.exists()
@@ -631,7 +631,7 @@ def read_wiki_scene_descriptions(
 def read_wiki_thread_documents(vault_root: Path, thread_id: str) -> list[WikiDocument]:
     """현재 thread의 canonical Markdown 문서를 안정된 순서로 읽습니다."""
     safe_thread_id = _validate_identifier(thread_id, "thread_id")
-    thread_root = (vault_root.resolve() / "threads" / safe_thread_id).resolve()
+    thread_root = wiki_thread_root_for_vault(vault_root, safe_thread_id)
     if not thread_root.is_dir() or not thread_root.is_relative_to(vault_root.resolve() / "threads"):
         raise WikiContextError(f"Wiki thread does not exist: {safe_thread_id}")
     store = WikiStore(thread_root)

@@ -18,7 +18,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from src.apps.world_editor import source_create, source_edit
+from src.apps.world_editor import source_create
+from src.apps.world_editor.source_ops.text import emit
 from src.apps.world_editor.worlds import world_pkg_dir
 
 _ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -394,7 +395,7 @@ def character_source_from_cfg(char_id: str, name: str, aliases: list[str], char_
     default_cfg 는 source_edit._emit 으로 ast 안전 리터럴 직렬화되므로 clean 값만 들어와야 한다.
     자동 파일화(_repair_missing_character_source)가 컴파일된 프로파일 값을 보존할 때 쓴다.
     """
-    cfg_src = source_edit._emit(default_cfg, "    ")
+    cfg_src = emit(default_cfg, "    ")
     return (_CHARACTER_TMPL
             .replace("%%DEFAULT_CFG%%", cfg_src)
             .replace("%%CID%%", char_id)

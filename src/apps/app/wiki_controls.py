@@ -61,12 +61,14 @@ from src.wiki import (
 )
 from src.wiki.character_postprocess import authored_cycle_character_titles
 from src.wiki.context import read_wiki_thread_documents
+from src.wiki.paths import wiki_thread_root_for_vault
 
 
 def _commit_queue(thread_id: str) -> WikiCommitQueue:
     """Return the commit queue for one Wiki thread."""
-    thread_root = Path(WIKI_VAULT_ROOT) / "threads" / thread_id
-    return WikiCommitQueue(WikiStore(thread_root))
+    return WikiCommitQueue(
+        WikiStore(wiki_thread_root_for_vault(Path(WIKI_VAULT_ROOT), thread_id))
+    )
 
 
 def _wiki_system_response(state: ConversationState) -> WikiSystemsResponse:

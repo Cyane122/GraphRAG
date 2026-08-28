@@ -27,14 +27,18 @@ def patch_vault_root(vault_root: Path) -> None:
     import src.apps.app.service as app_service
     import src.apps.app.wiki_branching as wiki_branching
     import src.apps.app.wiki_controls as wiki_controls
+    import src.apps.app.wiki_message_ops as wiki_message_ops
     import src.apps.app.wiki_service as wiki_service
+    import src.wiki.paths as wiki_paths
 
     app_runtime.WIKI_VAULT_ROOT = vault_root
     app_service.WIKI_VAULT_ROOT = vault_root
     conversation_lifecycle.WIKI_VAULT_ROOT = vault_root
     wiki_branching.WIKI_VAULT_ROOT = vault_root
     wiki_controls.WIKI_VAULT_ROOT = vault_root
+    wiki_message_ops.WIKI_VAULT_ROOT = vault_root
     wiki_service.WIKI_VAULT_ROOT = vault_root
+    wiki_paths.WIKI_VAULT_ROOT = vault_root
 
 
 def canonical_documents(thread_root: Path) -> dict[str, str]:

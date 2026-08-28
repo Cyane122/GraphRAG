@@ -4,6 +4,7 @@
 # Chainlit 채팅 UI와 분리된 로컬 그래프 관찰 서버를 제공합니다.
 #
 # Functions
+#   - server_address() -> tuple[str, int] : 그래프 서버 바인드 주소를 반환합니다.
 #   - ensure_graph_server() -> str : 그래프 서버를 시작하고 URL을 반환합니다.
 #   - get_cached_graph_snapshot() -> dict[str, Any] : 캐시된 그래프 스냅샷 복사본을 반환합니다.
 #   - run() -> None : 그래프 뷰어 서버를 실행하고 브라우저를 엽니다.
@@ -46,6 +47,11 @@ def _snapshot_payload() -> bytes:
     """현재 캐시된 그래프 스냅샷을 JSON 응답 바이트로 직렬화합니다."""
     with _LOCK:
         return json.dumps(_LATEST_GRAPH, ensure_ascii=False).encode("utf-8")
+
+
+def server_address() -> tuple[str, int]:
+    """Return the graph viewer server bind address."""
+    return _HOST, _PORT
 
 
 def get_cached_graph_snapshot() -> dict[str, Any]:

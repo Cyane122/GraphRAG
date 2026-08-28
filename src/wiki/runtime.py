@@ -43,6 +43,7 @@ from src.wiki.models import (
     WikiPromptBundle,
     WikiScenePromptAsset,
 )
+from src.wiki.paths import wiki_thread_root_for_vault
 from src.wiki.recall import select_recall_documents
 from src.wiki.prompt_contract import (
     validate_actor_document_body,
@@ -522,5 +523,5 @@ def apply_pending_wiki_commit(
     thread_id: str,
 ) -> PendingWikiCommit | None:
     """다음 사용자 입력 직전에 thread의 commit.md를 적용합니다."""
-    store = WikiStore(vault_root / "threads" / thread_id)
+    store = WikiStore(wiki_thread_root_for_vault(vault_root, thread_id))
     return WikiCommitQueue(store).apply_pending()

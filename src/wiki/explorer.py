@@ -18,6 +18,7 @@ import re
 from pydantic import BaseModel
 
 from src.wiki.store import WikiStore
+from src.wiki.paths import wiki_thread_root_for_vault
 
 _H1_RE = re.compile(r"(?m)^#\s+(.+?)\s*$")
 
@@ -75,6 +76,8 @@ def list_wiki_documents(
     """한 대화가 참조하는 world 자산과 thread 문서를 요약 목록으로 반환합니다."""
     root = vault_root.resolve()
     summaries = _summarize_root(root / "worlds" / world_id, "world")
-    summaries.extend(_summarize_root(root / "threads" / thread_id, "thread"))
+    summaries.extend(
+        _summarize_root(wiki_thread_root_for_vault(root, thread_id), "thread")
+    )
     summaries.sort(key=lambda summary: (summary.scope, summary.type, summary.path))
     return summaries

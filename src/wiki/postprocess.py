@@ -21,7 +21,6 @@ from src.core.llm import extract_json_from_llm, get_model, get_response_text
 from src.wiki.context import document_body
 from src.wiki.document_creation import prepare_created_document
 from src.wiki.frontmatter import parse_frontmatter
-from src.wiki.markdown import document_revision, parse_markdown_sections
 from src.wiki.models import (
     CreateMemoryDocument,
     DocumentCreation,
@@ -29,6 +28,8 @@ from src.wiki.models import (
     SectionPatch,
     WikiDocument,
 )
+from src.wiki.evidence import first_nonempty_line
+from src.wiki.patches import build_actor_response_section_patch
 
 logger = logging.getLogger(__name__)
 
@@ -49,14 +50,6 @@ def _document_title(content: str) -> str:
     """Markdown 본문의 H1 제목을 반환합니다."""
     match = _H1_RE.search(content)
     return match.group(1).strip() if match else ""
-
-
-def _evidence_quote(actor_response: str) -> str:
-    """후처리 감사에 사용할 Actor Response의 첫 비어 있지 않은 원문 행을 반환합니다."""
-    return next(
-        (line.strip() for line in actor_response.splitlines() if line.strip()),
-        "",
-    )
 
 
 def _thread_id_of(documents: list[WikiDocument]) -> str | None:
@@ -87,29 +80,6 @@ async def _call_json(model_name: str, system_prompt: str, content: str) -> dict:
         strict=True,
     )
     return payload if isinstance(payload, dict) else {}
-
-
-def _build_section_patch(
-    document: WikiDocument,
-    section_path: tuple[str, ...],
-    replacement_markdown: str,
-    evidence: str,
-) -> SectionPatch | None:
-    """대상 섹션이 있으면 postprocessor용 SectionPatch를 만들어 반환합니다."""
-    section = parse_markdown_sections(document.content).get(section_path)
-    if section is None:
-        return None
-    return SectionPatch(
-        document=document.path,
-        base_revision=document.revision,
-        base_section_revision=document_revision(section.markdown),
-        base_markdown=section.markdown,
-        section_path=section_path,
-        replacement_markdown=replacement_markdown,
-        evidence=evidence,
-        evidence_source="actor_response",
-        confidence=1.0,
-    )
 
 
 def _merge_patches(
@@ -165,7 +135,7 @@ async def plan_memory_distortion(
     model_name: str,
 ) -> list[SectionPatch]:
     """활성 NPC 기억의 해석·감정만 왜곡하는 patch를 계획합니다(사실은 보존)."""
-    evidence = _evidence_quote(actor_response)
+    evidence = first_nonempty_line(actor_response)
     if not evidence:
         return []
     memories = [
@@ -204,7 +174,7 @@ async def plan_memory_distortion(
             f"- 해석: {interpretation}\n"
             f"- 감정: {emotion}"
         )
-        patch = _build_section_patch(
+        patch = build_actor_response_section_patch(
             memory,
             ("주관적 기억", "해석과 감정"),
             replacement,
@@ -241,7 +211,7 @@ async def plan_gossip(
     model_name: str,
 ) -> list[DocumentCreation]:
     """새로 생성된 event의 목격자(활성 인물 제외)에게 주관적 memory를 만듭니다."""
-    evidence = _evidence_quote(actor_response)
+    evidence = first_nonempty_line(actor_response)
     if not evidence:
         return []
     thread_id = _thread_id_of(documents)

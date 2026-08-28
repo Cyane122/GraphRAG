@@ -4,7 +4,7 @@
 # Manager turn-preparation pipeline orchestration.
 #
 # Functions
-#   - run_manager_pipeline(...) -> tuple[PromptParts, list[str], dict] : Run turn-preparation pipeline
+#   - run_manager_pipeline(user_input: str, pc_id: str, npc_id: str, recent_story: str, world_id: str | None, scenario_id: str | None, perspective: int, suppress_time_plan: bool, scene_need_hints: dict[str, str] | None = None, pending_kakao_messages: list[dict] | None = None, enable_kakao_preprocessing: bool = True, social_media_features: dict | None = None, thread_id: str | None = None, commit_id: str | None = None, turn_ooc_directives: str = "") -> tuple[PromptParts, list[str], dict] : Run turn-preparation pipeline
 # ================================
 
 from dataclasses import replace
@@ -12,7 +12,7 @@ from dataclasses import replace
 from src.agents.context.scene_keys import normalize_scene_types
 from src.agents.manager.integrated_planner import maybe_run_integrated_planner, validated_context_plan
 from src.agents.manager.core_context import assemble_core_context
-from src.agents.manager.models import ManagerDependencies, PromptParts
+from src.agents.manager.models import PromptParts
 from src.agents.manager.planning import bootstrap_manager, classify_scene_and_time
 from src.agents.manager.prompting import build_prompt_parts, resolve_prompt_world_config
 from src.config import MANAGER_PLANNER_MODE
@@ -27,9 +27,9 @@ async def run_manager_pipeline(
     npc_id: str,
     recent_story: str,
     world_id: str | None,
+    scenario_id: str | None,
     perspective: int,
     suppress_time_plan: bool,
-    deps: ManagerDependencies,
     scene_need_hints: dict[str, str] | None = None,
     pending_kakao_messages: list[dict] | None = None,
     enable_kakao_preprocessing: bool = True,
@@ -39,7 +39,7 @@ async def run_manager_pipeline(
     turn_ooc_directives: str = "",
 ) -> tuple[PromptParts, list[str], dict]:
     """Run turn preparation and optional pre-Actor KakaoTalk preprocessing."""
-    bootstrap = await bootstrap_manager(world_id, perspective, deps)
+    bootstrap = await bootstrap_manager(world_id, scenario_id, perspective)
     scene_plan = await classify_scene_and_time(
         user_input,
         recent_story,
@@ -47,7 +47,6 @@ async def run_manager_pipeline(
         pc_id,
         npc_id,
         suppress_time_plan,
-        deps,
     )
     personal_facts = await extract_personal_facts(
         user_input,
@@ -76,7 +75,6 @@ async def run_manager_pipeline(
         bootstrap,
         scene_plan,
         world_id,
-        deps,
         current_turn_personal_facts=personal_facts,
     )
     legacy_plan = {

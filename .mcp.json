@@ -6,7 +6,8 @@
       "args": [
         "mcp-server"
       ],
-      "env": {}
+      "env": {},
+      "timeout": 3600000
     }
   }
 }

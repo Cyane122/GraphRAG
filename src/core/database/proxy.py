@@ -1,7 +1,7 @@
 # ================================
 # src/core/database/proxy.py
 #
-# Runtime proxy that resolves the active Kuzu driver for the current Chainlit session.
+# Runtime proxy that resolves the active Kuzu driver for the current application session.
 #
 # Classes
 #   - ProxyDriver : Delegates session()/transaction() and execute_sync() to the current session driver or the default driver.

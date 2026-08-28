@@ -620,3 +620,8 @@ Chainlit 제거 + Codex 리뷰 지적 반영 + 백로그 정리.
 
 - [사용자 편의] 대화 전체의 Wiki 상태가 `applied`여도 최신 메시지에 연결된 적용 커밋이 없으면 메시지를 삭제할 수 있게 수정. legacy 커밋 탐색이 디렉터리를 문서 경로로 검증해 중단되던 오류도 함께 바로잡아, 실제 적용 이력이 있는 메시지는 기존 inverse 안전 절차를 계속 사용한다.
 - [런타임] Wiki 현재 장면의 한국어 날짜·시각에서 요일 뒤 쉼표를 허용해 정상 표기인 `금요일, 07시 20분`을 파싱하지 못하던 오류를 수정.
+
+## 2026-08-28
+
+- [리팩토링] 엔진의 동작을 바꾸지 않는 구조 정리를 완료. 미사용 Actor·이력·내보내기·메모리 migration 모듈과 legacy prompt fallback을 제거하고, 프롬프트는 Markdown 자산만 읽도록 단일화했다. Graph/Wiki accepted-turn 적용을 대칭 구조로 정리하고, Wiki thread 경로 검증·Manager 의존성·OOC 상태 적용·사회 그래프 모듈을 책임별 경계로 분리했다.
+- [개발 인프라] Wiki commit 계획을 prompt·policy·header-sync·error 단계와 공용 evidence/patch helper로 분해하고, FastAPI 앱을 얇은 factory와 router 계층으로 재구성했다. 전체 `tests/smoke_*.py` 23개 gate를 통과했다.

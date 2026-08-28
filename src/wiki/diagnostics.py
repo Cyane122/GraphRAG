@@ -18,6 +18,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 from src.wiki.markdown import parse_markdown_sections
+from src.wiki.paths import wiki_thread_root_for_vault
 from src.wiki.store import WikiStore
 
 
@@ -97,5 +98,5 @@ def diagnose_wiki_scope(
     seen_ids: dict[str, str] = {}
     diagnostics: list[WikiDiagnostic] = []
     _scan_root(root / "worlds" / world_id, seen_ids, diagnostics)
-    _scan_root(root / "threads" / thread_id, seen_ids, diagnostics)
+    _scan_root(wiki_thread_root_for_vault(root, thread_id), seen_ids, diagnostics)
     return diagnostics

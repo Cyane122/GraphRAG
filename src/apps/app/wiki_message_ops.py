@@ -26,17 +26,17 @@ from src.apps.app.models import (
 from src.apps.app.storage import ConversationStore
 from src.apps.app.wiki_controls import skip_wiki_commit
 from src.apps.app.settings import load_settings
-import src.apps.app.wiki_service as wiki_service
 from src.apps.app.wiki_service import (
     _message_payload,
     _preview_text,
     _strip_hidden_blocks,
     stream_wiki_turn,
 )
-from src.config import MODEL_PRO_UPDATER, wiki_system_defaults
+from src.config import MODEL_PRO_UPDATER, WIKI_VAULT_ROOT, wiki_system_defaults
 from src.simulation.state.models import WikiTurnUpdateRequest
 from src.simulation.state.updater import update_accepted_turn
 from src.wiki import WikiCommitError, WikiCommitQueue, WikiStore
+from src.wiki.paths import wiki_thread_root_for_vault
 
 
 _MAX_HISTORY_TURNS = 10
@@ -99,8 +99,11 @@ def _latest_pair(
 
 def _wiki_commit_queue(state: ConversationState) -> WikiCommitQueue:
     """현재 Wiki thread의 commit queue를 반환합니다."""
-    thread_root = Path(wiki_service.WIKI_VAULT_ROOT) / "threads" / state.thread_id
-    return WikiCommitQueue(WikiStore(thread_root))
+    return WikiCommitQueue(
+        WikiStore(
+            wiki_thread_root_for_vault(Path(WIKI_VAULT_ROOT), state.thread_id)
+        )
+    )
 
 
 def _inverse_latest_applied_pair(
@@ -163,7 +166,7 @@ async def _replace_wiki_update(
         settings = load_settings()
         update_result = await update_accepted_turn(
             WikiTurnUpdateRequest(
-                vault_root=Path(wiki_service.WIKI_VAULT_ROOT),
+                vault_root=Path(WIKI_VAULT_ROOT),
                 thread_id=state.thread_id,
                 user_input=user_message.content,
                 actor_response=assistant_message.content,

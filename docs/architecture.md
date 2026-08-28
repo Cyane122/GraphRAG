@@ -68,8 +68,9 @@ Storage-specific behavior remains behind that boundary:
 
 - Graph requests delegate persistent mutation to
   `src/simulation/state/graph_apply.py`.
-- Wiki requests delegate validated Markdown planning to
-  `src/wiki/commit_planner.py`.
+- Wiki requests delegate deferred commit planning and queueing to
+  `src/simulation/state/wiki_apply.py`; policy validation lives in
+  `src/wiki/commit_policy.py`.
 
 Do not create a second public Updater entry point for either mode.
 
@@ -82,13 +83,13 @@ The main orchestration path begins at
    reroll, edit, and deletion routing.
 2. `src.apps.app.commit.commit_pending_web` applies the previously accepted
    pending turn.
-3. `src.agents.prompt_factory.ooc_handler` may handle an OOC-only turn without
-   Actor generation.
+3. `src.simulation.state.apply.ooc` coordinates prompt-factory OOC parsing and
+   Graph state application without Actor generation.
 4. `src.agents.manager.pipeline.run_manager_pipeline` prepares scene
    classification and Graph context.
 5. `src.agents.prompt_factory.builder` assembles Fixed, Genre, and Dynamic prompt
    segments.
-6. `src.apps.app.actor` and `src.agents.actor` stream the Actor response.
+6. `src.apps.app.actor` streams the Actor response.
 7. `src.apps.app.output_guard` validates or repairs the output.
 8. `src.apps.app.pending_store` records the response as pending.
 9. On the next accepted input, the pending response enters the shared Updater and
@@ -217,7 +218,7 @@ Updater inputs retain paths and revisions because validated patching requires th
 | Graph/Wiki message operations | `src/apps/app/message_ops.py`, `src/apps/app/wiki_message_ops.py` |
 | Wiki controls and branching | `src/apps/app/wiki_controls.py`, `src/apps/app/wiki_branching.py` |
 | Conversation lifecycle | `src/apps/app/conversation_lifecycle.py` |
-| Actor calls and streaming | `src/apps/app/actor.py`, `src/agents/actor.py` |
+| Actor calls and streaming | `src/apps/app/actor.py` |
 | Manager preparation | `src/agents/manager/` |
 | Prompt assembly | `src/agents/prompt_factory/` |
 | Accepted-turn Updater | `src/simulation/state/updater.py` |

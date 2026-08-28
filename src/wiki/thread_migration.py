@@ -22,6 +22,7 @@ from src.wiki.models import (
     WikiDocument,
     WikiThreadMigrationPlan,
 )
+from src.wiki.paths import wiki_thread_root_for_vault
 from src.wiki.store import WikiStore
 
 
@@ -85,7 +86,7 @@ def plan_thread_contract_migration(
 ) -> WikiThreadMigrationPlan:
     """기존 캐릭터 문서를 읽고 원문을 쓰지 않는 migration 미리보기를 반환합니다."""
     documents = read_wiki_thread_documents(vault_root, thread_id)
-    thread_root = vault_root.resolve() / "threads" / thread_id
+    thread_root = wiki_thread_root_for_vault(vault_root, thread_id)
     queue = WikiCommitQueue(WikiStore(thread_root))
     if queue.load() is not None:
         return WikiThreadMigrationPlan(
@@ -147,7 +148,7 @@ def apply_thread_contract_migration(
         summary="Added missing runtime-owned character state sections.",
         patches=plan.patches,
     )
-    thread_root = vault_root.resolve() / "threads" / thread_id
+    thread_root = wiki_thread_root_for_vault(vault_root, thread_id)
     applied = WikiCommitQueue(WikiStore(thread_root)).apply_immediate(pending)
     return plan.model_copy(
         update={

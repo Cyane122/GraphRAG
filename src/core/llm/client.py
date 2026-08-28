@@ -1,20 +1,23 @@
 # ================================
 # src/core/llm/client.py
 #
-# Gemini LLM 클라이언트 및 유틸리티를 제공합니다.
+# LLM 클라이언트 및 provider 유틸리티를 제공합니다.
 #
 # Classes
 #   - _GeminiModel : generate_content / generate_content_async 인터페이스 래퍼
-#   - _DeepSeekModel : DeepSeek(Anthropic 호환)을 동일 인터페이스로 감싼 updater용 래퍼
 #   - _SafeResponse : response.text가 항상 str을 반환하도록 보장하는 래퍼
 #
 # Functions
+#   - _get_anthropic_client() -> AsyncAnthropic : direct Anthropic 클라이언트를 지연 생성해 반환
+#   - _get_anthropic_vertex_client() -> AsyncAnthropicVertex : Claude-on-Vertex 클라이언트를 지연 생성해 반환
+#   - _get_deepseek_client() -> AsyncAnthropic : DeepSeek Anthropic-compatible 클라이언트를 지연 생성해 반환
+#   - _stream_anthropic_text_chunks(stream: object, label: str) -> AsyncIterator[str] : Anthropic SSE 스트림에서 텍스트 청크를 추출
 #   - usage_token_counts(usage: object) -> dict[str, int | None] : provider usage 객체에서 prompt/output/thought/total 토큰 수 추출
 #   - record_llm_latency(log_source: str, model: str, start_epoch_ms: int, elapsed_ms: int, mime: str | None, status: str, tokens: dict[str, int | None] | None = None) -> None : LLM 호출 지연과 토큰 사용량을 logs/llm_latency.jsonl에 기록
-#   - is_rate_limit_error(exc: BaseException) -> bool : 예외가 429 RESOURCE_EXHAUSTED인지 판별(provider 공용, Actor 스트리밍도 공유)
+#   - is_rate_limit_error(exc: BaseException) -> bool : 예외가 재시도 가능한 403/429 provider 한도 오류인지 판별(provider 공용, Actor 스트리밍도 공유)
 #   - _run_generate_with_retries(generate_once: Callable[[], Awaitable[tuple[object, str]]], log_source: str, model_name: str, mime: str | None) -> object : 1회 생성 코루틴을 provider-무관하게 재시도/계측
 #   - get_client() -> genai.Client : 스트리밍 직접 호출 시 사용하는 클라이언트 반환
-#   - get_model(model_name: str, system_prompt: str | None) -> _GeminiModel | _DeepSeekModel : 이름에 따라 Gemini/DeepSeek 래퍼 반환
+#   - get_model(model_name: str, system_prompt: str | None) -> _GeminiModel : Gemini 래퍼 반환
 #   - get_response_text(response) -> str : response.text가 None인 경우 parts에서 텍스트 추출
 #   - log_empty_response_diagnostics(response: object, source: str) -> None : 빈 LLM 응답의 메타데이터를 출력
 #   - extract_json_from_llm(raw_text, source: str, log_errors: bool, strict: bool) -> dict | list : LLM 응답에서 JSON 안전 추출 (strict=True면 실패 시 LLMJsonError)
@@ -25,19 +28,21 @@ import json
 import random
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from time import perf_counter
 from types import SimpleNamespace
 
-from anthropic import AsyncAnthropic
+from anthropic import APIStatusError, AsyncAnthropic, AsyncAnthropicVertex, RateLimitError
 from google import genai
 from google.genai import types
+from google.genai.errors import APIError as GoogleAPIError
 
 from src.config import (
+    ANTHROPIC_API_KEY,
+    ANTHROPIC_VERTEX_REGION,
     DEEPSEEK_API_KEY,
     DEEPSEEK_BASE_URL,
-    DEEPSEEK_V4_PRO_MODEL,
     GOOGLE_CLOUD_LOCATION,
     GOOGLE_PROJECT_ID as PROJECT_ID,
     LLM_MAX_CONCURRENCY,
@@ -568,126 +573,10 @@ async def _run_generate_with_retries(
     ) from last_error
 
 
-# ════════════════════════════════════════════════════════════
-# DeepSeek(Anthropic 호환) 모델 래퍼
-# ════════════════════════════════════════════════════════════
-
-_deepseek_client: AsyncAnthropic | None = None
-
-
-def _is_deepseek_model(model_name: str) -> bool:
-    """모델 이름이 DeepSeek API로 라우팅되어야 하는지 판별한다."""
-    return model_name.lower().startswith("deepseek")
-
-
-def _resolve_deepseek_model_name(model_name: str) -> str:
-    """UI/설정용 DeepSeek 별칭을 실제 DeepSeek 모델 id로 매핑한다."""
-    if "v4-pro" in model_name.lower():
-        return DEEPSEEK_V4_PRO_MODEL
-    return model_name
-
-
-def _get_deepseek_client() -> AsyncAnthropic:
-    """모듈 레벨 DeepSeek(Anthropic 호환) 클라이언트를 최초 사용 시 생성해 반환한다."""
-    global _deepseek_client
-    if _deepseek_client is None:
-        if not DEEPSEEK_API_KEY:
-            raise RuntimeError("DEEPSEEK_API_KEY is required for DeepSeek updater models.")
-        _deepseek_client = AsyncAnthropic(
-            api_key=DEEPSEEK_API_KEY,
-            base_url=DEEPSEEK_BASE_URL,
-        )
-    return _deepseek_client
-
-
-def _deepseek_messages(contents: object) -> list[dict]:
-    """updater가 넘긴 contents를 Anthropic messages 형식으로 변환한다.
-
-    updater는 단일 문자열 프롬프트를 넘긴다. 이미 messages 리스트면 그대로 쓴다.
-    """
-    if isinstance(contents, str):
-        return [{"role": "user", "content": contents}]
-    if isinstance(contents, list):
-        return contents
-    return [{"role": "user", "content": str(contents)}]
-
-
-def _deepseek_response_text(resp: object) -> str:
-    """Anthropic 응답 content 블록에서 text 파트만 모은다(thinking 블록 제외)."""
-    parts: list[str] = []
-    for block in getattr(resp, "content", None) or []:
-        if getattr(block, "type", None) == "text":
-            parts.append(getattr(block, "text", "") or "")
-    return "".join(parts)
-
-
-class _DeepSeekModel:
-    """DeepSeek을 _GeminiModel과 동일한 generate_content_async 인터페이스로 감싼다.
-
-    updater 후처리 호출(비스트리밍 JSON 추출)만 대상으로 한다. Gemini의 JSON mime 대신
-    프롬프트 지시 + extract_json_from_llm로 JSON을 파싱하므로, generation_config에서
-    max_output_tokens / temperature만 반영하고 나머지 Gemini 전용 키는 무시한다.
-    """
-
-    def __init__(self, model_name: str, system_prompt: str | None) -> None:
-        self._model = model_name
-        self._system = system_prompt
-
-    async def _generate_once(
-        self,
-        contents: object,
-        config_dict: dict,
-        mime: str | None,
-        log_source: str,
-    ) -> tuple[_SafeResponse, str]:
-        """DeepSeek 비스트리밍 호출 1회. 세마포어로 동시성을 제한하고 타임아웃을 건다."""
-        kwargs: dict = {
-            "model": _resolve_deepseek_model_name(self._model),
-            "max_tokens": int(config_dict.get("max_output_tokens") or 4096),
-            "messages": _deepseek_messages(contents),
-            # actor 경로와 동일하게 thinking을 켜 추출 품질을 맞춘다. effort high는 롱폼
-            # 창작용이라 제외하고, temperature는 결정론적 JSON 추출을 위해 호출자 값(0.0)을
-            # 그대로 쓴다(DeepSeek은 actor에서 thinking+temp≠1을 이미 함께 쓰므로 충돌 없음).
-            "extra_body": {"thinking": {"type": "enabled"}},
-        }
-        if self._system:
-            kwargs["system"] = self._system
-        temperature = config_dict.get("temperature")
-        if temperature is not None:
-            kwargs["temperature"] = temperature
-
-        async with _LLM_SEMAPHORE:
-            resp = await asyncio.wait_for(
-                _get_deepseek_client().messages.create(**kwargs),
-                timeout=_LLM_TIMEOUT_SEC,
-            )
-        text = _deepseek_response_text(resp)
-        return (
-            _SafeResponse(
-                SimpleNamespace(text=text, usage_metadata=getattr(resp, "usage", None))
-            ),
-            "ok",
-        )
-
-    async def generate_content_async(self, contents, generation_config: dict | None = None):
-        """비동기 DeepSeek 응답을 반환한다(타임아웃/429 재시도는 공용 헬퍼가 담당)."""
-        config_dict = generation_config or {}
-        log_source = str(config_dict.get("log_source") or "unlabeled")
-        mime = config_dict.get("response_mime_type")
-
-        async def _once() -> tuple[_SafeResponse, str]:
-            """이 모델의 1회 생성 시도를 공용 재시도 루프에 넘길 형태로 감싼다."""
-            return await self._generate_once(contents, config_dict, mime, log_source)
-
-        return await _run_generate_with_retries(_once, log_source, self._model, mime)
-
-
 def get_model(
     model_name: str, system_prompt: str | None = None
-) -> "_GeminiModel | _DeepSeekModel":
-    """모델 이름에 따라 Gemini/DeepSeek 래퍼를 반환한다(이름이 deepseek*면 DeepSeek)."""
-    if _is_deepseek_model(model_name):
-        return _DeepSeekModel(model_name=model_name, system_prompt=system_prompt)
+) -> "_GeminiModel":
+    """주어진 모델 이름으로 Gemini 래퍼를 반환한다."""
     return _GeminiModel(model_name=model_name, system_prompt=system_prompt)
 
 

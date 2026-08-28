@@ -4,7 +4,7 @@
 # Manager core graph/context collection helpers.
 #
 # Functions
-#   - assemble_core_context(user_input: str, recent_story: str, pc_id: str, npc_id: str, bootstrap: ManagerBootstrap, scene_plan: SceneTimePlan, world_id: str | None, deps: ManagerDependencies, current_turn_personal_facts: list[dict] | None = None) -> CoreContext : Collect graph context for prompt rendering
+#   - assemble_core_context(user_input: str, recent_story: str, pc_id: str, npc_id: str, bootstrap: ManagerBootstrap, scene_plan: SceneTimePlan, world_id: str | None, current_turn_personal_facts: list[dict] | None = None) -> CoreContext : Collect graph context for prompt rendering
 # ================================
 
 import asyncio
@@ -12,13 +12,24 @@ from datetime import datetime
 
 from src.agents.context.planner import build_context_plan, context_plan_to_prompt_dict
 from src.agents.context.transient import sanitize_location_hints_for_turn
-from src.agents.manager.models import CoreContext, ManagerBootstrap, ManagerDependencies, SceneTimePlan
+from src.agents.manager.models import CoreContext, ManagerBootstrap, SceneTimePlan
 from src.agents.context.scene_state import get_scene_state, scene_state_to_prompt_dict
+from src.agents.manager.queries import (
+    _LOCATION_ID_ALIASES,
+    detect_present_npcs,
+    fetch_character_data,
+    fetch_location,
+    fetch_location_character_ids,
+    fetch_location_hierarchy,
+    fetch_npc_profiles,
+    fetch_recent_events,
+    fetch_relationship_data,
+    get_location_name_from_id,
+)
 from src.assets.worlds.base import World
 from src.core.database import async_driver
 from src.core.embedding.encoder import embed_async
 from src.simulation.systems.personal_facts import fetch_active_personal_facts, merge_prompt_facts
-from src.agents.manager.queries import _LOCATION_ID_ALIASES
 
 
 async def assemble_core_context(
@@ -29,7 +40,6 @@ async def assemble_core_context(
     bootstrap: ManagerBootstrap,
     scene_plan: SceneTimePlan,
     world_id: str | None,
-    deps: ManagerDependencies,
     current_turn_personal_facts: list[dict] | None = None,
 ) -> CoreContext:
     """Collect graph context needed before the final prompt rendering stage."""
@@ -37,13 +47,11 @@ async def assemble_core_context(
         pc_id,
         npc_id,
         scene_plan.scene_types,
-        deps,
     )
     location_id, location_name, location_nodes = await _resolve_turn_location(
         scene_plan.time_plan,
         bootstrap.global_state,
         npc_id,
-        deps,
     )
     location_nodes = sanitize_location_hints_for_turn(location_nodes, user_input, recent_story)
 
@@ -57,7 +65,6 @@ async def assemble_core_context(
         bootstrap.world,
         npc_id,
         pc_id,
-        deps,
         scene_plan.schedule_context,
     )
     scene_state_dict = _build_scene_state_dict(
@@ -121,14 +128,13 @@ async def _fetch_core_records(
     pc_id: str,
     npc_id: str,
     scene_types: list[str],
-    deps: ManagerDependencies,
 ) -> tuple[dict, dict, dict, list[dict]]:
     """Fetch character, relationship, and recent event records in parallel."""
     return await asyncio.gather(
-        deps.fetch_character_data(npc_id, scene_types),
-        deps.fetch_character_data(pc_id, scene_types),
-        deps.fetch_relationship_data(npc_id, pc_id),
-        deps.fetch_recent_events(npc_id, pc_id, 3),
+        fetch_character_data(npc_id, scene_types),
+        fetch_character_data(pc_id, scene_types),
+        fetch_relationship_data(npc_id, pc_id),
+        fetch_recent_events(npc_id, pc_id, 3),
     )
 
 
@@ -136,17 +142,16 @@ async def _resolve_turn_location(
     time_plan: dict,
     global_state: dict,
     npc_id: str,
-    deps: ManagerDependencies,
 ) -> tuple[str | None, str, list[dict]]:
     """Resolve location id/name and fetch the full PART_OF hierarchy for prompt injection."""
     loc_id = time_plan.get("new_location_id") or global_state.get("currentLocationId")
     new_location = time_plan.get("new_location") if isinstance(time_plan.get("new_location"), dict) else {}
     location_name = (
-        await deps.get_location_name_from_id(loc_id)
+        await get_location_name_from_id(loc_id)
         or new_location.get("name")
-        or await deps.fetch_location(npc_id)
+        or await fetch_location(npc_id)
     )
-    location_nodes = await deps.fetch_location_hierarchy(loc_id) if loc_id else []
+    location_nodes = await fetch_location_hierarchy(loc_id) if loc_id else []
     if not location_nodes and new_location:
         location_nodes = [{
             "id": loc_id,
@@ -165,7 +170,6 @@ async def _fetch_present_npc_context(
     world: World,
     npc_id: str,
     pc_id: str,
-    deps: ManagerDependencies,
     schedule_context: dict | None = None,
 ) -> tuple[list[dict], list[dict], bool]:
     """Fetch active and ambient secondary NPC profiles for the current location.
@@ -174,17 +178,17 @@ async def _fetch_present_npc_context(
     pc_in_scene is True when the PC's stored location matches the current scene location.
     """
     npc_name_map = world.get_npc_name_map()
-    located_ids = await deps.fetch_location_character_ids(location_id)
+    located_ids = await fetch_location_character_ids(location_id)
     scheduled_ids = _active_schedule_character_ids(schedule_context or {}, location_id)
     excluded_ids = {npc_id, pc_id}
     ambient_seed_ids = sorted({*located_ids, *scheduled_ids} - excluded_ids)
-    mentioned_ids = set(deps.detect_present_npcs(user_input, recent_story, npc_name_map))
+    mentioned_ids = set(detect_present_npcs(user_input, recent_story, npc_name_map))
     # Location state is the primary source; mentions add characters talked about but not present.
     # Never require a name mention to activate a character who is already at the scene location —
     # that would cause identity loss when the Actor describes them by role ("여학생") instead of name.
     active_ids = sorted(set(ambient_seed_ids) | (mentioned_ids - excluded_ids))
     ambient_ids = sorted(set(located_ids) - set(active_ids) - {npc_id, pc_id})
-    active_npcs = await deps.fetch_npc_profiles(active_ids, npc_id, pc_id) if active_ids else []
+    active_npcs = await fetch_npc_profiles(active_ids, npc_id, pc_id) if active_ids else []
     ambient_npcs = [{"char_id": char_id} for char_id in ambient_ids]
     pc_in_scene = pc_id in located_ids
     return active_npcs, ambient_npcs, pc_in_scene

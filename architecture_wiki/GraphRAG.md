@@ -25,7 +25,7 @@ GraphRAG는 Kuzu 그래프를 상태의 원본으로 사용하는 기존 역할�
 - 그래프 저장소와 transaction: `src/core/database/`
 - 턴 준비와 컨텍스트 선택: `src/agents/manager/`, `src/agents/context/`
 - 프롬프트 조립: `src/agents/prompt_factory/`
-- Actor 스트리밍: `src/apps/app/actor.py`, `src/agents/actor.py`
+- Actor 스트리밍: `src/apps/app/actor.py`
 - 수락된 응답의 상태 반영: `src/simulation/state/`, `src/simulation/systems/`
 - 월드 정적 자산: `src/assets/worlds/<world_id>/`
 

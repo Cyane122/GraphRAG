@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import shutil
 import sys
 from tempfile import TemporaryDirectory
@@ -144,9 +145,12 @@ def _assert_prompt_leaks(
             contract,
             f"prompt leaked {forbidden!r}",
         )
+    # 부분 문자열이 아니라 단어 경계로 본다. 산문에 쓰이는 일반 영단어("parallel
+    # threads")는 런타임 용어 노출이 아니므로 통과시키고, "thread_id"나 "this thread"
+    # 같은 실제 노출은 계속 잡는다.
     for forbidden in ("thread", "wiki", "scenario"):
         _assert_contract(
-            forbidden not in lowered_prompt,
+            re.search(rf"\b{forbidden}\b", lowered_prompt) is None,
             world_id,
             scenario_id,
             "forbidden word",

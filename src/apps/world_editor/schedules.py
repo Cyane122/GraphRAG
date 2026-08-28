@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from src.apps.world_editor import source_edit as se
+from src.apps.world_editor.source_ops.core import _fail, _safe_write
 from src.apps.world_editor.worlds import world_pkg_dir
 
 _FILE_NAME = "schedule_templates.json"
@@ -97,9 +97,9 @@ def write_schedule_templates(world_id: str, data: dict) -> dict:
         old_text = path.read_text(encoding="utf-8") if path.exists() else ""
         if old_text == new_text:
             return {"ok": True, "message": "변경할 schedule template 이 없습니다.", "backup": None, "formatted": False}
-        backup = se._safe_write(path, new_text) if path.exists() else None
+        backup = _safe_write(path, new_text) if path.exists() else None
         if not path.exists():
             path.write_text(new_text, encoding="utf-8")
     except OSError as e:
-        return se._fail(f"파일 기록 실패: {e}")
+        return _fail(f"파일 기록 실패: {e}")
     return {"ok": True, "message": "schedule template 을 저장했습니다.", "backup": backup, "formatted": True}

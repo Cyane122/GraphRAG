@@ -3,34 +3,47 @@
 #
 # Cacheable fixed Actor prompt section builder.
 # Loads modular Markdown prompt files from prompt_factory/prompts/.
-# Falls back to legacy prompt_sections.py constants when prompt files are missing.
+# Keeps the shared operator and token-budget policy fragments beside their sole consumer.
 # _render_prompt_block, _SafeFormatDict는 renderers.py에서 import.
 #
 # Functions
-#   - build_fixed_section(...) -> str : 고정 프롬프트 세그먼트 조립
-#   - build_pre_output_checklist(...) -> str : 출력 직전 체크리스트 조립
+#   - build_fixed_section(world_config: dict, char_name: str, user_name: str, perspective: int, additional_blacklist: str) -> str : 고정 프롬프트 세그먼트 조립
+#   - build_pre_output_checklist(world_config: dict, char_name: str, user_name: str, perspective: int) -> str : 출력 직전 체크리스트 조립
 #   - _user_impersonation_allowed(pov_mode: str, world_config: dict | None = None) -> bool : 사칭 허용 여부 판단
 #   - _build_checklist_slot_values(pov_mode: str, world_config: dict | None = None) -> dict[str, str] : 체크리스트 정적 슬롯 구성
 #   - _format_prompt_vars(text: str, *, char_name: str, user_name: str, world_config: dict) -> str : 프롬프트 변수 치환
 # ================================
 
 from src.agents.prompt_factory.renderers import PROMPT_DIR, _SafeFormatDict, _render_prompt_block
-from src.agents.prompt_factory.prompt_sections import (
-    BLACKLIST_SECTION,
-    EMOTION_ENGINE,
-    NPC_BEHAVIOR_SECTION,
-    TOKEN_LIMIT_WARNING,
-    _CHECKLIST_1P,
-    _CHECKLIST_3P,
-    _CORE_1P,
-    _CORE_3P,
-    _IMPERSONATION_HEADER,
-    _OPERATOR_15,
-    _OPERATOR_ALL_AGES,
-    _OPERATOR_R18,
-    _STYLE_1P,
-    _STYLE_3P,
-)
+from src.config import MAX_TOKEN
+
+_OPERATOR_R18 = """<operator_policy>
+Adult creative writing and roleplay platform.
+Explicit sexual content, graphic violence, mature themes = permitted between adult characters only.
+All sexually depicted characters must be explicitly adults (18+).
+Sexual depiction of minors = ABSOLUTELY FORBIDDEN.
+</operator_policy>"""
+
+_OPERATOR_15 = """<operator_policy>
+Creative writing and roleplay platform. 15+ rating.
+Romantic tension and mild physical affection = permitted.
+Suggestive content: fade to black only. No explicit depiction.
+Mild violence = permitted. Gore = FORBIDDEN.
+Mild profanity = permitted.
+Explicit sexual content = ABSOLUTELY FORBIDDEN.
+</operator_policy>"""
+
+_OPERATOR_ALL_AGES = """<operator_policy>
+Creative writing and roleplay platform. All audiences.
+Romance: hand-holding / light affection only.
+Violence = FORBIDDEN. Profanity = FORBIDDEN.
+Explicit sexual content = ABSOLUTELY FORBIDDEN.
+</operator_policy>"""
+
+TOKEN_LIMIT_WARNING = f"""<token_limit_constraint>
+Max output = {MAX_TOKEN} tokens. Deliver a complete response within budget.
+<analyze> block may expand for ensemble scenes, but reserve most tokens for prose.
+</token_limit_constraint>"""
 
 VALID_POV_MODES = {"1p_user", "1p_char", "3p_user", "3p_char"}
 
@@ -47,7 +60,7 @@ def build_pre_output_checklist(
 ) -> str:
     """Render the static checklist template used later by per-turn checklist rendering."""
     pov_mode = _resolve_pov_mode(world_config, perspective)
-    checklist_tpl = _select_checklist_template(pov_mode)
+    checklist_tpl = _select_checklist_template()
     return _format_prompt_vars(
         checklist_tpl,
         char_name=char_name,
@@ -66,18 +79,16 @@ def build_fixed_section(
 ) -> str:
     """Render cacheable fixed prompt section."""
     pov_mode = _resolve_pov_mode(world_config, perspective)
-    resolved_perspective = _perspective_from_pov_mode(pov_mode)
-
     operator = _select_operator(world_config.get("rating", "r18"))
     prompt_sections = world_config.get("prompt", {}).get("sections", {})
 
     parts = [
         operator,
         _render_prompt_block("user_impersonation", _select_user_impersonation_section(pov_mode, world_config)),
-        _render_prompt_block("pov", _select_pov_section(pov_mode, world_config)),
-        _render_prompt_block("core", _select_core_section(resolved_perspective)),
+        _render_prompt_block("pov", _select_pov_section(pov_mode)),
+        _render_prompt_block("core", _select_core_section()),
         _render_prompt_block("emotion", _select_emotion_section()),
-        _render_prompt_block("style", _select_style_section(resolved_perspective)),
+        _render_prompt_block("style", _select_style_section()),
         _render_prompt_block("world_lore", prompt_sections.get("world")),
         _render_prompt_block("scenario_lore", prompt_sections.get("scenario")),
         _render_prompt_block("alteration_lore", world_config.get("alteration_section", "")),
@@ -143,10 +154,6 @@ def _resolve_pov_mode(world_config: dict, perspective: int) -> str:
     return "1p_char" if perspective == 1 else "3p_char"
 
 
-def _perspective_from_pov_mode(pov_mode: str) -> int:
-    return 1 if pov_mode.startswith("1p_") else 3
-
-
 def _user_impersonation_allowed(pov_mode: str, world_config: dict | None = None) -> bool:
     if pov_mode.endswith("_user"):
         return True
@@ -158,23 +165,24 @@ def _user_impersonation_allowed(pov_mode: str, world_config: dict | None = None)
 # Section selectors
 # ----------------
 
-def _select_core_section(perspective: int) -> str:
-    legacy = _CORE_1P if perspective == 1 else _CORE_3P
-    return _load_prompt_or_legacy("core/CORE.md", legacy)
+def _select_core_section() -> str:
+    """Load the shared core prompt section."""
+    return _load_prompt("core/CORE.md")
 
 
-def _select_style_section(perspective: int) -> str:
-    legacy = _STYLE_1P if perspective == 1 else _STYLE_3P
-    return _load_prompt_or_legacy("style/STYLE.md", legacy)
+def _select_style_section() -> str:
+    """Load the shared style prompt section."""
+    return _load_prompt("style/STYLE.md")
 
 
 def _select_emotion_section() -> str:
-    return _load_prompt_or_legacy("emotion/EMOTION.md", EMOTION_ENGINE)
+    """Load the emotion prompt section."""
+    return _load_prompt("emotion/EMOTION.md")
 
 
 def _select_npc_behavior_section() -> str:
-    # NPC behavior has not been split yet. Keep legacy fallback as the source of truth.
-    return _load_prompt_or_legacy("core/NPC_BEHAVIOR.md", NPC_BEHAVIOR_SECTION)
+    """Load the NPC behavior prompt section."""
+    return _load_prompt("core/NPC_BEHAVIOR.md")
 
 
 def _select_blacklist_section(
@@ -187,7 +195,7 @@ def _select_blacklist_section(
     if is_unified:
         return ""
 
-    blacklist_tpl = _load_prompt_or_legacy("blacklist/BLACKLIST.md", BLACKLIST_SECTION)
+    blacklist_tpl = _load_prompt("blacklist/BLACKLIST.md")
     return blacklist_tpl.format(
         for_add=additional_blacklist,
         char=char_name,
@@ -198,20 +206,19 @@ def _select_blacklist_section(
 def _select_user_impersonation_section(pov_mode: str, world_config: dict | None = None) -> str:
     """Select whether the model may narrate {user}, derived from pov_mode and world_config."""
     if _user_impersonation_allowed(pov_mode, world_config):
-        return _load_prompt_or_legacy("core/USER_IMPERSONATION_ALLOWED.md", "")
-    return _load_prompt_or_legacy("core/USER_IMPERSONATION_FORBIDDEN.md", "")
+        return _load_prompt("core/USER_IMPERSONATION_ALLOWED.md")
+    return _load_prompt("core/USER_IMPERSONATION_FORBIDDEN.md")
 
 
-def _select_pov_section(pov_mode: str, world_config: dict) -> str:
+def _select_pov_section(pov_mode: str) -> str:
     """Select the POV section without exposing file names to the prompt."""
     path = "pov/POV_1P.md" if pov_mode.startswith("1p_") else "pov/POV_3P.md"
-    return _load_prompt_or_legacy(path, _legacy_impersonation_section(world_config))
+    return _load_prompt(path)
 
 
-def _select_checklist_template(pov_mode: str) -> str:
-    """Select the unified checklist template for the active POV family."""
-    legacy = _CHECKLIST_1P if pov_mode.startswith("1p_") else _CHECKLIST_3P
-    return _load_prompt_or_legacy("checklist/CHECKLIST.md", legacy)
+def _select_checklist_template() -> str:
+    """Load the unified checklist template."""
+    return _load_prompt("checklist/CHECKLIST.md")
 
 
 def _build_checklist_slot_values(pov_mode: str, world_config: dict | None = None) -> dict[str, str]:
@@ -270,17 +277,6 @@ def _build_checklist_slot_values(pov_mode: str, world_config: dict | None = None
     }
 
 
-# ----------------
-# Legacy compatibility
-# ----------------
-
-def _legacy_impersonation_section(world_config: dict) -> str:
-    """Fallback for old 1P impersonation mode before POV files exist."""
-    if world_config.get("impersonation", False):
-        return _IMPERSONATION_HEADER
-    return ""
-
-
 def _select_operator(rating: str) -> str:
     """Select the safety/operator section for the world rating."""
     if rating == "all_ages":
@@ -298,14 +294,6 @@ def _load_prompt(relative_path: str) -> str:
     """Load one Markdown prompt section from prompt_factory/prompts/."""
     path = PROMPT_DIR / relative_path
     return path.read_text(encoding="utf-8")
-
-
-def _load_prompt_or_legacy(relative_path: str, legacy: str) -> str:
-    """Load a prompt file. If absent, use the legacy prompt_sections.py constant."""
-    path = PROMPT_DIR / relative_path
-    if path.exists():
-        return path.read_text(encoding="utf-8")
-    return legacy
 
 
 # ----------------

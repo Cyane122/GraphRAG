@@ -69,24 +69,6 @@ async def fetch_secret_hints(
     return [dict(hint) for hint in selected]
 
 
-def _build_secret_hint_block(hints: list[SecretHint]) -> str:
-    """
-    Format Secret hints as hidden dynamic prompt comments.
-
-    The block is intentionally subtext-oriented: it tells the actor what pressure
-    can leak into behavior without exposing private_summary or demanding a reveal.
-    """
-    if not hints:
-        return ""
-
-    lines = [
-        "<!-- Secret/subtext hints: keep these implicit; do not state the secret directly. -->"
-    ]
-    for hint in hints:
-        lines.append(f"<!-- [{hint['title']}] {hint['hint']} -->")
-    return "\n".join(lines)
-
-
 def _matches_context(row: dict, owner_id: str, pc_id: str) -> bool:
     """
     Return true when a Secret belongs to the current focus owner.

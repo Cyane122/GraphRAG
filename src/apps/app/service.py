@@ -33,7 +33,8 @@ from pathlib import Path
 from uuid import uuid4
 
 from src.agents.manager import run_manager
-from src.agents.prompt_factory.ooc_handler import is_ooc, parse_ooc
+from src.agents.prompt_factory.ooc_handler import is_ooc
+from src.simulation.state.apply.ooc import handle_ooc
 from src.agents.prompt_factory.usernote import build_usernotes_block
 from src.simulation.systems.world_dynamics.organic import (
     set_pregnant_manual,
@@ -197,7 +198,7 @@ async def _parse_ooc_if_needed(content: str, state: ConversationState) -> dict |
     """Apply OOC spans before generation and return the OOC result."""
     if not _should_parse_ooc(content):
         return None
-    return await parse_ooc(
+    return await handle_ooc(
         content,
         npc_id=state.npc_id,
         npc_name=state.npc_name_kor,
@@ -383,7 +384,7 @@ async def _run_generation_events(
     queued_kakao_messages = list(state.pending_kakao_messages or [])
 
     yield {"type": "status", "content": random.choice(_STATUS_TEXTS)}
-    fixed, genre, dynamic, scene_types, manager_effects = await run_manager(
+    prompts, scene_types, manager_effects = await run_manager(
         user_input=user_input,
         pc_id=state.pc_id,
         npc_id=state.npc_id,
@@ -391,7 +392,6 @@ async def _run_generation_events(
         world_id=state.world_id,
         scenario_id=state.scenario_id,
         perspective=state.perspective,
-        return_meta=True,
         suppress_time_plan=bool(ooc_result and ooc_result.get("time_changed")),
         scene_need_hints=state.scene_need_hints,
         pending_kakao_messages=queued_kakao_messages,
@@ -401,6 +401,9 @@ async def _run_generation_events(
         commit_id=None if ooc_result else commit_id,
         turn_ooc_directives=turn_ooc_directives,
     )
+    fixed = prompts.fixed
+    genre = prompts.genre
+    dynamic = prompts.dynamic
     manager_effects = _apply_ooc_effects(manager_effects, ooc_result, state.pc_id)
 
     if state.npc_name_kor:

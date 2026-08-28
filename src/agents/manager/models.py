@@ -8,11 +8,9 @@
 #   - SceneTimePlan : Scene types and prompt time baseline bundle
 #   - CoreContext : Graph context bundle for prompt rendering
 #   - PromptParts : Fixed, genre, and dynamic prompt bundle
-#   - ManagerDependencies : Query and classifier dependencies injected by manager/__init__.py
 # ================================
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Awaitable, Callable
 
 from src.assets.worlds.base import World
 
@@ -68,27 +66,3 @@ class PromptParts:
     fixed: str
     genre: str
     dynamic: str
-
-
-@dataclass
-class ManagerDependencies:
-    """Low-level manager dependencies injected from manager/__init__.py to avoid cycles."""
-
-    load_world_instance: Callable[[str | None], World]
-    fetch_global_state: Callable[[datetime], Awaitable[dict]]
-    try_rule_based: Callable[[str, str], dict | None]
-    get_allowed_locations: Callable[[], Awaitable[str]]
-    classify_scene_only: Callable[[str, str, dict[str, str] | None], Awaitable[dict]]
-    classify_and_parse_time: Callable[
-        [str, str, dict, str, dict[str, str] | None, dict | None],
-        Awaitable[dict],
-    ]
-    fetch_character_data: Callable[[str, list[str]], Awaitable[dict]]
-    fetch_relationship_data: Callable[[str, str], Awaitable[dict]]
-    fetch_recent_events: Callable[[str, str, int], Awaitable[list[dict]]]
-    get_location_name_from_id: Callable[[str | None], Awaitable[str | None]]
-    fetch_location: Callable[[str], Awaitable[str]]
-    fetch_location_hierarchy: Callable[[str], Awaitable[list[dict]]]
-    detect_present_npcs: Callable[[str, str, dict[str, str]], list[str]]
-    fetch_location_character_ids: Callable[[str | None], Awaitable[list[str]]]
-    fetch_npc_profiles: Callable[[list[str], str, str], Awaitable[list[dict]]]

@@ -23,9 +23,11 @@ from src.simulation.systems.world_dynamics.organic_models import (
     normalize_contraception_value,
 )
 from src.wiki.context import document_body, scene_datetime_and_location
+from src.wiki.evidence import first_nonempty_line
 from src.wiki.frontmatter import parse_frontmatter
-from src.wiki.markdown import document_revision, parse_markdown_sections
+from src.wiki.markdown import parse_markdown_sections
 from src.wiki.models import PendingWikiCommit, SectionPatch, WikiDocument
+from src.wiki.patches import build_actor_response_section_patch
 
 _PROMPT_PATH = Path(__file__).parent / "prompts" / "personality_drift.md"
 _CONTRACEPTION_PROMPT_PATH = Path(__file__).parent / "prompts" / "contraception_state.md"
@@ -185,38 +187,10 @@ def _actor_character(
     )
 
 
-def _evidence_quote(text: str, *, pregnancy_signal: bool = False) -> str:
-    """Accepted Actor Response에서 후처리 근거로 쓸 정확한 한 행을 반환합니다."""
+def _pregnancy_evidence_quote(text: str) -> str:
+    """Return the first nonempty Actor line that explicitly signals pregnancy risk."""
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    if pregnancy_signal:
-        return next(
-            (line for line in lines if _has_explicit_internal_risk(line)),
-            "",
-        )
-    return lines[0] if lines else ""
-
-
-def _patch(
-    document: WikiDocument,
-    section_path: tuple[str, ...],
-    replacement: str,
-    evidence: str,
-) -> SectionPatch | None:
-    """존재하는 section 하나에 대한 revision-safe patch를 반환합니다."""
-    section = parse_markdown_sections(document.content).get(section_path)
-    if section is None or not evidence:
-        return None
-    return SectionPatch(
-        document=document.path,
-        base_revision=document.revision,
-        base_section_revision=document_revision(section.markdown),
-        base_markdown=section.markdown,
-        section_path=section_path,
-        replacement_markdown=replacement,
-        evidence=evidence,
-        evidence_source="actor_response",
-        confidence=1.0,
-    )
+    return next((line for line in lines if _has_explicit_internal_risk(line)), "")
 
 
 def _has_durable_trigger(
@@ -247,7 +221,7 @@ async def plan_personality_drift(
 ) -> list[SectionPatch]:
     """Durable trigger가 있을 때만 정적 성격을 건드리지 않는 원장 bullet을 계획합니다."""
     character = _actor_character(documents, actor_profile_id)
-    evidence = _evidence_quote(actor_response)
+    evidence = first_nonempty_line(actor_response)
     section_path = ("현재 상태", "Personality Change Ledger")
     if character is None or not evidence or not _has_durable_trigger(documents, pending):
         return []
@@ -306,7 +280,12 @@ async def plan_personality_drift(
     replacement = "\n".join(
         ["### Personality Change Ledger", "", *bullets, new_bullet]
     )
-    patch = _patch(character, section_path, replacement, evidence)
+    patch = build_actor_response_section_patch(
+        character,
+        section_path,
+        replacement,
+        evidence,
+    )
     return [patch] if patch is not None else []
 
 
@@ -389,7 +368,7 @@ async def plan_organic_state(
     if fields.get("Menstrual cycle", "disabled").lower() != "enabled":
         return [], None
 
-    evidence = _evidence_quote(actor_response)
+    evidence = first_nonempty_line(actor_response)
     header_time = parse_prose_header_datetime(actor_response)
     scene = next(
         (
@@ -446,13 +425,13 @@ async def plan_organic_state(
 
     ooc_message: str | None = None
     protection_ooc = _protection_ooc_value(actor_response)
-    risk_evidence = _evidence_quote(actor_response, pregnancy_signal=True)
+    risk_evidence = _pregnancy_evidence_quote(actor_response)
     if protection_ooc == "none":
         risk_this_turn = True
         risk_evidence = (
             risk_evidence
             or _visible_response_evidence(actor_response)
-            or _evidence_quote(actor_response)
+            or first_nonempty_line(actor_response)
         )
     elif protection_ooc in {"condom", "n/a"}:
         risk_this_turn = False
@@ -491,5 +470,10 @@ async def plan_organic_state(
         f"- Internal ejaculation count this cycle: {count}\n"
         f"- Other parent: {other_parent}"
     )
-    patch = _patch(character, section_path, replacement, evidence)
+    patch = build_actor_response_section_patch(
+        character,
+        section_path,
+        replacement,
+        evidence,
+    )
     return ([patch] if patch is not None else []), ooc_message

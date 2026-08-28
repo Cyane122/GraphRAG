@@ -178,16 +178,6 @@ def _cycle_status(dyn_state: dict) -> str:
     return f"{phase} / pregnancy_risk={risk}"
 
 
-def _build_cycle_line(dyn_state: dict) -> str:
-    """단일 캐릭터 CYCLE 체크리스트 라인 (레거시 호환용)."""
-    if dyn_state.get("has_menstrual_cycle") is False:
-        return "CYCLE: n/a"
-    return (
-        f"CYCLE: {_cycle_status(dyn_state)} "
-        "-> If condom omitted AND pregnancy_risk=있음 -> flag in interior monologue."
-    )
-
-
 def _build_all_cycle_lines(char_data: dict, npc_data_list: list[dict]) -> str:
     """등장 중인 모든 여성 캐릭터의 생리 주기를 CoT에 출력합니다."""
     entries: list[tuple[str, dict]] = []

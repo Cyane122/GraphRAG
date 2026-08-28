@@ -30,6 +30,7 @@ from src.wiki import (
     WikiStore,
     ensure_audit_baseline,
 )
+from src.wiki.paths import wiki_thread_root_for_vault
 
 
 _FRONTMATTER_BLOCK_RE = re.compile(
@@ -174,8 +175,8 @@ def branch_wiki_conversation_before_message(
     branch_thread_id = _new_branch_thread_id(state, store)
     vault_root = Path(WIKI_VAULT_ROOT).resolve()
     threads_root = vault_root / "threads"
-    source_root = (threads_root / state.thread_id).resolve()
-    branch_root = (threads_root / branch_thread_id).resolve()
+    source_root = wiki_thread_root_for_vault(vault_root, state.thread_id)
+    branch_root = wiki_thread_root_for_vault(vault_root, branch_thread_id)
     if (
         source_root.parent != threads_root
         or branch_root.parent != threads_root
