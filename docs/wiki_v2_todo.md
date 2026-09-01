@@ -253,12 +253,13 @@ wiki_v2/
 - [x] Event frontmatter에 source commit과 user/assistant message ID를 기록한다.
 - [x] pending commit에서 새 문서를 배타적으로 생성하고 inverse 시 미수정 문서만 삭제하며 inverse의 inverse로 복구한다.
 - [x] Memory 생성의 owner·private visibility·주관적 서술 계약을 확정하고 `CreateDocument`를 확장한다.
-- [x] Actor 응답은 현재 Actor owner, player 입력은 player owner의 Memory만 생성하도록 근거 권한을 강제한다.
+- [x] Actor 응답은 현재 Actor owner, player 입력은 player owner의 Memory만 생성하도록 근거 권한을 강제하고, 이를 player·현재 Actor·장면 활성 제3자(`scene/current.md` 기준)로 넓혀 제3자 owner는 그 인물을 실제로 언급하는 Actor 응답 exact quote를 요구한다. Goal·Item·Secret owner 권한도 동일한 3단 구조를 따른다.
 - [x] Actor prompt에는 현재 NPC profile owner의 Memory만 포함하고 Updater 입력에는 모든 owner 문서를 유지한다.
 - [x] Memory의 관련 Event ID는 검증에만 쓰고 Actor-visible 본문에는 사람이 읽는 Event 제목을 렌더링한다.
-- [x] 새 thread와 관계 문서가 없는 기존 thread에 활성 Actor→player 관계 변화 원장을 물질화한다.
-- [x] 관계 상태는 affinity/trust 수치 없이 Actor owner 관점의 자연어 durable-change bullet로 유지한다.
-- [x] 관계 patch를 complete `Relationship Development` H2와 `actor_response` 근거로 제한한다.
+- [x] Updater 결과 검증의 위반을 치명/절단 가능으로 나누어, 실재하지만 이번 장면에 없는 owner의 독립 creation 하나만 결과에서 드랍하고 재시도 없이 나머지를 통과시킨다.
+- [x] 새 thread와 관계 문서가 없는 기존 thread에 활성 Actor→player 관계 변화 원장을 물질화하고, 이후 장면 활성 NPC 각각에도 같은 경로로 그 NPC가 처음 활성화되는 턴에 owner→player 관계 원장을 지연 물질화한다(NPC↔NPC 관계는 범위 밖).
+- [x] 관계 상태는 affinity/trust 수치 없이 owner 관점의 자연어 durable-change bullet로 유지한다.
+- [x] 관계 patch를 complete `Relationship Development` H2와 `actor_response` 근거로 제한하고, owner를 Actor 또는 장면 활성 캐릭터로 넓히되 제3자 owner는 그 인물을 실제로 언급하는 근거를 요구한다.
 - [x] 기존 durable 관계 bullet 삭제·의역과 Actor 근거의 플레이어 행동·내면 확정을 거부한다.
 - [x] Actor prompt에는 현재 NPC owner의 관계 문서만 포함하고 Updater에는 전체 관계 문서를 유지한다.
 - [x] 모델이 제공되지 않은 문서나 임의 경로를 수정하지 못하게 한다.

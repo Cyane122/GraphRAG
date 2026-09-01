@@ -22,17 +22,17 @@ from src.apps.app.actor import stream_actor_events
 from src.apps.app.models import (
     ChatMessage,
     ConversationState,
+    _message_payload,
     normalize_actor_model,
     resolve_wiki_systems,
 )
 from src.apps.app.output_guard import find_forbidden_terms, find_pov_violations
 from src.apps.app.output_repair import repair_actor_output
-from src.apps.app.settings import load_settings
+from src.apps.app.settings import load_settings, wiki_updater_model_name
 from src.apps.app.turn_debug import write_actor_raw_snapshot, write_turn_debug_snapshot
 from src.config import (
     MAX_TOKEN,
     MODEL_OUTPUT_REPAIR,
-    MODEL_PRO_UPDATER,
     WIKI_VAULT_ROOT,
     wiki_system_defaults,
 )
@@ -90,31 +90,6 @@ def _preview_text(value: str) -> str:
     text = re.sub(r"\*\*[^*]+\*\*", "", _strip_hidden_blocks(value))
     text = re.sub(r"\s+", " ", text).strip()
     return text[:25] + "..." if len(text) > 26 else text or "새 대화"
-
-
-def _message_payload(message: ChatMessage) -> dict:
-    """Wiki 턴에서 생성한 메시지를 프런트엔드 JSON으로 변환합니다."""
-    return {
-        "id": message.id,
-        "role": message.role,
-        "content": message.content,
-        "createdAt": message.created_at.strftime("%H:%M"),
-        "parentUserId": message.parent_user_id,
-        "edited": message.edited,
-        "actorModel": message.actor_model,
-        "oocConfig": message.ooc_config,
-        "wikiCommitId": message.wiki_commit_id,
-        "variants": [
-            {
-                "id": variant.id,
-                "content": variant.content,
-                "createdAt": variant.created_at.strftime("%H:%M"),
-                "actorModel": variant.actor_model,
-                "edited": variant.edited,
-            }
-            for variant in message.variants
-        ],
-    }
 
 
 def _wiki_debug_effects(
@@ -372,7 +347,7 @@ async def stream_wiki_turn(
                     thread_id=state.thread_id,
                     user_input=content,
                     actor_response=full_response,
-                    model_name=MODEL_PRO_UPDATER,
+                    model_name=wiki_updater_model_name(),
                     max_attempts=3,
                     player_profile_id=setup.pc_id,
                     actor_profile_id=setup.npc_id,

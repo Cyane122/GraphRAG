@@ -1,3 +1,5 @@
+Status: 보관됨 — 2026-06-07의 미구현 제안이며, 활성 작업이 아니라 참고용으로 보존합니다.
+
 # 2-stage plan
 
 1. 현재 Single Actor call을 2개 stage로 분할.

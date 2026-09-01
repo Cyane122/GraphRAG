@@ -8,13 +8,13 @@
 #   - _SafeResponse : response.text가 항상 str을 반환하도록 보장하는 래퍼
 #
 # Functions
-#   - _get_anthropic_client() -> AsyncAnthropic : direct Anthropic 클라이언트를 지연 생성해 반환
-#   - _get_anthropic_vertex_client() -> AsyncAnthropicVertex : Claude-on-Vertex 클라이언트를 지연 생성해 반환
-#   - _get_deepseek_client() -> AsyncAnthropic : DeepSeek Anthropic-compatible 클라이언트를 지연 생성해 반환
-#   - _stream_anthropic_text_chunks(stream: object, label: str) -> AsyncIterator[str] : Anthropic SSE 스트림에서 텍스트 청크를 추출
+#   - get_anthropic_client() -> AsyncAnthropic : direct Anthropic 클라이언트를 지연 생성해 반환
+#   - get_anthropic_vertex_client() -> AsyncAnthropicVertex : Claude-on-Vertex 클라이언트를 지연 생성해 반환
+#   - get_deepseek_client() -> AsyncAnthropic : DeepSeek Anthropic-compatible 클라이언트를 지연 생성해 반환
+#   - stream_anthropic_text_chunks(stream: AsyncIterator[object], label: str) -> AsyncIterator[str] : Anthropic SSE 스트림에서 텍스트 청크를 추출하고 토큰 한도 절단을 경고
 #   - usage_token_counts(usage: object) -> dict[str, int | None] : provider usage 객체에서 prompt/output/thought/total 토큰 수 추출
 #   - record_llm_latency(log_source: str, model: str, start_epoch_ms: int, elapsed_ms: int, mime: str | None, status: str, tokens: dict[str, int | None] | None = None) -> None : LLM 호출 지연과 토큰 사용량을 logs/llm_latency.jsonl에 기록
-#   - is_rate_limit_error(exc: BaseException) -> bool : 예외가 재시도 가능한 403/429 provider 한도 오류인지 판별(provider 공용, Actor 스트리밍도 공유)
+#   - is_retryable_provider_limit(exc: BaseException) -> bool : 예외가 재시도 가능한 403/429 provider 한도 오류인지 판별(provider 공용, Actor 스트리밍도 공유)
 #   - _run_generate_with_retries(generate_once: Callable[[], Awaitable[tuple[object, str]]], log_source: str, model_name: str, mime: str | None) -> object : 1회 생성 코루틴을 provider-무관하게 재시도/계측
 #   - get_client() -> genai.Client : 스트리밍 직접 호출 시 사용하는 클라이언트 반환
 #   - get_model(model_name: str, system_prompt: str | None) -> _GeminiModel : Gemini 래퍼 반환
@@ -53,7 +53,7 @@ from src.core.llm.errors import LLMJsonError, TransientLLMError
 _LLM_TIMEOUT_SEC = 90  # 비스트리밍 JSON 호출 + 스트리밍 소비 최대 대기 시간
 _LLM_MAX_ATTEMPTS = 2  # 타임아웃 시 재시도 포함 총 시도 횟수
 _LLM_BACKOFF_SEC = 0.5  # 재시도 간 백오프 기준(시도 순번에 비례)
-_LLM_RATE_LIMIT_CAP_SEC = 30  # 429 exponential backoff 상한(지터 별도 가산)
+_LLM_RATE_LIMIT_CAP_SEC = 30  # 403/429 exponential backoff 상한(지터 별도 가산)
 
 # 한 턴에 여러 후처리 updater가 병렬로 Vertex를 때리면 순간 버스트로 429가 난다.
 # 이 세마포어로 동시에 진행 중인 비동기 LLM 호출 수를 제한한다. 백오프 대기 중에는
@@ -61,18 +61,104 @@ _LLM_RATE_LIMIT_CAP_SEC = 30  # 429 exponential backoff 상한(지터 별도 가
 _LLM_SEMAPHORE = asyncio.Semaphore(max(1, LLM_MAX_CONCURRENCY))
 
 
-def is_rate_limit_error(exc: BaseException) -> bool:
-    """예외가 429 RESOURCE_EXHAUSTED(요청량 초과)인지 판별한다.
+_anthropic_client: AsyncAnthropic | None = None
+_anthropic_vertex_client: AsyncAnthropicVertex | None = None
+_deepseek_client: AsyncAnthropic | None = None
 
-    Vertex(google-genai)는 code 속성이 있는 APIError를, Anthropic 호환 클라이언트는
-    status_code 429의 RateLimitError를 던진다. code/status_code(429)와 메시지 문자열을
-    함께 확인해 provider를 가리지 않고 폭넓게 잡는다. Actor 스트리밍 경로도 공유한다.
+
+def get_anthropic_client() -> AsyncAnthropic:
+    """Return the module-level direct Anthropic client, creating it on first use."""
+    global _anthropic_client
+    if _anthropic_client is None:
+        if not ANTHROPIC_API_KEY:
+            raise RuntimeError("ANTHROPIC_API_KEY is required for Claude actor models.")
+        _anthropic_client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+    return _anthropic_client
+
+
+def get_anthropic_vertex_client() -> AsyncAnthropicVertex:
+    """Return the module-level Claude-on-Vertex client, creating it on first use.
+
+    Vertex는 ADC(GOOGLE_APPLICATION_CREDENTIALS)로 인증한다 — 별도 키 불필요.
     """
-    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
-    if code == 429:
+    global _anthropic_vertex_client
+    if _anthropic_vertex_client is None:
+        if not PROJECT_ID:
+            raise RuntimeError("GOOGLE_PROJECT_ID is required for Claude on Vertex AI.")
+        _anthropic_vertex_client = AsyncAnthropicVertex(
+            project_id=PROJECT_ID,
+            region=ANTHROPIC_VERTEX_REGION,
+        )
+    return _anthropic_vertex_client
+
+
+def get_deepseek_client() -> AsyncAnthropic:
+    """Return the module-level DeepSeek Anthropic-compatible client."""
+    global _deepseek_client
+    if _deepseek_client is None:
+        if not DEEPSEEK_API_KEY:
+            raise RuntimeError("DEEPSEEK_API_KEY is required for DeepSeek actor models.")
+        _deepseek_client = AsyncAnthropic(
+            api_key=DEEPSEEK_API_KEY,
+            base_url=DEEPSEEK_BASE_URL,
+        )
+    return _deepseek_client
+
+
+async def stream_anthropic_text_chunks(
+    stream: AsyncIterator[object],
+    label: str,
+) -> AsyncIterator[str]:
+    """Anthropic 호환 SSE 스트림에서 텍스트 청크만 뽑아 순서대로 내보낸다.
+
+    Claude와 DeepSeek은 같은 Anthropic 이벤트 스키마를 쓰므로 소비 코드도 하나다.
+    provider 차이는 스트림을 여는 messages.create kwargs에만 남는다.
+    label은 로그 문구용 provider 이름이다.
+    토큰 한도로 응답이 잘렸으면 조용히 넘기지 않고 경고를 남긴다(silent truncation 방지).
+    """
+    stop_reason = None
+    async for event in stream:
+        etype = getattr(event, "type", "")
+        if etype == "message_delta":
+            delta = getattr(event, "delta", None)
+            sr = getattr(delta, "stop_reason", None) if delta is not None else None
+            if sr:
+                stop_reason = sr
+            continue
+        if etype != "content_block_delta":
+            continue
+        delta = getattr(event, "delta", None)
+        text = getattr(delta, "text", "") if delta is not None else ""
+        if text:
+            yield text
+
+    if stop_reason == "max_tokens":
+        print(f"[ActorStream] {label} 응답이 토큰 한도로 잘렸습니다 (stop_reason={stop_reason}).")
+
+
+_RETRYABLE_LIMIT_STATUS = (403, 429)
+
+
+def is_retryable_provider_limit(exc: BaseException) -> bool:
+    """예외가 재시도 가능한 provider 한도 오류(403/429)인지 판별한다.
+
+    403(빌링 비활성·권한 거부)과 429(요청량 초과)를 함께 재시도 대상으로 본다.
+    판별은 예외 타입과 상태 코드로 구조적으로 한다 — Anthropic 호환 클라이언트는
+    RateLimitError 또는 APIStatusError.status_code를, Vertex(google-genai)는
+    APIError.code를 준다. 응답 본문에 우연히 "429"가 섞여도 오탐하지 않도록,
+    문자열 검사는 구조적 코드가 전혀 없는 예외에 대한 최후 수단으로만 남긴다.
+    Actor 스트리밍 경로와 비스트리밍 재시도 루프가 같은 함수를 공유한다.
+    """
+    if isinstance(exc, RateLimitError):
         return True
-    text = str(exc).upper()
-    return "429" in text or "RESOURCE_EXHAUSTED" in text
+    if isinstance(exc, APIStatusError):
+        return exc.status_code in _RETRYABLE_LIMIT_STATUS
+    if isinstance(exc, GoogleAPIError):
+        return getattr(exc, "code", None) in _RETRYABLE_LIMIT_STATUS
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    if code is not None:
+        return code in _RETRYABLE_LIMIT_STATUS
+    return "RESOURCE_EXHAUSTED" in str(exc).upper()
 
 # 측정용: 모든 비동기 LLM 호출 1건의 지연을 한 줄씩 누적한다(Phase 2 병목 분석).
 _LLM_LATENCY_LOG = Path("logs") / "llm_latency.jsonl"
@@ -503,7 +589,7 @@ async def _run_generate_with_retries(
 
     두 종류의 일시 오류를 재시도한다:
     - 타임아웃: 시도 순번에 비례한 짧은 백오프, 최대 _LLM_MAX_ATTEMPTS회.
-    - 429 RESOURCE_EXHAUSTED: exponential backoff + jitter, 최대 LLM_MAX_RETRIES_429회.
+    - 403/429 provider 한도: exponential backoff + jitter, 최대 LLM_MAX_RETRIES_429회.
     재시도 소진 시 TransientLLMError를 던진다(호출처가 '빈 응답'과 구분 가능).
     백오프 sleep은 세마포어 밖에서 이뤄지고 지연 로그에도 포함되지 않는다.
 
@@ -531,7 +617,7 @@ async def _run_generate_with_retries(
             if timeout_attempts < _LLM_MAX_ATTEMPTS:
                 retry_delay = _LLM_BACKOFF_SEC * timeout_attempts
         except Exception as exc:
-            if not is_rate_limit_error(exc):
+            if not is_retryable_provider_limit(exc):
                 status = "error"
                 raise
             status = "rate_limit"
@@ -543,13 +629,13 @@ async def _run_generate_with_retries(
                     2 ** rate_limit_attempts, _LLM_RATE_LIMIT_CAP_SEC
                 ) + random.uniform(0, 1)
                 print(
-                    f"[LLM 429:{log_source}] RESOURCE_EXHAUSTED "
+                    f"[LLM limit:{log_source}] provider 403/429 "
                     f"retry {rate_limit_attempts}/{LLM_MAX_RETRIES_429} "
                     f"in {retry_delay:.1f}s (model={model_name})"
                 )
             else:
                 print(
-                    f"[LLM 429:{log_source}] gave up after "
+                    f"[LLM limit:{log_source}] gave up after "
                     f"{LLM_MAX_RETRIES_429} retries (model={model_name})"
                 )
         finally:

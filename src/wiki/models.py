@@ -17,6 +17,7 @@
 #   - CreateSecretDocument : Updater가 요청하는 owner 전용 secret 문서(knower-scoped)
 #   - CreateDocument : event/memory/goal/item/secret 신규 문서 요청의 discriminated union
 #   - DocumentCreation : 검증·렌더링이 끝난 새 Markdown 문서 생성
+#   - SeveredCreation : owner 권한 위반으로 검증 단계에서 절단된 독립 creation 하나의 진단 기록
 #   - DocumentDeletion : exact revision이 일치할 때만 수행하는 문서 삭제
 #   - DocumentReplacement : exact revision 문서를 다른 완성 원문으로 교체
 #   - AppliedSectionChange : 적용된 section의 before/after 원문과 hash
@@ -486,6 +487,21 @@ class DocumentCreation(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
 
 
+class SeveredCreation(BaseModel):
+    """검증 단계에서 owner 권한 위반으로 제거된 독립 creation 하나의 진단 기록입니다.
+
+    치명(fatal) 위반과 달리 attempt 전체를 기각하지 않고 이 creation 하나만
+    결과에서 빼는(sever) 처리를 했다는 증거다. 진단 폴더의 attempt별 파일과
+    `PendingWikiCommit.severed_creations`(commit archive 메타데이터)에만
+    쓰이며, Actor 프롬프트나 canonical Markdown 본문에는 절대 노출되지 않는다.
+    """
+
+    document_id: str
+    document_type: Literal["event", "memory", "goal", "item", "secret"]
+    owner: str
+    reason: str
+
+
 class DocumentDeletion(BaseModel):
     """현재 원문 revision이 일치할 때만 수행하는 audited 문서 삭제입니다."""
 
@@ -597,6 +613,7 @@ class PendingWikiCommit(BaseModel):
     summary: str = ""
     patches: list[SectionPatch] = Field(default_factory=list)
     creations: list[DocumentCreation] = Field(default_factory=list)
+    severed_creations: list[SeveredCreation] = Field(default_factory=list)
     deletions: list[DocumentDeletion] = Field(default_factory=list)
     replacements: list[DocumentReplacement] = Field(default_factory=list)
     applied_changes: list[AppliedSectionChange] = Field(default_factory=list)

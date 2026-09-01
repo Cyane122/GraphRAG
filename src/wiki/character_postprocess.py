@@ -22,8 +22,8 @@ from src.simulation.systems.world_dynamics.organic_models import (
     calculate_pregnancy_probability,
     normalize_contraception_value,
 )
-from src.wiki.context import document_body, scene_datetime_and_location
-from src.wiki.evidence import first_nonempty_line
+from src.wiki.context import scene_datetime_and_location
+from src.wiki.evidence import document_body, first_nonempty_line
 from src.wiki.frontmatter import parse_frontmatter
 from src.wiki.markdown import parse_markdown_sections
 from src.wiki.models import PendingWikiCommit, SectionPatch, WikiDocument

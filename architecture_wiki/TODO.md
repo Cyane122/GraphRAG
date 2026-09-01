@@ -48,7 +48,7 @@ vault 계약이 바뀌면 연결된 `WikiRAG/` 문서와 `docs/wiki_v2_format.md
 | 대화 이름 변경·보관·삭제·내보내기 | 미구현 | 완료 | 이름 변경, 보관/복원, canonical Markdown ZIP, 확인 후 thread 영구 삭제 | P1 |
 | 적용된 과거 턴 변경 | 텍스트만 바뀌고 graph는 유지되는 위험한 한계 | 완료 — 최신 applied 턴은 audited inverse, 중간 과거 턴은 이후 commit을 복사본에서 역순 inverse하는 원본 보존 분기 | in-place 과거 편집을 금지하고 원본 보존 분기를 기본 정책으로 유지 | P1 |
 | 현재 장면·시각·장소 | GlobalState/DynamicState와 accepted header | 완료 | `scene/current.md` 전체 H2와 accepted header 기반 결정적 시각·장소 guard | P1 |
-| 캐릭터 현재 상태·관계 | 다단계 extractor/updater | 완료·장기 LLM 검증 필요 — 현재 5개 시나리오 실제 1턴 deferred/apply 통과 | 현재 상태 source 권한 + Actor-owner 자연어 관계 원장, append-only 보존과 과잉 변화 억제 | P1 |
+| 캐릭터 현재 상태·관계 | 다단계 extractor/updater | 완료·장기 LLM 검증 필요 — 현재 5개 시나리오 실제 1턴 deferred/apply 통과. 검증 절단(독립 creation owner 위반 1건만 드랍), Memory/Goal/Item/Secret 생성 권한과 관계 원장 물질화·patch를 모두 장면 활성 캐릭터 전원으로 확장(근거 exact quote가 그 인물을 실제로 언급해야 통과) | 현재 상태 source 권한 + 장면 활성 캐릭터 전원의 owner-to-player 자연어 관계 원장, append-only 보존과 과잉 변화 억제 | P1 |
 | Event·Memory 생성 | 새 graph node 생성 | 완료 — Event마다 `related_event_id`가 일치하는 Actor 소유 Memory를 요구하고, 한 턴의 복수 durable Event 판별 기준을 명시하며, 여러 턴에 걸친 사건은 `## 진행 상태`만 가변인 단일 Event로 담음(발생 기록은 불변) | durable Event와 owner-private Memory `CreateDocument`, source turn/commit, inverse | P1 |
 | Goal·Item·Secret 생성·갱신 | 전용 시스템 | 코드 완료·실제 LLM 검증 필요 — 단일 Updater 생성·갱신·권한, Actor-visible knower-scoping, hidden/suspected 은닉 계약 구현 | 신규 문서 생성, 갱신, visibility와 공개 범위 검증 | P2 |
 | usernote·OOC | 지원 | 완료·실제 LLM 검증 필요 | 다음 prompt 반영과 상태 변경 결과 표시 | P2 |
@@ -169,8 +169,10 @@ vault 계약이 바뀌면 연결된 `WikiRAG/` 문서와 `docs/wiki_v2_format.md
 - [x] accepted Actor 헤더의 시간을 역행 없이 반영하고, 날짜 점프와 장소 이동은 사용자 입력의 명시적 근거가 있을 때만 `scene/current.md` 전체 H2에 병합한다.
 - [x] durable Event를 검증된 `CreateDocument`로 생성하고 source turn/commit, pending 적용, inverse 삭제·보상 복구를 연결한다.
 - [x] Memory의 owner별 Actor visibility와 주관성 계약을 확정하고 `CreateDocument`를 확장한다.
-- [x] 활성 Actor→player 관계 문서를 자동 물질화하고 숫자 점수 대신 자연어 durable-change 원장으로 유지한다.
-- [x] 관계 갱신을 Actor-owner의 complete H2 patch로 제한하고 기존 기록 삭제와 플레이어 내면 확정을 거부한다.
+- [x] Updater 결과 검증을 치명/절단 가능 두 등급으로 나누어, 독립 creation 하나의 owner 권한 위반만 그 항목을 결과에서 드랍하고 나머지 patch·creation은 재시도 없이 통과시킨다.
+- [x] Memory·Goal·Item·Secret 새 문서의 owner 권한을 player·현재 Actor에서 `scene/current.md` 기준 장면 활성 캐릭터 전원으로 넓히고, 제3자 owner는 그 인물을 실제로 언급하는 Actor 응답 exact quote를 요구한다.
+- [x] 새 thread와 관계 문서가 없는 기존 thread에서, 장면 활성 NPC 각각의 owner→player 관계 문서를 그 NPC가 처음 활성화되는 턴에 지연 물질화한다(기존 물질화 경로 재사용, 이미 있으면 재생성하지 않음).
+- [x] 관계 갱신을 Actor-owner 또는 장면 활성 캐릭터 owner의 complete H2 patch로 제한하고(제3자 owner는 그 인물을 언급하는 근거 필요), 기존 기록 삭제와 플레이어 내면 확정을 거부한다. NPC↔NPC 관계는 범위 밖으로 남긴다.
 
 ### P2 — 문서 정합성과 이력
 

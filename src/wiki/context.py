@@ -10,7 +10,9 @@
 #   - _document_title(document: WikiDocument) -> str : Markdown H1 표시 제목을 반환합니다.
 #   - _scenario_character_allowlist(document: WikiDocument) -> list[str] | None : scenario.md의 world-level character allowlist를 검증해 반환합니다.
 #   - _validate_character_profile_id(value: str, field: str) -> str : scenario frontmatter의 character_profile ID 형식을 검증합니다.
+#   - _materialize_relationship_document(store: WikiStore, thread_id: str, owner_profile_id: str, other_profile_id: str, created_at: str) -> WikiDocument | None : 한 owner→other 관계 원장 문서를 없을 때만 생성합니다.
 #   - _materialize_primary_relationship(store: WikiStore, setup: WikiConversationSetup, created_at: str) -> None : 활성 Actor 관점 관계 변화 문서를 생성합니다.
+#   - materialize_scene_active_relationships(store: WikiStore, documents: list[WikiDocument], thread_id: str, player_profile_id: str, created_at: str) -> list[WikiDocument] : 장면 활성 NPC 각각의 플레이어 관점 관계 원장을 지연 생성합니다.
 #   - initialize_wiki_thread(vault_root: Path, world_id: str, scenario_id: str, thread_id: str) -> WikiConversationSetup : 새 Wiki thread와 초기 문서를 생성합니다.
 #   - get_wiki_thread_runtime_status(vault_root: Path, thread_id: str) -> WikiThreadRuntimeStatus : 현재 런타임 생성 thread와 이전 형식 thread를 구분합니다.
 #   - load_wiki_setup(vault_root: Path, world_id: str, scenario_id: str, thread_id: str) -> WikiConversationSetup : 런타임 메타데이터와 첫 장면을 읽습니다.
@@ -18,8 +20,10 @@
 #   - read_wiki_scene_prompt_assets(vault_root: Path, world_id: str, scenario_id: str, scene_types: list[str] | None = None) -> list[WikiScenePromptAsset] : 월드 씬 프롬프트에 시나리오 override를 적용해 읽습니다.
 #   - read_wiki_scene_descriptions(vault_root: Path, world_id: str, scenario_id: str) -> dict[str, str] : 공용 분류 설명에 Wiki 전용 scene key를 합칩니다.
 #   - read_wiki_thread_documents(vault_root: Path, thread_id: str) -> list[WikiDocument] : Actor와 Updater가 사용할 thread 문서를 읽습니다.
-#   - document_body(content: str) -> str : frontmatter를 제외한 Markdown 본문을 반환합니다.
 #   - scene_datetime_and_location(content: str) -> tuple[datetime, str] : 현재 장면의 한국어 또는 영어 시각과 장소를 해석합니다.
+#
+# `document_body`는 더 이상 이 모듈에 정의되지 않는다 - `src/wiki/evidence.py`로 옮겨
+# `scene_active_profile_ids`와 함께 이 모듈이 순환 import 없이 재사용한다(아래 import 참고).
 # ================================
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ import json
 from pathlib import Path
 import re
 
+from src.wiki.evidence import document_body, scene_active_profile_ids
 from src.wiki.manual_audit import ensure_audit_baseline
 from src.wiki.models import (
     WikiConversationSetup,
@@ -156,11 +161,6 @@ def _scenario_root(vault_root: Path, world_id: str, scenario_id: str) -> Path:
         if not (path / filename).is_file():
             raise WikiContextError(f"Wiki scenario is missing {filename}: {safe_scenario_id}")
     return path
-
-
-def document_body(content: str) -> str:
-    """YAML frontmatter를 제거한 Markdown 본문을 반환합니다."""
-    return _FRONTMATTER_RE.sub("", content, count=1).strip()
 
 
 def _document_title(document: WikiDocument) -> str:
@@ -402,36 +402,96 @@ def _document_title(document: WikiDocument) -> str:
     return match.group(1).strip()
 
 
+def _materialize_relationship_document(
+    store: WikiStore,
+    thread_id: str,
+    owner_profile_id: str,
+    other_profile_id: str,
+    created_at: str,
+) -> WikiDocument | None:
+    """Create one owner→other relationship ledger document when it is missing.
+
+    Shared by thread initialization (`_materialize_primary_relationship`, the
+    current Actor toward the player) and lazy per-turn materialization
+    (`materialize_scene_active_relationships`, any other scene-active NPC
+    toward the player). Both write through the same template and store call
+    the Actor-toward-player document has always used; this never creates an
+    NPC-to-NPC document. Returns `None` when the document already exists
+    (idempotent — safe to call every turn), otherwise the newly created
+    document.
+    """
+    owner_slug = owner_profile_id.rsplit(":", 1)[-1]
+    other_slug = other_profile_id.rsplit(":", 1)[-1]
+    relative_path = f"relationships/{owner_slug}--{other_slug}.md"
+    if store.resolve_path(relative_path).exists():
+        return None
+    owner_document = store.read_document(f"characters/{owner_slug}.md")
+    other_document = store.read_document(f"characters/{other_slug}.md")
+    owner_name = _document_title(owner_document)
+    other_name = _document_title(other_document)
+    return store.create_document(
+        relative_path,
+        render_wiki_template(
+            "relationship.md",
+            {
+                "DOCUMENT_ID": f"relationship:{owner_slug}--{other_slug}",
+                "THREAD_ID": thread_id,
+                "OWNER_ID": owner_profile_id,
+                "PARTICIPANT_A_ID": owner_profile_id,
+                "PARTICIPANT_B_ID": other_profile_id,
+                "TITLE": f"{owner_name}'s Relationship with {other_name}",
+                "CREATED_AT": created_at,
+            },
+        ),
+    )
+
+
 def _materialize_primary_relationship(
     store: WikiStore,
     setup: WikiConversationSetup,
     created_at: str,
 ) -> None:
     """활성 Actor가 플레이어를 보는 관계 변화 원장을 빠진 경우 생성합니다."""
-    owner_slug = setup.npc_id.rsplit(":", 1)[-1]
-    other_slug = setup.pc_id.rsplit(":", 1)[-1]
-    relative_path = f"relationships/{owner_slug}--{other_slug}.md"
-    if store.resolve_path(relative_path).exists():
-        return
-    owner_document = store.read_document(f"characters/{owner_slug}.md")
-    other_document = store.read_document(f"characters/{other_slug}.md")
-    owner_name = _document_title(owner_document)
-    other_name = _document_title(other_document)
-    store.create_document(
-        relative_path,
-        render_wiki_template(
-            "relationship.md",
-            {
-                "DOCUMENT_ID": f"relationship:{owner_slug}--{other_slug}",
-                "THREAD_ID": setup.thread_id,
-                "OWNER_ID": setup.npc_id,
-                "PARTICIPANT_A_ID": setup.npc_id,
-                "PARTICIPANT_B_ID": setup.pc_id,
-                "TITLE": f"{owner_name}'s Relationship with {other_name}",
-                "CREATED_AT": created_at,
-            },
-        ),
-    )
+    _materialize_relationship_document(store, setup.thread_id, setup.npc_id, setup.pc_id, created_at)
+
+
+def materialize_scene_active_relationships(
+    store: WikiStore,
+    documents: list[WikiDocument],
+    thread_id: str,
+    player_profile_id: str,
+    created_at: str,
+) -> list[WikiDocument]:
+    """Lazily create a missing owner→player relationship ledger for each
+    scene-active NPC.
+
+    "Scene-active" is judged by `scene_active_profile_ids` (name-matched
+    against `scene/current.md`), the same deterministic membership check the
+    creation-authority and relationship-patch gates use. Called every accepted
+    turn from `apply_wiki_actor_response`, before the Updater prompt is built,
+    so a character's relationship-to-player document exists starting the turn
+    they first become scene-active — including in an existing thread that
+    predates this NPC ever appearing. Idempotent
+    (`_materialize_relationship_document` no-ops when the document already
+    exists) and deterministic runtime scaffolding, not a model creation: it
+    never runs through Updater validation. The player's own profile ID is
+    skipped (a player cannot own a relationship-to-self ledger); NPC-to-NPC
+    relationship documents remain out of scope for this fix. Returns the
+    newly created documents in profile-ID order, empty when every scene-active
+    NPC already has one.
+    """
+    if not player_profile_id:
+        return []
+    created: list[WikiDocument] = []
+    for profile_id in sorted(scene_active_profile_ids(documents)):
+        if profile_id == player_profile_id:
+            continue
+        document = _materialize_relationship_document(
+            store, thread_id, profile_id, player_profile_id, created_at
+        )
+        if document is not None:
+            created.append(document)
+    return created
 
 
 def initialize_wiki_thread(

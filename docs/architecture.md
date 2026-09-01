@@ -69,8 +69,10 @@ Storage-specific behavior remains behind that boundary:
 - Graph requests delegate persistent mutation to
   `src/simulation/state/graph_apply.py`.
 - Wiki requests delegate deferred commit planning and queueing to
-  `src/simulation/state/wiki_apply.py`; policy validation lives in
-  `src/wiki/commit_policy.py`.
+  `src/simulation/state/wiki_apply.py`; policy validation is split across
+  `src/wiki/commit_policy.py` (result and creation validation),
+  `src/wiki/commit_patch_policy.py` (per-type patch policy table and hooks),
+  and `src/wiki/evidence.py` (shared evidence-text checks).
 
 Do not create a second public Updater entry point for either mode.
 
@@ -218,7 +220,7 @@ Updater inputs retain paths and revisions because validated patching requires th
 | Graph/Wiki message operations | `src/apps/app/message_ops.py`, `src/apps/app/wiki_message_ops.py` |
 | Wiki controls and branching | `src/apps/app/wiki_controls.py`, `src/apps/app/wiki_branching.py` |
 | Conversation lifecycle | `src/apps/app/conversation_lifecycle.py` |
-| Actor calls and streaming | `src/apps/app/actor.py` |
+| Actor calls and streaming | `src/apps/app/actor.py`, `src/core/llm/` (provider clients, Anthropic SSE reader, retry predicate) |
 | Manager preparation | `src/agents/manager/` |
 | Prompt assembly | `src/agents/prompt_factory/` |
 | Accepted-turn Updater | `src/simulation/state/updater.py` |

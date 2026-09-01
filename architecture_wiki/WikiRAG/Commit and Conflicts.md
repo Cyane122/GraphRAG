@@ -34,7 +34,7 @@ tags:
 | Actor 캐릭터 | 수락된 Actor 응답을 근거로 `현재 상태` 수정 |
 | `scene/current.md` | 현재 장면 H2 전체를 한 patch로 교체. Actor 근거와 사용자 입력의 관찰 가능한 플레이어 사실이 함께 필요하면 별도 `player_evidence` exact quote 사용 |
 | 활성 인물의 위치·활동 | 캐릭터 문서에 복제하지 않고 현재 장면이 정본 |
-| Actor-owner 관계 | accepted Actor 응답만 근거로 `Relationship Development` H2 전체를 교체하되 기존 durable bullet은 보존 |
+| 관계 (Actor 또는 장면 활성 제3자 owner) | accepted Actor 응답만 근거로 `Relationship Development` H2 전체를 교체하되 기존 durable bullet은 보존. owner가 Actor가 아니면 장면 활성 캐릭터여야 하고 evidence가 그 owner를 실제로 언급해야 함 |
 | `욕구와 컨디션` | gameplay 모델 출력은 거부하고 accepted header 경과 시간으로 결정적 갱신 |
 | 성격 변화·생식 상태 | gameplay 모델 출력은 거부하고 기본-off postprocessor가 전용 동적 section만 수정 |
 | 캐릭터 정적 프로필 | gameplay Updater에서 수정 금지 |
@@ -54,12 +54,20 @@ NPC 행동의 대상이나 기준점으로 플레이어 이름이 등장하는 �
 모델이 `현재 장면`과 legacy `시작 기준`을 혼동해도 실제 문서에 둘 중 하나만
 존재하면 section path와 replacement 첫 제목을 실제 제목으로 정규화한다.
 
-관계 문서는 Graph의 숫자 affinity/trust를 저장하지 않는다. 현재 Actor가 owner인
-방향성 문서에 고백, 배신, 구조, 화해, 합의된 약속, 중대한 경계 변화처럼 이후
-선택을 바꾸는 변화만 영어 bullet로 누적한다. 첫 변화에서는 empty sentinel을
-제거할 수 있지만, 이미 수락된 bullet은 삭제하거나 의역할 수 없다. 일상적 친절,
-근접, 당황, 매력, 순응, 흥분과 친밀 행위만으로는 관계 변화를 만들지 않는다.
-Actor 근거로 플레이어의 행동·동의·감정·믿음·욕구·관계 입장을 확정하면 거부한다.
+관계 문서는 Graph의 숫자 affinity/trust를 저장하지 않는다. owner가 현재 Actor이거나
+`scene/current.md` 기준 장면 활성 캐릭터인 방향성 문서에 고백, 배신, 구조, 화해,
+합의된 약속, 중대한 경계 변화처럼 이후 선택을 바꾸는 변화만 영어 bullet로 누적한다.
+owner가 Actor가 아닌 장면 활성 제3자(B)면 evidence exact quote가 B의 태도·신뢰·경계·
+약속 변화를 실제로 명시해야 하고, B의 내면을 임의로 단정할 수는 없다. 장면 비활성
+owner를 대상으로 한 patch나 실재하지 않는 owner를 대상으로 한 patch는 절단 없이
+attempt 전체를 기각한다 — 관계 patch 권한 위반은 독립 creation과 달리 항상 치명이다.
+첫 변화에서는 empty sentinel을 제거할 수 있지만, 이미 수락된 bullet은 owner와 무관하게
+삭제하거나 의역할 수 없다. 일상적 친절, 근접, 당황, 매력, 순응, 흥분과 친밀 행위만으로는
+관계 변화를 만들지 않는다. Actor 근거로 플레이어의 행동·동의·감정·믿음·욕구·관계 입장을
+확정하면 거부한다. 새 관계 문서를 Updater가 직접 생성할 수는 없다 — owner→player
+원장은 그 owner가 처음 장면 활성이 되는 턴에 결정적 런타임 지연 물질화로만 생긴다(아래
+"새 Event와 Memory 문서" 절의 owner 권한 3단 구조 참고). NPC↔NPC 관계 문서는
+이 범위 밖이다.
 
 ## Accepted 헤더 동기화
 
@@ -95,13 +103,51 @@ Applied archive는 생성 원문과 revision을 보존한다. Inverse는 문서�
 삭제하며 수동 편집되었으면 아무것도 쓰지 않고 conflict를 반환한다. 삭제 inverse의
 inverse는 보존된 원문을 다시 생성하므로 Actor 재생성 실패의 보상 복구에도 참여한다.
 
-Memory도 같은 생성·적용·inverse 계약을 사용하지만 권한이 더 좁다. Actor 응답은
-현재 Actor profile owner의 Memory만, player 입력은 player profile owner의
-Memory만 만들 수 있다. 다른 인물의 내면 기억을 현재 턴에서 대신 생성하지 않는다.
-`related_event_id`는 기존 Event 또는 같은 결과에서 생성되는 Event여야 한다.
+Memory도 같은 생성·적용·inverse 계약을 사용하지만 권한이 더 좁다. owner는
+player, 현재 Actor, 또는 현재 장면에 있는 다른 활성 캐릭터만 될 수 있다.
+player 입력은 player profile owner의 Memory만, Actor 응답은 현재 Actor
+profile owner의 Memory를 만들 수 있다. 장면에 있는 제3자(B) owner의 Memory도
+Actor 응답 근거로 만들 수 있지만, 그 evidence exact quote가 B를 실제로
+서술된 참여자·목격자로 명시해야 한다 — B의 내면을 임의로 단정해 만들 수는
+없다. `related_event_id`는 기존 Event 또는 같은 결과에서 생성되는 Event여야
+한다. Goal·Item·Secret의 owner 권한도 동일한 3단 구조(player/Actor/장면 활성
+제3자)를 따른다.
 Memory는 객관적 사건 복사본이 아니라 owner의 기억 내용·해석·감정·확신·왜곡
 가능성을 따로 보존한다. 내부 Event ID는 검증에만 사용하고 Actor-visible 본문에는
 Event 제목을 기록한다.
+
+## 검증 등급: 치명과 절단 가능
+
+`validate_updater_result`는 위반을 두 등급으로 나눈다.
+
+- **치명(fatal)** — patch 관련 위반 전부, 구조·revision·section 경로 오류, scene
+  정본 침범, Actor 유래 플레이어 상태, Event-Memory 짝 누락 등. 지금까지와 같이
+  attempt 전체를 기각하고 재시도로 넘어간다.
+- **절단 가능(severable)** — 독립적인 creation 하나의 owner 권한 위반만 해당한다.
+  owner가 실재하는 활성 thread profile이지만 player도 Actor도 아니고, `scene/current.md`로
+  판별하는 현재 장면 활성 캐릭터 집합에도 없을 때만(즉 실재는 하나 이번 장면에는
+  없는 인물일 때만) `SeverableCreationAuthorityError`가 나오며, 검증은 그
+  creation 하나만 결과에서 빼고(sever) 나머지 patch와 creation은 계속 통과시킨다.
+  같은 함수 안에서도 owner가 아예 존재하지 않는 profile이거나, 관련 Event가
+  없거나, evidence_source가 맞지 않거나(장면 활성 제3자인데 `player_input`
+  근거를 쓴 경우 포함), evidence exact quote가 장면 활성 제3자 owner를 실제로
+  언급하지 않는 위반은 여전히 치명이다 — 후자 둘은 "인물이 장면에 없다"가
+  아니라 "모델이 근거를 잘못 골랐다"는 뜻이므로 절단이 아니라 재시도로
+  돌린다.
+
+절단은 검증 단계에서만 일어난다. 적용 단계의 commit 원자성과 위 "Queue 상태"의
+deferred commit 계약(응답 수락 전 정본 무변경, `commit.md` 보류 뒤 다음 입력
+직전 적용)은 바뀌지 않는다. 절단 후 남은 집합으로 Event-Memory 짝 같은 교차
+검증을 계속 수행하며, 절단이 그 교차 검증을 깨면 그 위반은 여전히 치명으로
+attempt 전체를 기각한다 — 절단이 연쇄로 관대해지지는 않는다.
+
+절단된 creation은 두 곳에 남는다. attempt 성공 시 진단 디렉터리에
+`attempt_XX_severed.txt`가 생기고, applied archive의 `PendingWikiCommit.severed_creations`에도
+`document_id`·`document_type`·`owner`·사유가 기록된다. 이 기록은 Actor prompt나
+canonical Markdown 본문에는 절대 나타나지 않는다 — commit.md와 `commits/`는
+Actor 문서 조립 경로에서 처음부터 제외된 진단·감사 전용 경로다. 절단은 거부가
+아니라 처리 완료이므로 correction prompt에 누적되는 이전 시도 거부 사유 목록에도
+들어가지 않는다.
 
 ## 선택적 장기 시스템
 
@@ -208,7 +254,7 @@ watcher/debounce는 즉시 알림을 위한 P3 편의 기능이며 턴 경계 �
 
 ## 다중 문서 적용
 
-모든 patch를 먼저 메모리에서 검증한 뒤 문서별로 원자 교체한다. 중간 쓰기가 실패하면 이 호출에서 이미 쓴 문서를 원래 내용으로 되돌린다. commit queue는 별도 lock으로 queue/apply를 직렬화한다.
+모든 patch를 먼저 메모리에서 검증한 뒤 문서별로 원자 교체한다. 중간 쓰기가 실패하면 이 호출에서 이미 쓴 문서를 원래 내용으로 되돌린다. commit queue는 별도 lock으로 queue/apply를 직렬화한다. 문서 생성·삭제·전체 교체도 patch와 같은 `WikiStore.transaction()` undo journal로 보상되므로, 커밋 적용 도중 어디서 실패하든 하나의 메커니즘이 이미 쓴 것만 정확히 역순으로 되돌린다.
 
 ## reroll이 어려운 이유
 

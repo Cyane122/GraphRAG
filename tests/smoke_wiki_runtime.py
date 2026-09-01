@@ -5,6 +5,7 @@
 #
 # Functions
 #   - _run() -> None : Run the full split Wiki runtime smoke suite.
+#   - main() -> None : Run the standalone runtime smoke suite.
 # ================================
 
 from __future__ import annotations
@@ -36,6 +37,10 @@ async def _run() -> None:
         handles = await run_runtime_flow_suite(temporary_root, vault_root)
         await run_runtime_branching_suite(vault_root, handles)
 
-if __name__ == "__main__":
+def main() -> None:
+    """Run the standalone runtime smoke suite."""
     asyncio.run(_run())
     print("smoke_wiki_runtime: ok")
+
+if __name__ == "__main__":
+    main()

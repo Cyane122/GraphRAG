@@ -11,6 +11,23 @@ There is **no lint or build step** and **no pytest**. Validation means
 
 ---
 
+## Windows launcher scripts
+
+The root launcher scripts first run `cd /d "%~dp0"`, then use
+`.venv\Scripts\python.exe` when available or fall back to `python -m`.
+
+- `launch.bat` starts the app (`src.apps.app --open-browser`, port 8000), Graph
+  Viewer (`src.apps.graph_viewer`, port 8001), and World Editor
+  (`src.apps.world_editor`, port 8765).
+- `ppt_viewer.bat` starts Graph Viewer only.
+- `world_editor.bat` starts World Editor only.
+
+`launch.bat` labels the Graph Viewer command window "PPT Viewer". This is a
+known naming mismatch; the service is Graph Viewer and the label remains
+unchanged for now.
+
+---
+
 ## The 7-step sequence
 
 1. **Inspect** — read the relevant code, `AGENTS.md`, and `docs/architecture.md`

@@ -19,7 +19,8 @@
 #   - force_pregnancy(state: ConversationState, mother_id: str, father_id: str | None, store: ConversationStore) -> dict : Force a pregnancy and persist the result.
 #   - simulate_pregnancy(state: ConversationState, mother_id: str, father_id: str | None, shots: int, store: ConversationStore) -> dict : Simulate N internal ejaculations and persist the result.
 #   - _collect_generation(state, content, user_msg_id, store, *, actor_model, ooc_result, turn_ooc_directives, persist) -> dict : Run generation to completion and return the final event.
-#   - _message_payload(message: ChatMessage) -> dict : Convert a persisted message into frontend JSON.
+#
+# _message_payload moved to models.py (single definition; see models.py header).
 # ================================
 
 from __future__ import annotations
@@ -54,7 +55,13 @@ from src.apps.app.turn_debug import write_actor_raw_snapshot, write_turn_debug_s
 from src.apps.app.actor import stream_actor_events
 from src.apps.app.analysis_tools import render_database_tool
 from src.apps.app.commit import commit_pending_web
-from src.apps.app.models import ChatMessage, ConversationState, WorldMode, normalize_actor_model
+from src.apps.app.models import (
+    ChatMessage,
+    ConversationState,
+    WorldMode,
+    _message_payload,
+    normalize_actor_model,
+)
 from src.apps.app.runtime import (
     ActiveConversation,
     initialize_conversation,
@@ -540,31 +547,6 @@ async def _run_generation_events(
         "message": _message_payload(assistant_msg),
         "pending_commit_id": commit_id,
         "preview": state.preview,
-    }
-
-
-def _message_payload(message: ChatMessage) -> dict:
-    """Convert a persisted message into frontend JSON."""
-    return {
-        "id": message.id,
-        "role": message.role,
-        "content": message.content,
-        "createdAt": message.created_at.strftime("%H:%M"),
-        "parentUserId": message.parent_user_id,
-        "edited": message.edited,
-        "actorModel": message.actor_model,
-        "oocConfig": getattr(message, "ooc_config", ""),
-        "wikiCommitId": message.wiki_commit_id,
-        "variants": [
-            {
-                "id": variant.id,
-                "content": variant.content,
-                "createdAt": variant.created_at.strftime("%H:%M"),
-                "actorModel": variant.actor_model,
-                "edited": variant.edited,
-            }
-            for variant in message.variants
-        ],
     }
 
 

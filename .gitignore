@@ -9,7 +9,6 @@ graph/
 data/
 scripts/
 chat/
-tests/
 .junie/
 docs/codex_tmp/
 
@@ -39,4 +38,7 @@ tmp_*.log
 
 wiki_v2/
 
-project-91a38c19-e955-4824-804-cdfb18ab5045.json
+# Service-account credentials (including the active Vertex key).
+project-*.json
+*service-account*.json
+*-credentials.json

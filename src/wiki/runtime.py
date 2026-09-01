@@ -26,7 +26,6 @@ from src.simulation.systems.world_dynamics.organic_models import (
 )
 from src.wiki.commit import WikiCommitQueue
 from src.wiki.context import (
-    document_body,
     initialize_wiki_thread,
     load_wiki_setup,
     read_wiki_actor_assets,
@@ -34,6 +33,7 @@ from src.wiki.context import (
     read_wiki_thread_documents,
     scene_datetime_and_location,
 )
+from src.wiki.evidence import document_body
 from src.wiki.markdown import parse_markdown_sections
 from src.wiki.models import (
     PendingWikiCommit,

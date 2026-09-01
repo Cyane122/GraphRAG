@@ -36,9 +36,9 @@ from src.apps.app.models import (
     overridden_wiki_system_names,
     resolve_wiki_systems,
 )
-from src.apps.app.settings import load_settings
+from src.apps.app.settings import load_settings, wiki_updater_model_name
 from src.apps.app.storage import ConversationStore
-from src.config import MODEL_PRO_UPDATER, WIKI_VAULT_ROOT, wiki_system_defaults
+from src.config import WIKI_VAULT_ROOT, wiki_system_defaults
 from src.simulation.state.models import WikiTurnUpdateRequest
 from src.simulation.state.updater import update_accepted_turn
 from src.wiki import (
@@ -53,6 +53,7 @@ from src.wiki import (
     WikiManualAuditResult,
     WikiThreadMigrationPlan,
     apply_thread_contract_migration,
+    describe_wiki_commit_failure,
     diagnose_wiki_scope,
     get_wiki_thread_runtime_status,
     list_wiki_documents,
@@ -161,7 +162,7 @@ def apply_wiki_commit_now(
         applied = _commit_queue(state.thread_id).apply_pending()
     except Exception as exc:
         state.wiki_update_status = "failed"
-        state.wiki_update_error = str(exc)
+        state.wiki_update_error = describe_wiki_commit_failure(exc)
         store.save(state)
         raise
     if applied is not None:
@@ -209,7 +210,7 @@ async def _run_wiki_update(
                 thread_id=state.thread_id,
                 user_input=user_message.content,
                 actor_response=assistant_message.content,
-                model_name=MODEL_PRO_UPDATER,
+                model_name=wiki_updater_model_name(),
                 max_attempts=3,
                 player_profile_id=state.pc_id,
                 actor_profile_id=state.npc_id,

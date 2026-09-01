@@ -23,6 +23,7 @@
 #   - PendingCommitExists : 기존 commit.md 덮어쓰기 방지 예외
 #   - PendingWikiCommit : 다음 사용자 입력까지 보류되는 Wiki 변경 묶음
 #   - SectionPatch : 한 섹션 교체 요청
+#   - SeveredCreation : owner 권한 위반으로 절단된 독립 creation 진단 기록
 #   - WikiCommitError : commit.md 직렬화·상태 예외
 #   - WikiCommitQueue : commit.md 저장 및 다음 턴 적용 관리자
 #   - WikiDocument : revision이 계산된 Markdown 문서
@@ -65,6 +66,7 @@
 #   - build_wiki_prompt_bundle(vault_root: Path, setup: WikiConversationSetup, user_input: str, recent_story: str = "", turn_ooc_directives: str = "") -> WikiPromptBundle : PromptBuilder로 Wiki prompt를 조립합니다.
 #   - validate_wiki_prompt_bundle(bundle: WikiPromptBundle) -> None : 컴파일된 Actor prompt의 메타데이터·세그먼트 계약을 검증합니다.
 #   - apply_pending_wiki_commit(vault_root: Path, thread_id: str) -> PendingWikiCommit | None : 다음 입력 직전 Wiki commit을 적용합니다.
+#   - describe_wiki_commit_failure(exc: BaseException) -> str : 실패 예외를 compensation_errors까지 포함한 사람이 읽을 문자열로 만듭니다.
 #   - diagnose_wiki_scope(vault_root: Path, thread_id: str, world_id: str) -> list[WikiDiagnostic] : 중복 ID·frontmatter·섹션 무결성을 진단합니다.
 #   - list_wiki_documents(vault_root: Path, thread_id: str, world_id: str) -> list[WikiDocumentSummary] : Explorer용 문서 요약 목록을 반환합니다.
 #   - migrate_document_content(content: str) -> str : 문서를 CURRENT_SCHEMA_VERSION까지 순차 업그레이드합니다.
@@ -115,6 +117,7 @@ from src.wiki.models import (
     MarkdownSection,
     PendingWikiCommit,
     SectionPatch,
+    SeveredCreation,
     WikiDocument,
     WikiInverseConflict,
     WikiInversePlan,
@@ -136,7 +139,13 @@ from src.wiki.scaffold import (
     scaffold_thread,
     scaffold_world,
 )
-from src.wiki.store import WikiPathError, WikiRevisionConflict, WikiStore, WikiStoreError
+from src.wiki.store import (
+    WikiPathError,
+    WikiRevisionConflict,
+    WikiStore,
+    WikiStoreError,
+    describe_wiki_commit_failure,
+)
 from src.wiki.manual_audit import (
     ensure_audit_baseline,
     plan_manual_edit_audit,
@@ -184,6 +193,7 @@ __all__ = [
     "PendingCommitExists",
     "PendingWikiCommit",
     "SectionPatch",
+    "SeveredCreation",
     "WikiCommitError",
     "WikiCommitQueue",
     "WikiContextError",
@@ -213,6 +223,7 @@ __all__ = [
     "apply_pending_wiki_commit",
     "apply_thread_contract_migration",
     "build_wiki_prompt_bundle",
+    "describe_wiki_commit_failure",
     "document_revision",
     "get_wiki_thread_runtime_status",
     "plan_pending_commit",

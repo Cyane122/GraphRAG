@@ -15,16 +15,15 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from src.apps.app.models import ConversationState, MessageVariant, normalize_actor_model
+from src.apps.app.models import (
+    ConversationState,
+    MessageVariant,
+    _message_payload,
+    normalize_actor_model,
+)
 from src.apps.app.pending_store import discard_pending_commit, save_pending_commit
 from src.apps.app.runtime import ActiveConversation, initialize_conversation, restore_game_time
 from src.apps.app.storage import ConversationStore
-
-
-def _message_ops_payload(message) -> dict:
-    """Import _message_payload lazily to avoid a circular import at module load time."""
-    from src.apps.app.service import _message_payload
-    return _message_payload(message)
 
 
 def _preview(content: str) -> str:
@@ -71,7 +70,7 @@ async def reroll_assistant(
                     latest_user.id,
                     store,
                     actor_model=selected_actor_model,
-                    turn_ooc_directives=getattr(latest_user, "ooc_config", ""),
+                    turn_ooc_directives=latest_user.ooc_config,
                 )
             raise KeyError("assistant message not found")
         assistant = state.messages[assistant_index]
@@ -137,7 +136,7 @@ async def reroll_assistant(
                 parent.id,
                 store,
                 actor_model=selected_actor_model,
-                turn_ooc_directives=getattr(parent, "ooc_config", ""),
+                turn_ooc_directives=parent.ooc_config,
                 persist=False,
             )
             new_payload = result["message"]
@@ -173,7 +172,7 @@ async def reroll_assistant(
                 state.prev_cot = original_prev_cot
             store.save(state)
             return {
-                "message": _message_ops_payload(assistant),
+                "message": _message_payload(assistant),
                 "pending_commit_id": result.get("pending_commit_id") if is_current else None,
                 "preview": state.preview,
             }
@@ -220,7 +219,7 @@ async def edit_message(
                 save_pending_commit(state.pending_commit, state.world_id, state.pc_id, state.npc_id)
             state.preview = _preview(content)
             store.save(state)
-            return {"message": _message_ops_payload(message), "preview": state.preview}
+            return {"message": _message_payload(message), "preview": state.preview}
 
         selected_actor_model = normalize_actor_model(actor_model or state.actor_model)
         original_messages = [msg.model_copy(deep=True) for msg in state.messages]
@@ -251,7 +250,7 @@ async def edit_message(
                 message.id,
                 store,
                 actor_model=selected_actor_model,
-                turn_ooc_directives=getattr(message, "ooc_config", state.ooc_config),
+                turn_ooc_directives=message.ooc_config,
             )
         except Exception:
             if state.pending_commit and original_pending:
@@ -288,7 +287,7 @@ def activate_variant(
 
     if version_index == total - 1:
         store.save(state)
-        return {"message": _message_ops_payload(msg)}
+        return {"message": _message_payload(msg)}
 
     selected = variants_oldest_first[version_index]
     old_current = MessageVariant(
@@ -316,7 +315,7 @@ def activate_variant(
         state.pending_commit["ai_response"] = msg.content
         save_pending_commit(state.pending_commit, state.world_id, state.pc_id, state.npc_id)
     store.save(state)
-    return {"message": _message_ops_payload(msg)}
+    return {"message": _message_payload(msg)}
 
 
 def delete_message(state: ConversationState, message_id: str, store: ConversationStore) -> dict:
@@ -342,4 +341,4 @@ def delete_message(state: ConversationState, message_id: str, store: Conversatio
     latest = next((msg for msg in reversed(state.messages) if msg.role == "assistant"), None)
     state.preview = _preview(latest.content) if latest else "새 대화"
     store.save(state)
-    return {"messages": [_message_ops_payload(msg) for msg in state.messages], "preview": state.preview}
+    return {"messages": [_message_payload(msg) for msg in state.messages], "preview": state.preview}

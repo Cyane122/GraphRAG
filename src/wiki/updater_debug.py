@@ -6,6 +6,7 @@
 # Functions
 #   - create_updater_debug_run(debug_root: Path | None, model_name: str, max_attempts: int, user_input_hash: str, actor_response_hash: str) -> Path | None : 단일 Updater 실행의 진단 디렉터리를 만듭니다.
 #   - write_updater_attempt_debug(run_dir: Path | None, attempt: int, prompt: str, response_text: str, error: str | None) -> None : 한 시도의 요청·모델 원문·검증 오류를 기록합니다.
+#   - write_updater_attempt_severed(run_dir: Path | None, attempt: int, severed: list[SeveredCreation]) -> None : 한 시도에서 owner 권한 위반으로 절단된 creation 목록을 기록합니다.
 #   - finish_updater_debug_run(run_dir: Path | None, status: str, attempts: int, error: str | None = None) -> None : 실행 전체의 최종 상태를 기록합니다.
 # ================================
 
@@ -17,6 +18,7 @@ import logging
 from pathlib import Path
 from uuid import uuid4
 
+from src.wiki.models import SeveredCreation
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +77,38 @@ def write_updater_attempt_debug(
     except OSError:
         logger.exception(
             "[WikiUpdaterDebug] failed to write attempt %s in %s",
+            attempt,
+            run_dir,
+        )
+
+
+def write_updater_attempt_severed(
+    run_dir: Path | None,
+    attempt: int,
+    severed: list[SeveredCreation],
+) -> None:
+    """한 시도에서 owner 권한 위반으로 절단된 creation 목록을 UTF-8 파일로 기록합니다.
+
+    절단은 거부(rejection)가 아니라 처리 완료이므로 별도 파일에 남긴다 —
+    `write_updater_attempt_debug`의 `error` 인자와 섞으면 correction 프롬프트
+    누적 경로(재시도 사유)와 절단 진단이 헷갈릴 수 있다. `severed`가 비어 있으면
+    아무 것도 쓰지 않는다.
+    """
+    if run_dir is None or not severed:
+        return
+    prefix = f"attempt_{attempt:02d}"
+    lines = [
+        f"{item.document_id} ({item.document_type}, owner={item.owner}): {item.reason}"
+        for item in severed
+    ]
+    try:
+        (run_dir / f"{prefix}_severed.txt").write_text(
+            "\n".join(lines),
+            encoding="utf-8",
+        )
+    except OSError:
+        logger.exception(
+            "[WikiUpdaterDebug] failed to write severed record for attempt %s in %s",
             attempt,
             run_dir,
         )

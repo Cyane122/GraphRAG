@@ -27,6 +27,7 @@
 #   - SimulatePregnancyRequest : Request body for simulating N internal ejaculations.
 #
 # Functions
+#   - _message_payload(message: ChatMessage) -> dict : Convert a persisted message into frontend JSON.
 #   - actor_model_catalog() -> dict[str, str | list[dict[str, str]]] : Return the ordered Actor model catalog for the hosted UI.
 #   - normalize_actor_model(model_name: str | None) -> str : Return a supported Actor model id.
 #   - normalize_wiki_system_overrides(overrides: Mapping[str, object] | None) -> dict[str, bool] : 저장용 Wiki system override를 canonical bool dict로 정리합니다.
@@ -164,6 +165,31 @@ class ChatMessage(BaseModel):
     variants: list[MessageVariant] = Field(default_factory=list)
     ooc_config: str = ""
     wiki_commit_id: str | None = None
+
+
+def _message_payload(message: ChatMessage) -> dict:
+    """Convert a persisted message into frontend JSON."""
+    return {
+        "id": message.id,
+        "role": message.role,
+        "content": message.content,
+        "createdAt": message.created_at.strftime("%H:%M"),
+        "parentUserId": message.parent_user_id,
+        "edited": message.edited,
+        "actorModel": message.actor_model,
+        "oocConfig": message.ooc_config,
+        "wikiCommitId": message.wiki_commit_id,
+        "variants": [
+            {
+                "id": variant.id,
+                "content": variant.content,
+                "createdAt": variant.created_at.strftime("%H:%M"),
+                "actorModel": variant.actor_model,
+                "edited": variant.edited,
+            }
+            for variant in message.variants
+        ],
+    }
 
 
 class ConversationState(BaseModel):

@@ -8,6 +8,7 @@
 #
 # Functions
 #   - plan_pending_commit(documents: list[WikiDocument], user_input: str, actor_response: str, model_name: str, max_attempts: int = 3, player_profile_id: str = "", actor_profile_id: str = "", user_message_id: str | None = None, assistant_message_id: str | None = None, thinking_level: str | None = None, debug_root: Path | None = None) -> PendingWikiCommit : Plan a validated deferred Wiki commit with retry diagnostics.
+#   - _reject_attempt(debug_run: Path | None, attempt: int, max_attempts: int, attempt_prompt: str, response_text: str, exc: Exception, rejection_errors: list[str]) -> None : Record one rejected Updater attempt and back off before the next retry.
 # ================================
 
 from __future__ import annotations
@@ -18,27 +19,32 @@ from hashlib import sha256
 from pathlib import Path
 from uuid import uuid4
 
+from pydantic import ValidationError
+
 from src.core.llm import extract_json_from_llm, get_model, get_response_text
+from src.core.llm.errors import LLMJsonError
 from src.wiki.commit_errors import WikiCommitPlanningError
 from src.wiki.commit_header_sync import synchronize_accepted_header
 from src.wiki.commit_policy import (
-    active_thread_id,
-    event_titles_by_id,
     player_reference_tokens,
+    scene_active_profile_ids,
     validate_updater_result,
 )
 from src.wiki.commit_prompt import build_updater_prompt, profile_document_path
-from src.wiki.document_creation import prepare_created_document
+from src.wiki.markdown import MarkdownStructureError
 from src.wiki.models import (
-    CreateMemoryDocument,
+    DocumentCreation,
     PendingWikiCommit,
+    SeveredCreation,
     WikiDocument,
     WikiUpdaterResult,
 )
+from src.wiki.prompt_contract import WikiPromptContractError
 from src.wiki.updater_debug import (
     create_updater_debug_run,
     finish_updater_debug_run,
     write_updater_attempt_debug,
+    write_updater_attempt_severed,
 )
 
 _SYSTEM_PROMPT_PATH = Path(__file__).parent / "prompts" / "updater_system.md"
@@ -47,6 +53,35 @@ _SYSTEM_PROMPT_PATH = Path(__file__).parent / "prompts" / "updater_system.md"
 def _text_hash(text: str) -> str:
     """Return a stable SHA-256 hash for turn input or Actor response."""
     return sha256(text.encode("utf-8")).hexdigest()
+
+
+async def _reject_attempt(
+    debug_run: Path | None,
+    attempt: int,
+    max_attempts: int,
+    attempt_prompt: str,
+    response_text: str,
+    exc: Exception,
+    rejection_errors: list[str],
+) -> None:
+    """Record one rejected Updater attempt and back off before the next retry.
+
+    Shared by both retry boundaries (model call and parse/validate/assemble) so a
+    rejection is recorded identically regardless of which boundary raised it.
+    """
+    error_text = str(exc)
+    if error_text not in rejection_errors:
+        rejection_errors.append(error_text)
+    await asyncio.to_thread(
+        write_updater_attempt_debug,
+        debug_run,
+        attempt,
+        attempt_prompt,
+        response_text,
+        error_text,
+    )
+    if attempt < max_attempts:
+        await asyncio.sleep(min(2 ** (attempt - 1), 4))
 
 
 async def plan_pending_commit(
@@ -78,6 +113,7 @@ async def plan_pending_commit(
     active_character_documents = {
         path for path in (player_document, actor_document) if path is not None
     }
+    active_scene_profile_ids = scene_active_profile_ids(documents)
     model = get_model(
         model_name,
         system_prompt=_SYSTEM_PROMPT_PATH.read_text(encoding="utf-8"),
@@ -104,44 +140,71 @@ async def plan_pending_commit(
 
     for attempt in range(1, max_attempts + 1):
         response_text = ""
-        try:
-            attempt_prompt = prompt
-            if rejection_errors:
-                rejection_history = "\n".join(
-                    f"- {error}" for error in rejection_errors
-                )
-                attempt_prompt = "\n\n".join([
-                    prompt,
-                    "## Previous Attempt Rejected",
-                    rejection_history,
-                    (
-                        "Every rejection above remains in force. Do not reintroduce a "
-                        "problem fixed after an earlier attempt."
-                    ),
-                    "Return a corrected JSON result that satisfies every rule.",
-                ])
-            generation_config: dict[str, object] = {
-                "temperature": 0.0,
-                "max_output_tokens": 65536,
-                "response_mime_type": "application/json",
-                "log_source": "wiki_updater",
+        attempt_prompt = prompt
+        if rejection_errors:
+            rejection_history = "\n".join(
+                f"- {error}" for error in rejection_errors
+            )
+            attempt_prompt = "\n\n".join([
+                prompt,
+                "## Previous Attempt Rejected",
+                rejection_history,
+                (
+                    "Every rejection above remains in force. Do not reintroduce a "
+                    "problem fixed after an earlier attempt."
+                ),
+                "Return a corrected JSON result that satisfies every rule.",
+            ])
+        generation_config: dict[str, object] = {
+            "temperature": 0.0,
+            "max_output_tokens": 65536,
+            "response_mime_type": "application/json",
+            "log_source": "wiki_updater",
+        }
+        if thinking_level is not None:
+            generation_config["thinking_config"] = {
+                "thinking_level": thinking_level
             }
-            if thinking_level is not None:
-                generation_config["thinking_config"] = {
-                    "thinking_level": thinking_level
-                }
+
+        # Outer boundary: the model call itself. This is a genuine external
+        # boundary (network, provider SDK), so it stays broad on purpose —
+        # the block is narrow enough that none of our own programming errors
+        # can originate inside it.
+        try:
             response = await model.generate_content_async(
                 attempt_prompt,
                 generation_config=generation_config,
             )
             response_text = get_response_text(response)
+        except Exception as exc:
+            last_error = exc
+            await _reject_attempt(
+                debug_run,
+                attempt,
+                max_attempts,
+                attempt_prompt,
+                response_text,
+                exc,
+                rejection_errors,
+            )
+            continue
+
+        # Inner boundary: parsing, schema validation, and policy/assembly.
+        # Only expected rejection types are caught here — a programming error
+        # in our own validation code (KeyError, AttributeError, TypeError, ...)
+        # must propagate immediately instead of being spent as a retry.
+        try:
             payload = extract_json_from_llm(
                 response_text,
                 source="wiki_updater",
                 strict=True,
             )
             result = WikiUpdaterResult.model_validate(payload)
-            validate_updater_result(
+            commit_id = uuid4().hex
+            created_at = datetime.now(timezone.utc)
+            creations: list[DocumentCreation]
+            severed_creations: list[SeveredCreation]
+            creations, severed_creations = validate_updater_result(
                 result,
                 documents,
                 user_input=user_input,
@@ -151,6 +214,11 @@ async def plan_pending_commit(
                 actor_profile_id=actor_profile_id,
                 player_reference_tokens=player_tokens,
                 active_character_documents=active_character_documents,
+                scene_active_profile_ids=active_scene_profile_ids,
+                commit_id=commit_id,
+                created_at=created_at,
+                user_message_id=user_message_id,
+                assistant_message_id=assistant_message_id,
             )
             synchronize_accepted_header(
                 result,
@@ -158,68 +226,63 @@ async def plan_pending_commit(
                 user_input,
                 actor_response,
             )
-            await asyncio.to_thread(
-                write_updater_attempt_debug,
-                debug_run,
-                attempt,
-                attempt_prompt,
-                response_text,
-                None,
-            )
-            await asyncio.to_thread(
-                finish_updater_debug_run,
-                debug_run,
-                "accepted",
-                attempt,
-            )
-            commit_id = uuid4().hex
-            created_at = datetime.now(timezone.utc)
-            thread_id = active_thread_id(documents)
-            event_titles = event_titles_by_id(documents, result.creations)
-            creations = [
-                prepare_created_document(
-                    creation,
-                    thread_id,
-                    commit_id,
-                    created_at,
-                    user_message_id,
-                    assistant_message_id,
-                    (
-                        event_titles[creation.related_event_id]
-                        if isinstance(creation, CreateMemoryDocument)
-                        else None
-                    ),
-                )
-                for creation in result.creations
-            ]
-            return PendingWikiCommit(
-                commit_id=commit_id,
-                created_at=created_at,
-                user_input_hash=user_input_hash,
-                actor_response_hash=actor_response_hash,
-                updater_model=model_name,
-                updater_attempts=attempt,
-                user_message_id=user_message_id,
-                assistant_message_id=assistant_message_id,
-                summary=result.summary,
-                patches=result.patches,
-                creations=creations,
-            )
-        except Exception as exc:
+        except (
+            WikiCommitPlanningError,
+            ValidationError,
+            LLMJsonError,
+            WikiPromptContractError,
+            MarkdownStructureError,
+            asyncio.TimeoutError,
+        ) as exc:
             last_error = exc
-            error_text = str(exc)
-            if error_text not in rejection_errors:
-                rejection_errors.append(error_text)
-            await asyncio.to_thread(
-                write_updater_attempt_debug,
+            await _reject_attempt(
                 debug_run,
                 attempt,
+                max_attempts,
                 attempt_prompt,
                 response_text,
-                str(exc),
+                exc,
+                rejection_errors,
             )
-            if attempt < max_attempts:
-                await asyncio.sleep(min(2 ** (attempt - 1), 4))
+            continue
+
+        await asyncio.to_thread(
+            write_updater_attempt_debug,
+            debug_run,
+            attempt,
+            attempt_prompt,
+            response_text,
+            None,
+        )
+        # Severance is a completed action, not a rejection, so it is recorded
+        # in its own diagnostics file and never folded into `rejection_errors`
+        # — the correction prompt above must stay free of severed reasons.
+        await asyncio.to_thread(
+            write_updater_attempt_severed,
+            debug_run,
+            attempt,
+            severed_creations,
+        )
+        await asyncio.to_thread(
+            finish_updater_debug_run,
+            debug_run,
+            "accepted",
+            attempt,
+        )
+        return PendingWikiCommit(
+            commit_id=commit_id,
+            created_at=created_at,
+            user_input_hash=user_input_hash,
+            actor_response_hash=actor_response_hash,
+            updater_model=model_name,
+            updater_attempts=attempt,
+            user_message_id=user_message_id,
+            assistant_message_id=assistant_message_id,
+            summary=result.summary,
+            patches=result.patches,
+            creations=creations,
+            severed_creations=severed_creations,
+        )
 
     final_error = f"Wiki updater failed after {max_attempts} attempts: {last_error}"
     await asyncio.to_thread(

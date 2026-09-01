@@ -28,8 +28,6 @@ from src.wiki.models import (
     AppliedDocumentChange,
     AppliedDocumentDeletion,
     AppliedSectionChange,
-    DocumentCreation,
-    DocumentReplacement,
     PendingWikiCommit,
     SectionPatch,
     WikiInversePlan,
@@ -42,7 +40,7 @@ from src.wiki.manual_audit import (
     refresh_audit_baseline,
     write_audit_baseline,
 )
-from src.wiki.store import WikiStore
+from src.wiki.store import WikiStore, describe_wiki_commit_failure
 
 
 _PAYLOAD_HEADER = "## Machine Payload\n\n```json\n"
@@ -260,28 +258,13 @@ class WikiCommitQueue:
                 return archived
             raise WikiCommitError(f"Commit archive already exists: {archive_relative}")
         before_markdown = self._capture_before_markdown(commit.patches)
-        newly_created: list[WikiDocument] = []
-        deleted_documents: list[WikiDocument] = []
-        replaced_documents: list[tuple[WikiDocument, WikiDocument]] = []
         try:
-            (
-                newly_created,
-                deleted_documents,
-                replaced_documents,
-            ) = self._apply_document_operations(commit)
-            self.store.apply_patches(commit.patches)
+            with self.store.transaction():
+                replaced_documents = self._apply_document_operations(commit)
+                self.store.apply_patches(commit.patches)
         except Exception as exc:
-            rollback_error = self._rollback_document_operations(
-                newly_created,
-                deleted_documents,
-                replaced_documents,
-            )
             commit.status = "failed"
-            commit.failure_reason = (
-                f"{exc}; document rollback failed: {rollback_error}"
-                if rollback_error
-                else str(exc)
-            )
+            commit.failure_reason = describe_wiki_commit_failure(exc)
             self.store.write_document("commit.md", self._render(commit))
             raise
 
@@ -332,113 +315,58 @@ class WikiCommitQueue:
     def _apply_document_operations(
         self,
         commit: PendingWikiCommit,
-    ) -> tuple[
-        list[WikiDocument],
-        list[WikiDocument],
-        list[tuple[WikiDocument, WikiDocument]],
-    ]:
-        """문서 삭제·전체 교체·생성을 적용하고 rollback용 실제 변경 목록을 반환합니다."""
-        newly_created: list[WikiDocument] = []
-        deleted_documents: list[WikiDocument] = []
+    ) -> list[tuple[WikiDocument, WikiDocument]]:
+        """문서 삭제·전체 교체·생성을 적용하고 archive가 실제로 쓰는 before/after 교체
+        목록만 반환합니다. 생성·삭제 결과는 호출자가 `commit.creations`/`commit.deletions`
+        원본으로 archive를 만들므로 별도로 누적하지 않습니다. 되돌리기는 이 함수의 책임이
+        아니다 — 호출자가 `self.store.transaction()` 안에서 호출해야 하며, 실패 시 보상은
+        그 transaction의 undo journal이 담당한다."""
         replaced_documents: list[tuple[WikiDocument, WikiDocument]] = []
-        try:
-            for deletion in commit.deletions:
-                current_path = self.store.resolve_path(deletion.document)
-                if not current_path.exists():
-                    continue
-                current = self.store.read_document(deletion.document)
-                if (
-                    current.revision != deletion.expected_revision
-                    or current.content != deletion.expected_content
-                ):
-                    raise WikiCommitError(
-                        f"Document changed before deletion: {deletion.document}"
-                    )
-                deleted = self.store.delete_document(
-                    deletion.document,
-                    deletion.expected_revision,
-                )
-                if deleted is not None:
-                    deleted_documents.append(deleted)
-            for replacement in commit.replacements:
-                current = self.store.read_document(replacement.document)
-                if (
-                    current.revision != replacement.expected_revision
-                    or current.content != replacement.expected_content
-                ):
-                    raise WikiCommitError(
-                        f"Document changed before replacement: {replacement.document}"
-                    )
-                updated = self.store.write_document(
-                    replacement.document,
-                    replacement.replacement_content,
-                    expected_revision=replacement.expected_revision,
-                )
-                replaced_documents.append((current, updated))
-            for creation in commit.creations:
-                current_path = self.store.resolve_path(creation.document)
-                if current_path.exists():
-                    current = self.store.read_document(creation.document)
-                    if current.content != creation.content:
-                        raise WikiCommitError(
-                            f"Created document path already differs: {creation.document}"
-                        )
-                    continue
-                newly_created.append(
-                    self.store.create_document(
-                        creation.document,
-                        creation.content,
-                    )
-                )
-        except Exception:
-            rollback_error = self._rollback_document_operations(
-                newly_created,
-                deleted_documents,
-                replaced_documents,
-            )
-            if rollback_error:
+        for deletion in commit.deletions:
+            current_path = self.store.resolve_path(deletion.document)
+            if not current_path.exists():
+                continue
+            current = self.store.read_document(deletion.document)
+            if (
+                current.revision != deletion.expected_revision
+                or current.content != deletion.expected_content
+            ):
                 raise WikiCommitError(
-                    f"Document operation rollback failed: {rollback_error}"
+                    f"Document changed before deletion: {deletion.document}"
                 )
-            raise
-        return newly_created, deleted_documents, replaced_documents
-
-    def _rollback_document_operations(
-        self,
-        newly_created: list[WikiDocument],
-        deleted_documents: list[WikiDocument],
-        replaced_documents: list[tuple[WikiDocument, WikiDocument]],
-    ) -> str | None:
-        """Patch 실패 전 문서 생성·전체 교체·삭제를 역순 보상하고 오류를 반환합니다."""
-        errors: list[str] = []
-        for document in reversed(newly_created):
-            try:
-                self.store.delete_document(document.path, document.revision)
-            except Exception as exc:
-                errors.append(f"delete {document.path}: {exc}")
-        for before, after in reversed(replaced_documents):
-            try:
-                self.store.write_document(
-                    before.path,
-                    before.content,
-                    expected_revision=after.revision,
+            self.store.delete_document(
+                deletion.document,
+                deletion.expected_revision,
+            )
+        for replacement in commit.replacements:
+            current = self.store.read_document(replacement.document)
+            if (
+                current.revision != replacement.expected_revision
+                or current.content != replacement.expected_content
+            ):
+                raise WikiCommitError(
+                    f"Document changed before replacement: {replacement.document}"
                 )
-            except Exception as exc:
-                errors.append(f"replace {before.path}: {exc}")
-        for document in reversed(deleted_documents):
-            try:
-                path = self.store.resolve_path(document.path)
-                if path.exists():
-                    current = self.store.read_document(document.path)
-                    if current.content != document.content:
-                        raise WikiCommitError(
-                            "rollback destination contains different content"
-                        )
-                    continue
-                self.store.create_document(document.path, document.content)
-            except Exception as exc:
-                errors.append(f"restore {document.path}: {exc}")
-        return " | ".join(errors) or None
+            updated = self.store.write_document(
+                replacement.document,
+                replacement.replacement_content,
+                expected_revision=replacement.expected_revision,
+            )
+            replaced_documents.append((current, updated))
+        for creation in commit.creations:
+            current_path = self.store.resolve_path(creation.document)
+            if current_path.exists():
+                current = self.store.read_document(creation.document)
+                if current.content != creation.content:
+                    raise WikiCommitError(
+                        f"Created document path already differs: {creation.document}"
+                    )
+                continue
+            self.store.create_document(
+                creation.document,
+                creation.content,
+            )
+        return replaced_documents
 
     def _audit_external_changes_locked(self) -> WikiManualAuditResult:
         """Commit lock 안에서 baseline 밖의 canonical 변경을 manual archive로 기록합니다."""
@@ -577,6 +505,7 @@ class WikiCommitQueue:
             f"- Attempts: `{commit.updater_attempts}`",
             f"- Changes: `{len(commit.patches)}`",
             f"- Creations: `{len(commit.creations)}`",
+            f"- Severed creations: `{len(commit.severed_creations)}`",
             f"- Deletions: `{len(commit.deletions)}`",
             f"- Replacements: `{len(commit.replacements)}`",
             f"- Applied changes: `{len(commit.applied_changes)}`",
@@ -590,6 +519,13 @@ class WikiCommitQueue:
             lines.extend(["", "## Failure", "", commit.failure_reason.strip()])
         if commit.resolution_reason:
             lines.extend(["", "## Resolution", "", commit.resolution_reason.strip()])
+        if commit.severed_creations:
+            lines.extend(["", "## Severed Creations", ""])
+            lines.extend(
+                f"- `{item.document_id}` ({item.document_type}, owner="
+                f"`{item.owner}`): {item.reason}"
+                for item in commit.severed_creations
+            )
         lines.extend([
             "",
             _PAYLOAD_HEADER.rstrip("\n"),

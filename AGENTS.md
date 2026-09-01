@@ -77,11 +77,14 @@ integration plan.
 - Preserve world, scenario, thread, and Graph/Wiki namespace isolation.
 - Route all environment access through `src/config.py`.
 - Keep app entry modules and services thin; domain behavior belongs in the
-  owning package.
+  owning package. LLM provider clients and streaming adapters belong in
+  `src/core/llm/`, not `src/apps/app/`.
 - Maintain one public accepted-turn entry point:
   `src.simulation.state.updater.update_accepted_turn`.
 - Use existing validation, audit, transaction, and commit paths for persistent
-  state changes.
+  state changes. Wiki commit application rolls back through one
+  `WikiStore.transaction()` undo journal; do not add a second compensation
+  mechanism.
 - Keep turn-specific state out of the Fixed prompt segment.
 - Never expose private Secret content, frontmatter, vault paths, revisions,
   thread metadata, or inactive authoring variants to Actor prompts.

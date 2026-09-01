@@ -5,9 +5,9 @@
 #
 # Functions
 #   - _check_markdown_section_parsing(document: WikiDocument) -> None : Validate the sample character section parsing behavior.
-#   - _check_event_commit_lifecycle(store: WikiStore, document: WikiDocument, scene_document: WikiDocument, queue: WikiCommitQueue) -> None : Validate event creation, inverse, restore, and conflict planning.
-#   - _check_goal_round_trip(document: WikiDocument, queue: WikiCommitQueue, store: WikiStore) -> None : Validate goal creation apply/inverse round-trip.
-#   - _queue_retry_commit(document: WikiDocument, queue: WikiCommitQueue, store: WikiStore) -> PendingWikiCommit : Queue the retried pending commit for later apply/inverse checks.
+#   - _check_event_commit_lifecycle(store: WikiStore, document: WikiDocument, scene_document: WikiDocument, queue: WikiCommitQueue, event_pending: PendingWikiCommit) -> None : Validate event creation, inverse, restore, and conflict planning.
+#   - _check_goal_round_trip(document: WikiDocument, queue: WikiCommitQueue, store: WikiStore, goal_pending: PendingWikiCommit) -> None : Validate goal creation apply/inverse round-trip.
+#   - _queue_retry_commit(document: WikiDocument, queue: WikiCommitQueue, store: WikiStore, pending: PendingWikiCommit) -> PendingWikiCommit : Queue the retried pending commit for later apply/inverse checks.
 #   - _check_pending_rebase_apply(store: WikiStore, document: WikiDocument, queue: WikiCommitQueue, pending: PendingWikiCommit) -> None : Validate automatic rebase when another section changes first.
 #   - _check_inverse_preserves_manual_lines(store: WikiStore, document: WikiDocument, queue: WikiCommitQueue, pending: PendingWikiCommit) -> WikiDocument : Validate inverse behavior when the section changed on other lines.
 #   - _check_conflicting_inverse_no_write(store: WikiStore, queue: WikiCommitQueue, reverted: WikiDocument) -> None : Validate conflict-only inverse behavior without writing markdown.
@@ -37,25 +37,10 @@ from src.wiki import (  # noqa: E402
     WikiStore,
 )
 from src.wiki.markdown import document_revision, parse_markdown_sections  # noqa: E402
-from tests.smoke_wiki_creation import (  # noqa: E402
-    _check_accepted_header_sync,
-    _check_goal_item_secret,
-    _generate_event_creation,
-)
-from tests.smoke_wiki_policy import (  # noqa: E402
-    _check_retry_exhaustion,
-    _check_update_policy,
-    _generate_with_one_retry,
-)
-from tests.smoke_wiki_postprocess import _check_postprocess  # noqa: E402
-from tests.smoke_wiki_vault import (  # noqa: E402
-    _check_diagnostics,
-    _check_explorer,
-    _check_migrations,
-    _check_recall,
-    _check_scaffolds,
-    _check_wiki_context_scenario_overrides,
-)
+from tests.smoke_wiki_creation import run_creation_suite  # noqa: E402
+from tests.smoke_wiki_policy import run_policy_suite  # noqa: E402
+from tests.smoke_wiki_postprocess import run_postprocess_suite  # noqa: E402
+from tests.smoke_wiki_vault import run_vault_suite  # noqa: E402
 from tests.wiki_smoke_fixtures import create_base_store  # noqa: E402
 
 def _check_markdown_section_parsing(document: WikiDocument) -> None:
@@ -76,11 +61,9 @@ def _check_event_commit_lifecycle(
     document: WikiDocument,
     scene_document: WikiDocument,
     queue: WikiCommitQueue,
+    event_pending: PendingWikiCommit,
 ) -> None:
     """Validate event creation, inverse, restore, and conflict planning."""
-    event_pending = asyncio.run(
-        _generate_event_creation(document, scene_document)
-    )
     assert len(event_pending.creations) == 2
     assert event_pending.creations[0].document == "events/library-power-outage.md"
     assert (
@@ -151,10 +134,10 @@ def _check_goal_round_trip(
     document: WikiDocument,
     queue: WikiCommitQueue,
     store: WikiStore,
+    goal_pending: PendingWikiCommit,
 ) -> None:
     """Validate goal creation apply/inverse round-trip."""
-    asyncio.run(_check_postprocess())
-    goal_pending = asyncio.run(_check_goal_item_secret(document))
+    asyncio.run(run_postprocess_suite())
     queue.queue(goal_pending)
     goal_applied = queue.apply_pending()
     assert goal_applied is not None and len(goal_applied.applied_creations) == 1
@@ -168,9 +151,9 @@ def _queue_retry_commit(
     document: WikiDocument,
     queue: WikiCommitQueue,
     store: WikiStore,
+    pending: PendingWikiCommit,
 ) -> PendingWikiCommit:
     """Queue the retried pending commit for later apply and inverse checks."""
-    pending = asyncio.run(_generate_with_one_retry(document))
     assert pending.updater_attempts == 3
     queue.queue(pending)
     assert "신체 상태: 안정" in store.read_document(document.path).content
@@ -400,22 +383,20 @@ def main() -> None:
     """Run the full Wiki V2 smoke suite and print the compatibility marker."""
     with TemporaryDirectory() as temporary_directory:
         root = Path(temporary_directory)
-        _check_scaffolds(root)
-        _check_wiki_context_scenario_overrides(root)
-        _check_recall()
-        _check_migrations()
-        _check_diagnostics(root / "scaffold")
-        _check_explorer(root / "scaffold")
+        run_vault_suite(root)
         store, document, scene_document = create_base_store(root)
         _check_markdown_section_parsing(document)
-        asyncio.run(_check_retry_exhaustion(document))
-        asyncio.run(_check_update_policy(document, scene_document))
-        _check_accepted_header_sync(scene_document)
+        retry_pending = asyncio.run(run_policy_suite(document, scene_document))
+        event_pending, goal_pending = asyncio.run(
+            run_creation_suite(document, scene_document)
+        )
         queue = WikiCommitQueue(store)
-        _check_event_commit_lifecycle(store, document, scene_document, queue)
-        asyncio.run(_check_postprocess())
-        _check_goal_round_trip(document, queue, store)
-        pending = _queue_retry_commit(document, queue, store)
+        _check_event_commit_lifecycle(
+            store, document, scene_document, queue, event_pending
+        )
+        asyncio.run(run_postprocess_suite())
+        _check_goal_round_trip(document, queue, store, goal_pending)
+        pending = _queue_retry_commit(document, queue, store, retry_pending)
         _check_pending_rebase_apply(store, document, queue, pending)
         reverted = _check_inverse_preserves_manual_lines(store, document, queue, pending)
         _check_conflicting_inverse_no_write(store, queue, reverted)

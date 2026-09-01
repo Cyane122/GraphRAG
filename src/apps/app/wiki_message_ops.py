@@ -20,19 +20,19 @@ from src.apps.app.models import (
     ChatMessage,
     ConversationState,
     MessageVariant,
+    _message_payload,
     normalize_actor_model,
     resolve_wiki_systems,
 )
 from src.apps.app.storage import ConversationStore
 from src.apps.app.wiki_controls import skip_wiki_commit
-from src.apps.app.settings import load_settings
+from src.apps.app.settings import load_settings, wiki_updater_model_name
 from src.apps.app.wiki_service import (
-    _message_payload,
     _preview_text,
     _strip_hidden_blocks,
     stream_wiki_turn,
 )
-from src.config import MODEL_PRO_UPDATER, WIKI_VAULT_ROOT, wiki_system_defaults
+from src.config import WIKI_VAULT_ROOT, wiki_system_defaults
 from src.simulation.state.models import WikiTurnUpdateRequest
 from src.simulation.state.updater import update_accepted_turn
 from src.wiki import WikiCommitError, WikiCommitQueue, WikiStore
@@ -170,7 +170,7 @@ async def _replace_wiki_update(
                 thread_id=state.thread_id,
                 user_input=user_message.content,
                 actor_response=assistant_message.content,
-                model_name=MODEL_PRO_UPDATER,
+                model_name=wiki_updater_model_name(),
                 max_attempts=3,
                 player_profile_id=state.pc_id,
                 actor_profile_id=state.npc_id,

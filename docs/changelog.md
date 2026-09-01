@@ -625,3 +625,20 @@ Chainlit 제거 + Codex 리뷰 지적 반영 + 백로그 정리.
 
 - [리팩토링] 엔진의 동작을 바꾸지 않는 구조 정리를 완료. 미사용 Actor·이력·내보내기·메모리 migration 모듈과 legacy prompt fallback을 제거하고, 프롬프트는 Markdown 자산만 읽도록 단일화했다. Graph/Wiki accepted-turn 적용을 대칭 구조로 정리하고, Wiki thread 경로 검증·Manager 의존성·OOC 상태 적용·사회 그래프 모듈을 책임별 경계로 분리했다.
 - [개발 인프라] Wiki commit 계획을 prompt·policy·header-sync·error 단계와 공용 evidence/patch helper로 분해하고, FastAPI 앱을 얇은 factory와 router 계층으로 재구성했다. 전체 `tests/smoke_*.py` 23개 gate를 통과했다.
+
+## 2026-08-31
+
+- [버그픽스] Wiki Updater 결과 검증에서 독립 creation의 owner 권한 위반(활성 thread profile이지만 player·Actor가 아님)을 all-or-nothing 재시도 대상에서 분리했다. 이제 그 creation 하나만 결과에서 제거(절단)하고 나머지 patch·creation은 그대로 통과하며, 절단 자체는 재시도를 유발하지 않는다. 구조·revision·section·evidence 위반과 절단이 Event-Memory 짝 검증을 깨는 경우는 지금처럼 attempt 전체를 기각한다. 절단 기록은 attempt 진단 파일과 적용된 commit archive 메타데이터에 남고, Actor prompt나 canonical Markdown 본문에는 노출되지 않는다.
+- [버그픽스] Wiki Memory·Goal·Item·Secret 새 문서의 owner 권한을 player·현재 Actor 둘에서 현재 장면에 있는 활성 캐릭터 전원으로 넓혔다. `scene/current.md` 본문에서 캐릭터 H1 이름을 결정적으로 대조해 장면 참여 여부를 판별하며, 제3자 owner는 Actor 응답 근거만 허용하고 그 evidence exact quote가 그 캐릭터를 실제로 언급해야 통과한다. 근거 출처가 틀리거나 evidence가 그 인물을 언급하지 않으면 여전히 기각·재시도이고, 실재하지만 이번 장면에 없는 인물만 앞선 절단 경로로 빠진다.
+- [버그픽스] Wiki 관계 원장 물질화와 patch 권한을 활성 Actor→player 한 쌍에서 장면 활성 캐릭터 전원으로 넓혔다. 장면 활성 NPC가 아직 자신의 owner→player 관계 문서가 없으면 그 NPC가 처음 활성화되는 턴에 기존 물질화 경로로 결정적으로 생성하고(모델 창작이 아님, 이미 있으면 재생성하지 않음), patch 권한도 Actor 단독에서 "Actor 또는 장면 활성 캐릭터이며 evidence exact quote가 그 owner를 실제로 언급"으로 확장했다. 장면 비활성 owner나 실재하지 않는 owner를 대상으로 한 patch는 절단 없이 attempt 전체를 기각하며, 기존 durable bullet 삭제·플레이어 내면 확정 거부 등 관계 계약은 그대로 유지했다. NPC↔NPC 관계는 이번 범위에서 제외했다.
+
+## 2026-09-01
+
+- [리팩토링] Updater 경로에서만 쓰던 DeepSeek 클라이언트와 모델 접두사 분기를 제거했다. Actor 경로의 DeepSeek 선택지와 관련 설정은 그대로 유지된다.
+- [리팩토링] Claude/DeepSeek 두 벌로 갈라져 있던 Anthropic 스트리밍 어댑터를 하나로 합쳤다. provider별 클라이언트 게터와 SSE 소비 로직을 앱 계층에서 `src/core/llm/`으로 옮겨, provider 차이가 스트림을 여는 요청 인자에만 남게 했다.
+- [안전성] LLM provider 한도 오류 판별을 응답 문자열 매칭 대신 예외 타입과 상태 코드 기준으로 다시 짰다. 403 오류를 429와 함께 재시도 대상에 포함했고, 응답 본문에 우연히 "429"라는 문자열이 섞여 생기던 오탐 재시도를 제거했다.
+- [리팩토링] Wiki 커밋 적용 중 실패 시 되돌리던 3중 보상 로직을 `WikiStore.transaction()` 단일 undo journal로 합쳤다. 이 과정에서 원본 실패에 이어 보상까지 실패하는 이중 실패 시 사용자에게 전달되는 오류 서술에서 "보상도 실패했다"는 정보가 조용히 빠지는 회귀를 찾아, 실패 서술을 만드는 지점을 하나로 좁혀 다시 채웠다.
+- [버그픽스] 존재하지 않거나 제목 없는 event를 가리키는 memory 생성 요청이 내부 `KeyError`로 3회 재시도를 모두 소진한 뒤에야 원인을 알 수 없는 메시지로 실패하던 문제를 고쳤다. 이제 즉시 원인이 구분된 메시지로 거부한다. 재시도 루프를 model 호출 경계와 파싱·검증 경계로 나눠, 우리 코드의 프로그래밍 오류는 재시도 없이 즉시 전파되고 provider 쪽 오류만 재시도 대상으로 남게 했다.
+- [리팩토링] Wiki 커밋 정책 검증을 문서 타입별 정책 테이블과 결과 검증, 공용 evidence 검사 세 계층으로 나눴다. 이전에는 뒤 검사가 앞 검사의 `return`에 기대는 암묵적 순서로 걸러지고 있었는데, 이제 각 타입이 자기 정책 레코드 하나로만 갈리므로 그런 순서 의존이 사라졌다.
+- [리팩토링] FastAPI 앱의 Graph/Wiki 모드 분기를 각 라우트마다 흩어져 있던 조건문 대신 공용 프로토콜과 레지스트리 조회 하나로 통합했다. 여러 곳에 중복 정의돼 있던 메시지 payload 조립 함수도 하나로 모았다. 동작은 바뀌지 않았다.
+- [개발 인프라] 스모크 테스트 모듈들의 진입점 관례를 하나로 통일하고, 미사용 import와 파일 헤더-본문 불일치를 잡는 `tests/smoke_engine_hygiene.py`를 새로 추가했다. 별도 린터 도구는 들이지 않고 기존 스모크 실행 방식을 그대로 썼으며, 새 검사는 만들자마자 이번 리팩토링이 남긴 미사용 import 2건을 실제로 잡아냈다.

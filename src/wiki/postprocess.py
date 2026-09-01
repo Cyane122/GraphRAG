@@ -18,8 +18,8 @@ from pathlib import Path
 import re
 
 from src.core.llm import extract_json_from_llm, get_model, get_response_text
-from src.wiki.context import document_body
 from src.wiki.document_creation import prepare_created_document
+from src.wiki.evidence import document_body, first_nonempty_line
 from src.wiki.frontmatter import parse_frontmatter
 from src.wiki.models import (
     CreateMemoryDocument,
@@ -28,7 +28,6 @@ from src.wiki.models import (
     SectionPatch,
     WikiDocument,
 )
-from src.wiki.evidence import first_nonempty_line
 from src.wiki.patches import build_actor_response_section_patch
 
 logger = logging.getLogger(__name__)
