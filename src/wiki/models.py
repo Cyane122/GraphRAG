@@ -693,7 +693,6 @@ class WikiPromptBundle(BaseModel):
     """한 Wiki 턴의 Actor 프롬프트와 Updater 입력 문서를 묶습니다."""
 
     fixed_prompt: str
-    genre_prompt: str
     dynamic_prompt: str
     scene_types: list[str]
     updater_documents: list[WikiDocument]

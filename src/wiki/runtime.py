@@ -6,7 +6,7 @@
 # Functions
 #   - initialize_wiki_conversation(vault_root: Path, world_id: str, scenario_id: str, thread_id: str) -> WikiConversationSetup : Wiki thread를 초기화합니다.
 #   - resolve_wiki_opening_scene(vault_root: Path, world_id: str, scenario_id: str) -> str : 선택 시나리오의 첫 장면 원문을 반환합니다.
-#   - build_wiki_prompt_bundle(vault_root: Path, setup: WikiConversationSetup, user_input: str, recent_story: str = "", turn_ooc_directives: str = "", scene_types: list[str] | None = None, prose_variant: str = "a", engine_modules: dict[str, str] | None = None) -> WikiPromptBundle : 기존 PromptBuilder로 Actor prompt를 조립합니다.
+#   - build_wiki_prompt_bundle(vault_root: Path, setup: WikiConversationSetup, user_input: str, recent_story: str = "", turn_ooc_directives: str = "", scene_types: list[str] | None = None, prose_profile: ProseProfile | None = None, engine_modules: dict[str, str] | None = None) -> WikiPromptBundle : 기존 PromptBuilder로 Actor prompt를 조립합니다.
 #   - apply_pending_wiki_commit(vault_root: Path, thread_id: str) -> PendingWikiCommit | None : 다음 입력 직전 commit.md를 적용합니다.
 # ================================
 
@@ -17,6 +17,7 @@ import re
 
 from src.agents.context.scene_keys import normalize_prompt_scene_types
 from src.agents.prompt_factory import PromptBuilder
+from src.agents.prompt_factory.profiles import ProseProfile
 from src.config import (
     WIKI_ACTOR_RECALL_BUDGET,
     WIKI_ACTOR_RECALL_TOKEN_BUDGET,
@@ -29,7 +30,6 @@ from src.wiki.context import (
     initialize_wiki_thread,
     load_wiki_setup,
     read_wiki_actor_assets,
-    read_wiki_scene_prompt_assets,
     read_wiki_thread_documents,
     scene_datetime_and_location,
 )
@@ -41,7 +41,6 @@ from src.wiki.models import (
     WikiDocument,
     WikiMetadata,
     WikiPromptBundle,
-    WikiScenePromptAsset,
 )
 from src.wiki.paths import wiki_thread_root_for_vault
 from src.wiki.recall import select_recall_documents
@@ -140,13 +139,6 @@ def _situation_rules_body(document: WikiDocument) -> str:
             continue
         rendered.append(f"{'#' * max(1, depth - 1)} {title}" if depth >= 3 else line)
     return "\n".join(rendered).strip()
-
-
-def _scene_prompt_body(asset: WikiScenePromptAsset) -> str:
-    """선택된 scene prompt에서 저장 metadata를 제거하고 독립 본문만 반환합니다."""
-    body = _remove_actor_metadata(document_body(asset.document.content))
-    validate_actor_document_body(body, asset.document)
-    return body
 
 
 def _static_block_label(document: WikiDocument) -> str:
@@ -279,7 +271,7 @@ def _scene_actor_body(document: WikiDocument) -> str:
 
 
 def _scene_types(user_input: str, recent_story: str) -> list[str]:
-    """추가 LLM 호출 없이 일상/친밀 장면의 최소 genre 분기를 반환합니다."""
+    """추가 LLM 호출 없이 일상/친밀 장면의 최소 scene type 분기를 반환합니다."""
     return ["intimate"] if _INTIMATE_RE.search(f"{recent_story[-600:]}\n{user_input}") else ["daily"]
 
 
@@ -287,7 +279,6 @@ def _world_config(
     setup: WikiConversationSetup,
     assets: list[WikiDocument],
     thread_documents: list[WikiDocument],
-    scene_prompts: list[WikiScenePromptAsset],
 ) -> dict:
     """Markdown 자산을 기존 PromptBuilder가 이해하는 world_config로 변환합니다."""
     cot_append_document = next(
@@ -338,10 +329,6 @@ def _world_config(
             document_body(blacklist_document.content) if blacklist_document else ""
         ),
         "unified_blacklist": False,
-        "scene_specific_prompts": {
-            asset.scene_type: _scene_prompt_body(asset)
-            for asset in scene_prompts
-        },
         "prompt": {
             "pov": {"mode": setup.pov_mode},
             "sections": {
@@ -454,10 +441,10 @@ def build_wiki_prompt_bundle(
     recent_story: str = "",
     turn_ooc_directives: str = "",
     scene_types: list[str] | None = None,
-    prose_variant: str = "a",
+    prose_profile: ProseProfile | None = None,
     engine_modules: dict[str, str] | None = None,
 ) -> WikiPromptBundle:
-    """최신 Markdown을 읽어 기존 PromptBuilder의 Fixed/Genre/Dynamic을 조립합니다."""
+    """최신 Markdown을 읽어 기존 PromptBuilder의 Fixed/Dynamic을 조립합니다."""
     assets = read_wiki_actor_assets(vault_root, setup.world_id, setup.scenario_id)
     thread_documents = read_wiki_thread_documents(vault_root, setup.thread_id)
     scene_document = next(
@@ -469,26 +456,20 @@ def build_wiki_prompt_bundle(
     selected_scene_types = normalize_prompt_scene_types(
         scene_types or _scene_types(user_input, recent_story)
     )
-    scene_prompts = read_wiki_scene_prompt_assets(
-        vault_root,
-        setup.world_id,
-        setup.scenario_id,
-        selected_scene_types,
-    )
-    world_config = _world_config(setup, assets, thread_documents, scene_prompts)
+    world_config = _world_config(setup, assets, thread_documents)
     builder = PromptBuilder(
         world_config=world_config,
         char_name=setup.npc_name,
         user_name=setup.pc_name,
         perspective=setup.perspective,
-        prose_variant=prose_variant,
+        prose_profile=prose_profile,
         engine_modules=engine_modules,
     )
     char_data = {"id": setup.npc_name, "name": setup.npc_name}
     if (dynamic_state := _actor_cycle_dynamic_state(thread_documents, setup.npc_id)) is not None:
         char_data["dynamic_state"] = dynamic_state
     user_data = {"id": setup.pc_name, "name": setup.pc_name}
-    fixed, genre, dynamic = builder.build(
+    fixed, dynamic = builder.build(
         scene_types=selected_scene_types,
         char_data=char_data,
         recent_story=recent_story,
@@ -513,7 +494,6 @@ def build_wiki_prompt_bundle(
     )
     bundle = WikiPromptBundle(
         fixed_prompt=fixed,
-        genre_prompt=genre,
         dynamic_prompt=dynamic,
         scene_types=selected_scene_types,
         updater_documents=thread_documents,

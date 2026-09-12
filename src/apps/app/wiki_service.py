@@ -4,7 +4,7 @@
 # Wiki 모드의 Actor 스트리밍과 지연 Markdown 업데이트를 조율합니다.
 #
 # Functions
-#   - stream_wiki_turn(state: ConversationState, content: str, client_message_id: str | None = None, actor_model: str | None = None, prose_variant: str | None = None, engine_modules: dict[str, str] | None = None, apply_pending: bool = True, queue_update: bool = True) -> AsyncIterator[dict] : 한 Wiki 사용자 턴을 스트리밍하고 필요할 때 commit.md를 생성합니다.
+#   - stream_wiki_turn(state: ConversationState, content: str, client_message_id: str | None = None, actor_model: str | None = None, prose_profile: ProseProfile | None = None, engine_modules: dict[str, str] | None = None, apply_pending: bool = True, queue_update: bool = True) -> AsyncIterator[dict] : 한 Wiki 사용자 턴을 스트리밍하고 필요할 때 commit.md를 생성합니다.
 # ================================
 
 from __future__ import annotations
@@ -19,13 +19,13 @@ from uuid import uuid4
 from src.agents.prompt_factory.engines import normalize_engine_modules
 from src.agents.prompt_factory.usernote import build_usernotes_block
 from src.agents.manager.classifier import classify_scene_types
+from src.agents.prompt_factory.profiles import ProseProfile, normalize_prose_profile
 from src.apps.app.actor import stream_actor_events
 from src.apps.app.models import (
     ChatMessage,
     ConversationState,
     _message_payload,
     normalize_actor_model,
-    normalize_prose_variant,
     resolve_wiki_systems,
 )
 from src.apps.app.output_guard import find_forbidden_terms, find_pov_violations
@@ -192,7 +192,7 @@ async def stream_wiki_turn(
     content: str,
     client_message_id: str | None = None,
     actor_model: str | None = None,
-    prose_variant: str | None = None,
+    prose_profile: ProseProfile | None = None,
     engine_modules: dict[str, str] | None = None,
     *,
     apply_pending: bool = True,
@@ -228,8 +228,8 @@ async def stream_wiki_turn(
 
     selected_model = normalize_actor_model(actor_model or state.actor_model)
     state.actor_model = selected_model
-    selected_variant = normalize_prose_variant(prose_variant or state.prose_variant)
-    state.prose_variant = selected_variant
+    selected_variant = normalize_prose_profile(prose_profile or state.prose_profile)
+    state.prose_profile = selected_variant
     selected_engine_modules = normalize_engine_modules(
         engine_modules if engine_modules is not None else state.engine_modules
     )
@@ -267,7 +267,6 @@ async def stream_wiki_turn(
     debug_dir = write_turn_debug_snapshot(
         user_input=effective_input,
         fixed_prompt=bundle.fixed_prompt,
-        genre_prompt=bundle.genre_prompt,
         dynamic_prompt=bundle.dynamic_prompt,
         scene_types=bundle.scene_types,
         manager_effects=_wiki_debug_effects(bundle, setup),
@@ -283,7 +282,6 @@ async def stream_wiki_turn(
 
     actor_kwargs = {
         "fixed_prompt": bundle.fixed_prompt,
-        "genre_prompt": bundle.genre_prompt,
         "dynamic_prompt": bundle.dynamic_prompt,
         "history": state.history,
         "genai_client": _GENAI_CLIENT,
@@ -328,7 +326,7 @@ async def stream_wiki_turn(
         content=full_response,
         parent_user_id=user_message.id,
         actor_model=selected_model,
-        prose_variant=selected_variant,
+        prose_profile=selected_variant,
         engine_modules=selected_engine_modules,
     )
     state.messages.append(assistant_message)

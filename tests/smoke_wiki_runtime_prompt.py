@@ -5,7 +5,7 @@
 #
 # Functions
 #   - _opening_tag_sequence(prompt: str) -> tuple[str, ...] : Normalize opening tag order into a prompt-structure fingerprint.
-#   - _prompt_structure_snapshot(fixed_prompt: str, genre_prompt: str, dynamic_prompt: str) -> dict[str, tuple[str, ...]] : Build the Fixed/Genre/Dynamic structure fingerprint.
+#   - _prompt_structure_snapshot(fixed_prompt: str, dynamic_prompt: str) -> dict[str, tuple[str, ...]] : Build the Fixed/Dynamic structure fingerprint.
 #   - _report_prompt_content_snapshot(scenario_id: str, prompt_snapshot: dict[str, str]) -> None : Print content hashes used for authored-drift diagnostics.
 #   - _assert_world_prompt_additions(vault_root: Path) -> None : Validate cot_append and blacklist inheritance behavior.
 #   - _check_runtime_bootstrap(vault_root: Path) -> None : Validate classifier wiring, routes, runtime status, and opening-scene basics.
@@ -63,13 +63,11 @@ def _opening_tag_sequence(prompt: str) -> tuple[str, ...]:
 
 def _prompt_structure_snapshot(
     fixed_prompt: str,
-    genre_prompt: str,
     dynamic_prompt: str,
 ) -> dict[str, tuple[str, ...]]:
-    """Compiled prompt의 Fixed/Genre/Dynamic 구조 fingerprint를 반환합니다."""
+    """Compiled prompt의 Fixed/Dynamic 구조 fingerprint를 반환합니다."""
     return {
         "fixed": _opening_tag_sequence(fixed_prompt),
-        "genre": _opening_tag_sequence(genre_prompt),
         "dynamic": _opening_tag_sequence(dynamic_prompt),
     }
 
@@ -81,7 +79,6 @@ def _report_prompt_content_snapshot(
     print(
         f"[prompt-content] {scenario_id}: "
         f"fixed={prompt_snapshot['fixed']} "
-        f"genre={prompt_snapshot['genre']} "
         f"dynamic={prompt_snapshot['dynamic']}"
     )
     expected = _EXPECTED_PROMPT_SNAPSHOTS[scenario_id]
@@ -260,18 +257,15 @@ def _check_prompt_bundle_common(
     combined_prompt = "\n".join(
         (
             prompt_bundle.fixed_prompt,
-            prompt_bundle.genre_prompt,
             prompt_bundle.dynamic_prompt,
         )
     )
     prompt_snapshot = {
         "fixed": sha256(prompt_bundle.fixed_prompt.encode("utf-8")).hexdigest(),
-        "genre": sha256(prompt_bundle.genre_prompt.encode("utf-8")).hexdigest(),
         "dynamic": sha256(prompt_bundle.dynamic_prompt.encode("utf-8")).hexdigest(),
     }
     prompt_structure = _prompt_structure_snapshot(
         prompt_bundle.fixed_prompt,
-        prompt_bundle.genre_prompt,
         prompt_bundle.dynamic_prompt,
     )
     _report_prompt_content_snapshot(scenario_id, prompt_snapshot)
@@ -317,16 +311,7 @@ def _check_prompt_bundle_common(
                 scene_types=[raw_scene],
             )
             assert scene_bundle.scene_types == [prompt_scene]
-            assert (
-                f'<scene type="{prompt_scene}">'
-                in scene_bundle.dynamic_prompt
-            )
             assert scene_bundle.fixed_prompt == prompt_bundle.fixed_prompt
-            if prompt_scene == "intimate":
-                assert '<genre name="intimate">' in scene_bundle.genre_prompt
-                assert "Intimate Physicality in Ordinary Life" in (
-                    scene_bundle.dynamic_prompt
-                )
     assert "path=" not in combined_prompt
     assert ".md" not in combined_prompt
     assert "<wiki_" not in combined_prompt
@@ -365,8 +350,8 @@ def _check_prompt_bundle_scenario_specific(
     if scenario_id == "altered":
         assert setup.pov_mode == "1p_char"
         assert setup.perspective == 1
-        assert "Narration = first person." in prompt_bundle.fixed_prompt
-        assert "Narrator = 진은서." in prompt_bundle.fixed_prompt
+        assert "POV: 1P" in prompt_bundle.dynamic_prompt
+        assert "narrator=진은서" in prompt_bundle.dynamic_prompt
         assert "Born February 17, 1990" in prompt_bundle.fixed_prompt
         assert "character_profile:jung_woojin" not in prompt_bundle.fixed_prompt
         assert "They began dating on September 28, 2024" in prompt_bundle.fixed_prompt
@@ -395,14 +380,12 @@ def _check_prompt_bundle_scenario_specific(
             scene_types=["altered"],
         )
         assert altered_scene_bundle.scene_types == ["altered"]
-        assert "Practical Handling of 시안's Conduct" in (
-            altered_scene_bundle.dynamic_prompt
-        )
         assert "scene_prompt:" not in altered_scene_bundle.dynamic_prompt
     else:
         assert setup.pov_mode == "3p_char"
         assert setup.perspective == 3
-        assert "Narration = third-person limited." in prompt_bundle.fixed_prompt
+        # POV는 Fixed의 문체 블록이 아니라 Dynamic의 current_pov 상태로 전달된다.
+        assert "POV: 3P" in prompt_bundle.dynamic_prompt
         assert "Born February 17, 1990" not in prompt_bundle.fixed_prompt
     if scenario_id == "lover":
         alternate_bundle = build_wiki_prompt_bundle(
@@ -412,7 +395,6 @@ def _check_prompt_bundle_scenario_specific(
             "평온한 직전 대화",
         )
         assert alternate_bundle.fixed_prompt == prompt_bundle.fixed_prompt
-        assert alternate_bundle.genre_prompt == prompt_bundle.genre_prompt
         assert alternate_bundle.dynamic_prompt != prompt_bundle.dynamic_prompt
         poisoned_bundle = prompt_bundle.model_copy(
             update={
@@ -460,11 +442,9 @@ def _check_prompt_bundle_scenario_specific(
             "",
         )
         assert intimate_bundle.scene_types == ["intimate"]
-        assert "current behavioral/verbal consent" in intimate_bundle.genre_prompt
-        assert "arrangement ≠ blanket consent" in intimate_bundle.genre_prompt
-        assert "Mind refuses" not in intimate_bundle.genre_prompt
-        assert "forced bareback" not in intimate_bundle.genre_prompt
-        assert "Non-consensual" not in intimate_bundle.genre_prompt
+        # 합의·피임 조항은 이제 성인 엔진이 소유한다. 씬 장르 오버레이는 조립되지 않는다.
+        assert "<prose_profile>" in intimate_bundle.fixed_prompt
+        assert "<output_contract>" in intimate_bundle.dynamic_prompt
 
 def _check_prompt_bundle_debug_and_materialization(
     temporary_root: Path,
@@ -487,7 +467,6 @@ def _check_prompt_bundle_debug_and_materialization(
         debug_directory = write_turn_debug_snapshot(
             user_input="프롬프트 격리 확인",
             fixed_prompt=prompt_bundle.fixed_prompt,
-            genre_prompt=prompt_bundle.genre_prompt,
             dynamic_prompt=prompt_bundle.dynamic_prompt,
             scene_types=prompt_bundle.scene_types,
             manager_effects=debug_effects,
@@ -528,7 +507,10 @@ def _check_prompt_bundle_debug_and_materialization(
             "",
             scene_types=["intimate"],
         )
-        assert "Intimacy with Physical Dependence" in (
+        # scene prompt Markdown은 더 이상 Actor prompt로 주입되지 않는다. 씬 분류와
+        # 블랙리스트 선택에만 쓰이고, 문체는 prose profile 한 축에서만 나온다.
+        assert amputee_intimate_bundle.scene_types == ["intimate"]
+        assert "Intimacy with Physical Dependence" not in (
             amputee_intimate_bundle.dynamic_prompt
         )
         assert "Intimate Physicality in Ordinary Life" not in (

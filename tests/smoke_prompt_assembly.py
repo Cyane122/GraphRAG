@@ -63,7 +63,7 @@ def _check_numeric_state_block_drops_needs() -> None:
 
 
 def _check_build_uses_rendered_context() -> None:
-    """legacy 렌더러 제거 후 build()가 rendered_context 기반으로 3-파트를 조립하는지 검증."""
+    """build()가 rendered_context 기반으로 Fixed/Dynamic 2-파트를 조립하는지 검증."""
     builder = PromptBuilder(
         world_config={"rating": "r18", "perspective": 3},
         char_name="민지",
@@ -81,7 +81,7 @@ def _check_build_uses_rendered_context() -> None:
         world_context={},
         dynamic_state={"mood": "calm"},
     )
-    fixed, genre, dynamic = builder.build(
+    fixed, dynamic = builder.build(
         scene_types=["daily"],
         char_data={"id": "minji", "name": "민지", "dynamic_state": {"mood": "calm"}},
         recent_story="",
@@ -94,13 +94,62 @@ def _check_build_uses_rendered_context() -> None:
         current_pov=None,
     )
     assert isinstance(fixed, str) and fixed.strip(), "fixed section empty"
-    assert isinstance(genre, str)
+    # Fixed는 하나의 문체 축(prose profile)과 항상 적용되는 simulation core만 쓴다.
+    assert "<simulation_core>" in fixed, fixed[:500]
+    assert "<prose_profile>" in fixed, fixed[:500]
+    for gone in ("<pov>", "<emotion>", "<style>", "checklist"):
+        assert gone not in fixed, f"fixed still carries {gone}"
     # rendered_context가 dynamic 파트에 world_context 블록으로 들어가야 한다.
     assert "<world_context>" in dynamic, dynamic[:500]
     assert "[Current Scene]" in dynamic, dynamic[:500]
     # 사용자 입력 라벨링 경로도 살아 있어야 한다.
     assert "안녕?" in dynamic, dynamic[-500:]
-    print("[ok] PromptBuilder.build: rendered_context assembled, no legacy path needed")
+    # 체크리스트가 옮겨 간 동적 블록과 System_Log 출력 계약이 Dynamic에 있어야 한다.
+    assert "<current_pov>" in dynamic, dynamic[:500]
+    assert "<output_contract>" in dynamic, dynamic[-800:]
+    assert "System_Log" in dynamic, dynamic[-800:]
+    for gone in ("<dialogue_examples>", "<scene_specific_prompts>", "PRE-DRAFT", "FINAL:"):
+        assert gone not in dynamic, f"dynamic still carries {gone}"
+    print("[ok] PromptBuilder.build: profile fixed + System_Log dynamic assembled")
+
+
+def _check_reproductive_state_requires_adult_engine() -> None:
+    """생식 상태는 adult 엔진이 켜졌을 때만 Dynamic에 렌더된다."""
+    char_data = {
+        "id": "minji",
+        "name": "민지",
+        "dynamic_state": {"mood": "calm", "has_menstrual_cycle": True, "cycle_day": 14},
+    }
+    common = dict(
+        scene_types=["daily"],
+        char_data=char_data,
+        recent_story="",
+        user_input="안녕?",
+        location="교실",
+        dt=datetime(2026, 6, 19, 9, 0),
+        npcs=[],
+        user_data={"id": "jun", "name": "준"},
+        current_pov=None,
+    )
+    off = PromptBuilder(
+        world_config={"rating": "r18", "perspective": 3},
+        char_name="민지",
+        user_name="준",
+        perspective=3,
+    )
+    _, dynamic_off = off.build(**common)
+    assert "<reproductive_state>" not in dynamic_off, dynamic_off[:500]
+    on = PromptBuilder(
+        world_config={"rating": "r18", "perspective": 3},
+        char_name="민지",
+        user_name="준",
+        perspective=3,
+        engine_modules={"adult": "on"},
+    )
+    _, dynamic_on = on.build(**common)
+    assert "<reproductive_state>" in dynamic_on, dynamic_on[:800]
+    assert "pregnancy_risk" in dynamic_on, dynamic_on[:800]
+    print("[ok] reproductive state gated on the adult engine")
 
 
 def main() -> None:
@@ -108,6 +157,7 @@ def main() -> None:
     _check_merge_need_hints()
     _check_numeric_state_block_drops_needs()
     _check_build_uses_rendered_context()
+    _check_reproductive_state_requires_adult_engine()
     print("\nALL PASS: smoke_prompt_assembly")
 
 

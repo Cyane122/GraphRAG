@@ -4,7 +4,7 @@
 # core.logging 패키지 공개 인터페이스.
 #
 # Functions
-#   - build_prompt_fingerprint(fixed_prompt: str, genre_prompt: str, dynamic_prompt: str, history: list[dict] | None) -> dict : 프롬프트 fingerprint 생성
+#   - build_prompt_fingerprint(fixed_prompt: str, dynamic_prompt: str, history: list[dict] | None) -> dict : 프롬프트 fingerprint 생성
 #   - append_prompt_fingerprint_log(record: dict, logs_dir: Path | str) -> None : fingerprint JSONL 로그 저장
 #   - format_prompt_fingerprint(record: dict) -> str : fingerprint 콘솔 요약 생성
 # ================================

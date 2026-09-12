@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from src.agents.prompt_factory.profiles import ProseProfile
 from src.apps.app.message_ops import (
     activate_variant,
     delete_message,
@@ -57,7 +58,7 @@ class ConversationOps(Protocol):
         store: ConversationStore,
         *,
         actor_model: str | None = None,
-        prose_variant: str | None = None,
+        prose_profile: ProseProfile | None = None,
         engine_modules: dict[str, str] | None = None,
     ) -> dict:
         """assistant_id가 가리키는 응답을 재생성합니다."""
@@ -71,7 +72,7 @@ class ConversationOps(Protocol):
         store: ConversationStore,
         *,
         actor_model: str | None = None,
-        prose_variant: str | None = None,
+        prose_profile: ProseProfile | None = None,
         engine_modules: dict[str, str] | None = None,
     ) -> dict:
         """message_id가 가리키는 메시지를 새 content로 수정합니다."""
@@ -107,7 +108,7 @@ class _GraphConversationOps:
         store: ConversationStore,
         *,
         actor_model: str | None = None,
-        prose_variant: str | None = None,
+        prose_profile: ProseProfile | None = None,
         engine_modules: dict[str, str] | None = None,
     ) -> dict:
         """Graph 대화에서 assistant 응답을 재생성합니다."""
@@ -116,7 +117,7 @@ class _GraphConversationOps:
             assistant_id,
             store,
             actor_model=actor_model,
-            prose_variant=prose_variant,
+            prose_profile=prose_profile,
             engine_modules=engine_modules,
         )
 
@@ -128,7 +129,7 @@ class _GraphConversationOps:
         store: ConversationStore,
         *,
         actor_model: str | None = None,
-        prose_variant: str | None = None,
+        prose_profile: ProseProfile | None = None,
         engine_modules: dict[str, str] | None = None,
     ) -> dict:
         """Graph 대화의 메시지를 수정합니다."""
@@ -138,7 +139,7 @@ class _GraphConversationOps:
             content,
             store,
             actor_model=actor_model,
-            prose_variant=prose_variant,
+            prose_profile=prose_profile,
             engine_modules=engine_modules,
         )
 
@@ -172,7 +173,7 @@ class _WikiConversationOps:
         store: ConversationStore,
         *,
         actor_model: str | None = None,
-        prose_variant: str | None = None,
+        prose_profile: ProseProfile | None = None,
         engine_modules: dict[str, str] | None = None,
     ) -> dict:
         """Wiki 대화에서 최신 미반영 응답을 재생성합니다."""
@@ -181,7 +182,7 @@ class _WikiConversationOps:
             assistant_id,
             store,
             actor_model=actor_model,
-            prose_variant=prose_variant,
+            prose_profile=prose_profile,
             engine_modules=engine_modules,
         )
 
@@ -193,7 +194,7 @@ class _WikiConversationOps:
         store: ConversationStore,
         *,
         actor_model: str | None = None,
-        prose_variant: str | None = None,
+        prose_profile: ProseProfile | None = None,
         engine_modules: dict[str, str] | None = None,
     ) -> dict:
         """Wiki 대화의 최신 메시지를 수정합니다."""
@@ -203,7 +204,7 @@ class _WikiConversationOps:
             content,
             store,
             actor_model=actor_model,
-            prose_variant=prose_variant,
+            prose_profile=prose_profile,
             engine_modules=engine_modules,
         )
 

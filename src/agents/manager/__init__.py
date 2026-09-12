@@ -5,7 +5,7 @@
 #
 # Functions
 #   - load_world_instance(world_id: str) -> World : Load the World instance for a world id
-#   - run_manager(user_input: str, pc_id: str, npc_id: str, recent_story: str, world_id: str | None, scenario_id: str | None, perspective: int, suppress_time_plan: bool = False, scene_need_hints: dict[str, str] | None = None, pending_kakao_messages: list[dict] | None = None, enable_kakao_preprocessing: bool = True, social_media_features: dict | None = None, thread_id: str | None = None, commit_id: str | None = None, turn_ooc_directives: str = "", prose_variant: str = "a", engine_modules: dict[str, str] | None = None) -> tuple[PromptParts, list[str], dict] : Run one manager turn pipeline
+#   - run_manager(user_input: str, pc_id: str, npc_id: str, recent_story: str, world_id: str | None, scenario_id: str | None, perspective: int, suppress_time_plan: bool = False, scene_need_hints: dict[str, str] | None = None, pending_kakao_messages: list[dict] | None = None, enable_kakao_preprocessing: bool = True, social_media_features: dict | None = None, thread_id: str | None = None, commit_id: str | None = None, turn_ooc_directives: str = "", prose_profile: ProseProfile | None = None, engine_modules: dict[str, str] | None = None) -> tuple[PromptParts, list[str], dict] : Run one manager turn pipeline
 #   - commit_manager_effects(effects: dict | None, pc_id: str, npc_id: str) -> None : Commit pending manager side effects
 # ================================
 import asyncio
@@ -14,6 +14,7 @@ from src.agents.manager.effects import commit_manager_effects
 from src.agents.manager.models import PromptParts
 from src.agents.manager.pipeline import run_manager_pipeline
 from src.agents.manager.world_loader import load_world_instance
+from src.agents.prompt_factory.profiles import ProseProfile
 
 async def run_manager(
     user_input:   str,
@@ -31,7 +32,7 @@ async def run_manager(
     thread_id: str | None = None,
     commit_id: str | None = None,
     turn_ooc_directives: str = "",
-    prose_variant: str = "a",
+    prose_profile: ProseProfile | None = None,
     engine_modules: dict[str, str] | None = None,
 ) -> tuple[PromptParts, list[str], dict]:
     """Orchestrate turn preparation while leaving each stage testable in isolation."""
@@ -51,7 +52,7 @@ async def run_manager(
         thread_id=thread_id,
         commit_id=commit_id,
         turn_ooc_directives=turn_ooc_directives,
-        prose_variant=prose_variant,
+        prose_profile=prose_profile,
         engine_modules=engine_modules,
     )
 
@@ -72,7 +73,6 @@ if __name__ == "__main__":
             perspective  = 3,
         )
         print("=== FIXED ===");   print(prompts.fixed[:200],  "...\n")
-        print("=== GENRE ===");   print(prompts.genre[:200] if prompts.genre else "(없음)", "\n")
         print("=== DYNAMIC ==="); print(prompts.dynamic)
         print("\n=== 씬 타입 ==="); print(scene_types)
 

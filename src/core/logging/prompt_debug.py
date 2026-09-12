@@ -4,7 +4,7 @@
 # PromptCard 캐싱 전 단계에서 프롬프트 안정성을 관측하기 위한 fingerprint 로그 유틸리티입니다.
 #
 # Functions
-#   - build_prompt_fingerprint(fixed_prompt: str, genre_prompt: str, dynamic_prompt: str, history: list[dict] | None) -> dict : 프롬프트 파트별 해시와 크기 메타데이터 생성
+#   - build_prompt_fingerprint(fixed_prompt: str, dynamic_prompt: str, history: list[dict] | None) -> dict : 프롬프트 파트별 해시와 크기 메타데이터 생성
 #   - append_prompt_fingerprint_log(record: dict, logs_dir: Path | str) -> None : fingerprint record를 JSONL 로그로 저장
 #   - format_prompt_fingerprint(record: dict) -> str : 콘솔 출력용 한 줄 요약 생성
 # ================================
@@ -19,22 +19,17 @@ from pathlib import Path
 
 def build_prompt_fingerprint(
     fixed_prompt: str,
-    genre_prompt: str,
     dynamic_prompt: str,
     history: list[dict] | None = None,
 ) -> dict:
     """프롬프트 파트별 fingerprint와 캐싱 관측용 메타데이터를 생성합니다."""
-    genre_prompt = genre_prompt or ""
-    system_text = f"{fixed_prompt}\n\n{genre_prompt}" if genre_prompt else fixed_prompt
     history_text = _history_to_stable_text(history or [])
-    final_text = "\n\n".join(part for part in (system_text, history_text, dynamic_prompt) if part)
+    final_text = "\n\n".join(part for part in (fixed_prompt, history_text, dynamic_prompt) if part)
 
     return {
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "parts": {
             "fixed": _fingerprint_text(fixed_prompt),
-            "genre": _fingerprint_text(genre_prompt),
-            "system": _fingerprint_text(system_text),
             "history": _fingerprint_text(history_text),
             "dynamic": _fingerprint_text(dynamic_prompt),
             "final": _fingerprint_text(final_text),
@@ -58,15 +53,11 @@ def format_prompt_fingerprint(record: dict) -> str:
     """프롬프트 fingerprint record를 콘솔용 한 줄로 변환합니다."""
     parts = record.get("parts", {})
     fixed = parts.get("fixed", {})
-    genre = parts.get("genre", {})
     dynamic = parts.get("dynamic", {})
-    system = parts.get("system", {})
     final = parts.get("final", {})
     return (
         "[PromptFingerprint] "
         f"fixed={fixed.get('sha12')}:{fixed.get('chars')}c | "
-        f"genre={genre.get('sha12')}:{genre.get('chars')}c | "
-        f"system={system.get('sha12')}:{system.get('chars')}c | "
         f"dynamic={dynamic.get('sha12')}:{dynamic.get('chars')}c | "
         f"final={final.get('sha12')}:{final.get('chars')}c"
     )

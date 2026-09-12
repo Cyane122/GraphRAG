@@ -89,7 +89,7 @@ The main orchestration path begins at
    Graph state application without Actor generation.
 4. `src.agents.manager.pipeline.run_manager_pipeline` prepares scene
    classification and Graph context.
-5. `src.agents.prompt_factory.builder` assembles Fixed, Genre, and Dynamic prompt
+5. `src.agents.prompt_factory.builder` assembles the Fixed and Dynamic prompt
    segments.
 6. `src.apps.app.actor` streams the Actor response.
 7. `src.apps.app.output_guard` validates or repairs the output.
@@ -172,20 +172,28 @@ thread root and restore both vault and conversation JSON if staged cleanup fails
 
 ## 6. Prompt Contract
 
-Actor prompts have three segments:
+Actor prompts have two segments:
 
 | Segment | Source | Rule |
 | --- | --- | --- |
-| Fixed | Policy, world lore, static character knowledge | Stable across turns for implicit caching |
-| Genre | Scene prose rules and examples | May change with classification |
-| Dynamic | Current time/location/state, selected recall, recent story, user input | Rebuilt every turn |
+| Fixed | Operator policy, player ownership, simulation core, prose profile, engine modules, world lore, static character knowledge | Stable across turns for implicit caching |
+| Dynamic | Current time/location/state, current POV, selected recall, recent story, user input, output contract | Rebuilt every turn |
+
+Style comes from exactly one axis: the conversation's prose profile
+(`src/agents/prompt_factory/profiles.py`), a `base` plus a `primary` plus any
+`modifiers`. Engine modules carry causal, state, and output-block rules only; they
+do not restate prose rules. There is no separate genre segment, no per-turn
+checklist template, and no few-shot example block.
 
 Supported shared classifier labels are `daily`, `bonding`, `intimate`, `formal`,
-`tense`, `conflict`, `vulnerable`, `action`, and `ambient`. Compilation maps legacy
-labels to a supported non-empty asset. Wiki world and active-scenario
-`scenes/<scene_type>.md` documents may add or override classifier keys through stripped
-frontmatter descriptions. Their selected bodies enter Dynamic; inactive bodies and
-selection metadata do not enter any Actor segment.
+`tense`, `conflict`, `vulnerable`, `action`, and `ambient`. Scene types drive state
+routing and blacklist selection; their Markdown bodies no longer enter any Actor
+segment.
+
+The Actor opens `<analyze>` with a short System_Log (Mode, Input, Cause, Cast,
+Talk, optional Rel, Delta, Guard), closes it, and writes the prose scene beginning
+with a bold Korean date/time/location header. The Dynamic segment's
+`<output_contract>` block owns that contract and the silent pre-output check.
 
 Never put current time, current location, recent events, relationship state, needs,
 schedules, memories, or user input into Fixed.

@@ -5,7 +5,7 @@
 #
 # Functions
 #   - write_actor_raw_snapshot(full_response: str, raw_thinking: str, visible_text: str, logs_dir: Path, debug_dir: str | None = None) -> None : Save latest Actor raw outputs
-#   - write_turn_debug_snapshot(user_input: str, fixed_prompt: str, genre_prompt: str, dynamic_prompt: str, scene_types: list[str], manager_effects: dict, history: list[dict], world_id: str, pc_id: str, npc_id: str, npc_name: str, logs_dir: Path, turn_debug_dir: Path, actor_model: str | None = None) -> str | None : Save a turn debug snapshot
+#   - write_turn_debug_snapshot(user_input: str, fixed_prompt: str, dynamic_prompt: str, scene_types: list[str], manager_effects: dict, history: list[dict], world_id: str, pc_id: str, npc_id: str, npc_name: str, logs_dir: Path, turn_debug_dir: Path, actor_model: str | None = None) -> str | None : Save a turn debug snapshot
 # ================================
 import json
 from datetime import datetime
@@ -48,7 +48,6 @@ def write_actor_raw_snapshot(
 def write_turn_debug_snapshot(
     user_input: str,
     fixed_prompt: str,
-    genre_prompt: str,
     dynamic_prompt: str,
     scene_types: list[str],
     manager_effects: dict,
@@ -67,10 +66,8 @@ def write_turn_debug_snapshot(
         turn_dir = turn_debug_dir / stamp
         turn_dir.mkdir(parents=True, exist_ok=True)
 
-        system_text = f"{fixed_prompt}\n\n{genre_prompt}" if genre_prompt else fixed_prompt
         prompt_fingerprint = build_prompt_fingerprint(
             fixed_prompt=fixed_prompt,
-            genre_prompt=genre_prompt or "",
             dynamic_prompt=dynamic_prompt,
             history=history,
         )
@@ -85,7 +82,7 @@ def write_turn_debug_snapshot(
 
         final_prompt = (
             "[SYSTEM]\n"
-            f"{system_text}\n\n"
+            f"{fixed_prompt}\n\n"
             "[HISTORY]\n"
             f"{json.dumps(history, ensure_ascii=False, indent=2)}\n\n"
             "[USER_DYNAMIC_PROMPT]\n"
@@ -94,7 +91,6 @@ def write_turn_debug_snapshot(
 
         files = {
             "fixed_prompt.txt": fixed_prompt,
-            "genre_prompt.txt": genre_prompt or "",
             "dynamic_prompt.txt": dynamic_prompt,
             "final_prompt-2.txt": final_prompt,
             "history.json": json.dumps(history, ensure_ascii=False, indent=2),
@@ -111,7 +107,6 @@ def write_turn_debug_snapshot(
                 "prompt_fingerprint": prompt_fingerprint,
                 "prompt_lengths": {
                     "fixed": len(fixed_prompt),
-                    "genre": len(genre_prompt or ""),
                     "dynamic": len(dynamic_prompt),
                     "final": len(final_prompt),
                 },
@@ -129,7 +124,6 @@ def write_turn_debug_snapshot(
             f"- actor_model: `{actor_model or ''}`",
             f"- scene_types: `{scene_types}`",
             f"- fixed chars: `{len(fixed_prompt)}`",
-            f"- genre chars: `{len(genre_prompt or '')}`",
             f"- dynamic chars: `{len(dynamic_prompt)}`",
             f"- final chars: `{len(final_prompt)}`",
             "",

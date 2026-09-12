@@ -6,19 +6,19 @@
 #
 # Functions
 #   - preview_text(value: str) -> str : Build a compact sidebar preview from assistant output.
-#   - create_conversation(world_id: str, scenario_id: str | None, store: ConversationStore, actor_model: str | None = None, prose_variant: str | None = None, engine_modules: dict[str, str] | None = None, ooc_config: str = "", world_mode: WorldMode = "graph") -> ConversationState : Create a persisted conversation in one engine mode.
+#   - create_conversation(world_id: str, scenario_id: str | None, store: ConversationStore, actor_model: str | None = None, prose_profile: ProseProfile | None = None, engine_modules: dict[str, str] | None = None, ooc_config: str = "", world_mode: WorldMode = "graph") -> ConversationState : Create a persisted conversation in one engine mode.
 #   - _should_parse_ooc(content: str) -> bool : Decide whether input contains actionable OOC spans.
 #   - _prepare_generation_input(state: ConversationState, content: str, include_pending_ooc: bool = True) -> tuple[str, dict | None] : Split OOC parsing from Actor scene input.
 #   - _append_ooc_display_block(content: str, ooc_result: dict | None) -> str : Append OOC display metadata to assistant content.
 #   - _format_ooc_change_details(ooc_result: dict) -> str : Render OOC parser changes as compact character-scoped lines.
 #   - _display_change_value(value: object) -> str : Return a readable OOC change value.
 #   - refresh_graph_snapshot_best_effort(state: ConversationState) -> None : Refresh graph viewer cache for the current web conversation.
-#   - append_user_and_stream(state: ConversationState, content: str, store: ConversationStore, client_message_id: str | None = None, actor_model: str | None = None, prose_variant: str | None = None, engine_modules: dict[str, str] | None = None) -> AsyncIterator[dict] : Commit previous pending, append user input, and stream Actor output.
+#   - append_user_and_stream(state: ConversationState, content: str, store: ConversationStore, client_message_id: str | None = None, actor_model: str | None = None, prose_profile: ProseProfile | None = None, engine_modules: dict[str, str] | None = None) -> AsyncIterator[dict] : Commit previous pending, append user input, and stream Actor output.
 #   - run_database_tool(state: ConversationState, tool_name: str, store: ConversationStore) -> dict : Run a read-only database tool and persist its message.
 #   - _persist_pregnancy_result(state: ConversationState, store: ConversationStore, ooc: str) -> dict : Persist a pregnancy OOC message and queue it for the actor.
 #   - force_pregnancy(state: ConversationState, mother_id: str, father_id: str | None, store: ConversationStore) -> dict : Force a pregnancy and persist the result.
 #   - simulate_pregnancy(state: ConversationState, mother_id: str, father_id: str | None, shots: int, store: ConversationStore) -> dict : Simulate N internal ejaculations and persist the result.
-#   - _collect_generation(state, content, user_msg_id, store, *, actor_model, prose_variant, engine_modules, ooc_result, turn_ooc_directives, persist) -> dict : Run generation to completion and return the final event.
+#   - _collect_generation(state, content, user_msg_id, store, *, actor_model, prose_profile, engine_modules, ooc_result, turn_ooc_directives, persist) -> dict : Run generation to completion and return the final event.
 #
 # _message_payload moved to models.py (single definition; see models.py header).
 # ================================
@@ -44,6 +44,7 @@ from src.simulation.systems.world_dynamics.organic import (
 )
 from src.config import MAX_TOKEN, MODEL_OUTPUT_REPAIR, WIKI_VAULT_ROOT
 from src.core.llm.client import get_client
+from src.agents.prompt_factory.profiles import ProseProfile, normalize_prose_profile
 from src.apps.app.input_routing import TurnInputType, route_user_input
 from src.apps.app.output_guard import find_forbidden_terms, find_pov_violations
 from src.apps.app.output_repair import repair_actor_output
@@ -62,7 +63,6 @@ from src.apps.app.models import (
     WorldMode,
     _message_payload,
     normalize_actor_model,
-    normalize_prose_variant,
 )
 from src.apps.app.runtime import (
     ActiveConversation,
@@ -132,7 +132,7 @@ def create_conversation(
     scenario_id: str | None,
     store: ConversationStore,
     actor_model: str | None = None,
-    prose_variant: str | None = None,
+    prose_profile: ProseProfile | None = None,
     engine_modules: dict[str, str] | None = None,
     ooc_config: str = "",
     world_mode: WorldMode = "graph",
@@ -182,7 +182,7 @@ def create_conversation(
             or str(state.world_config.get("prompt", {}).get("sections", {}).get("opening_scene") or "")
         ).strip()
     state.actor_model = normalize_actor_model(actor_model or state.actor_model)
-    state.prose_variant = normalize_prose_variant(prose_variant or state.prose_variant)
+    state.prose_profile = normalize_prose_profile(prose_profile or state.prose_profile)
     state.engine_modules = normalize_engine_modules(
         engine_modules if engine_modules is not None else state.engine_modules
     )
@@ -386,7 +386,7 @@ async def _run_generation_events(
     user_msg_id: str | None,
     *,
     actor_model: str | None = None,
-    prose_variant: str | None = None,
+    prose_profile: ProseProfile | None = None,
     engine_modules: dict[str, str] | None = None,
     ooc_result: dict | None = None,
     turn_ooc_directives: str = "",
@@ -395,8 +395,8 @@ async def _run_generation_events(
     sync_conversation_perspective(state)
     selected_actor_model = normalize_actor_model(actor_model or state.actor_model)
     state.actor_model = selected_actor_model
-    selected_prose_variant = normalize_prose_variant(prose_variant or state.prose_variant)
-    state.prose_variant = selected_prose_variant
+    selected_prose_profile = normalize_prose_profile(prose_profile or state.prose_profile)
+    state.prose_profile = selected_prose_profile
     selected_engine_modules = normalize_engine_modules(
         engine_modules if engine_modules is not None else state.engine_modules
     )
@@ -423,11 +423,9 @@ async def _run_generation_events(
         thread_id=state.thread_id,
         commit_id=None if ooc_result else commit_id,
         turn_ooc_directives=turn_ooc_directives,
-        prose_variant=selected_prose_variant,
+        prose_profile=selected_prose_profile,
         engine_modules=selected_engine_modules,
     )
-    fixed = prompts.fixed
-    genre = prompts.genre
     dynamic = prompts.dynamic
     manager_effects = _apply_ooc_effects(manager_effects, ooc_result, state.pc_id)
 
@@ -444,8 +442,7 @@ async def _run_generation_events(
 
     debug_dir = write_turn_debug_snapshot(
         user_input=user_input,
-        fixed_prompt=fixed,
-        genre_prompt=genre,
+        fixed_prompt=prompts.fixed,
         dynamic_prompt=dynamic,
         scene_types=scene_types,
         manager_effects=manager_effects,
@@ -462,13 +459,13 @@ async def _run_generation_events(
     history_snapshot = list(state.history)
     recent_snapshot = list(state.recent_responses)
     actor_kwargs = dict(
-        fixed_prompt=fixed,
-        genre_prompt=genre,
+        fixed_prompt=prompts.fixed,
         dynamic_prompt=dynamic,
         history=state.history,
         genai_client=_GENAI_CLIENT,
         model_name=selected_actor_model,
         max_token=MAX_TOKEN,
+        scene_chars=manager_effects.get("scene_chars") or [],
     )
     final_event: dict | None = None
     async for event in stream_actor_events(**actor_kwargs):
@@ -513,7 +510,7 @@ async def _run_generation_events(
         content=display_response,
         parent_user_id=user_msg_id,
         actor_model=selected_actor_model,
-        prose_variant=selected_prose_variant,
+        prose_profile=selected_prose_profile,
         engine_modules=selected_engine_modules,
     )
     state.messages.append(assistant_msg)
@@ -576,7 +573,7 @@ async def append_user_and_stream(
     store: ConversationStore,
     client_message_id: str | None = None,
     actor_model: str | None = None,
-    prose_variant: str | None = None,
+    prose_profile: ProseProfile | None = None,
     engine_modules: dict[str, str] | None = None,
 ) -> AsyncIterator[dict]:
     """Commit previous pending, append user input, and stream Actor output."""
@@ -587,7 +584,7 @@ async def append_user_and_stream(
                 content,
                 client_message_id=client_message_id,
                 actor_model=actor_model,
-                prose_variant=prose_variant,
+                prose_profile=prose_profile,
                 engine_modules=engine_modules,
             ):
                 yield event
@@ -622,7 +619,7 @@ async def append_user_and_stream(
                 effective_input,
                 user_msg.id,
                 actor_model=actor_model,
-                prose_variant=prose_variant,
+                prose_profile=prose_profile,
                 engine_modules=engine_modules,
                 ooc_result=ooc_result,
                 turn_ooc_directives=state.ooc_config,
@@ -704,7 +701,7 @@ async def _collect_generation(
     store: ConversationStore,
     *,
     actor_model: str | None = None,
-    prose_variant: str | None = None,
+    prose_profile: ProseProfile | None = None,
     engine_modules: dict[str, str] | None = None,
     ooc_result: dict | None = None,
     turn_ooc_directives: str = "",
@@ -721,7 +718,7 @@ async def _collect_generation(
         content,
         user_msg_id,
         actor_model=actor_model,
-        prose_variant=prose_variant,
+        prose_profile=prose_profile,
         engine_modules=engine_modules,
         ooc_result=ooc_result,
         turn_ooc_directives=turn_ooc_directives,

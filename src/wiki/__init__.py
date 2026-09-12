@@ -63,7 +63,7 @@
 #   - get_wiki_thread_runtime_status(vault_root: Path, thread_id: str) -> WikiThreadRuntimeStatus : thread 런타임 세대를 진단합니다.
 #   - resolve_wiki_opening_scene(vault_root: Path, world_id: str, scenario_id: str) -> str : 첫 장면 원문을 반환합니다.
 #   - read_wiki_scene_descriptions(vault_root: Path, world_id: str, scenario_id: str) -> dict[str, str] : 공용 분류 설명에 Wiki 전용 scene key를 합칩니다.
-#   - build_wiki_prompt_bundle(vault_root: Path, setup: WikiConversationSetup, user_input: str, recent_story: str = "", turn_ooc_directives: str = "", scene_types: list[str] | None = None, prose_variant: str = "a") -> WikiPromptBundle : PromptBuilder로 Wiki prompt를 조립합니다.
+#   - build_wiki_prompt_bundle(vault_root: Path, setup: WikiConversationSetup, user_input: str, recent_story: str = "", turn_ooc_directives: str = "", scene_types: list[str] | None = None, prose_profile: ProseProfile | None = None) -> WikiPromptBundle : PromptBuilder로 Wiki prompt를 조립합니다.
 #   - validate_wiki_prompt_bundle(bundle: WikiPromptBundle) -> None : 컴파일된 Actor prompt의 메타데이터·세그먼트 계약을 검증합니다.
 #   - apply_pending_wiki_commit(vault_root: Path, thread_id: str) -> PendingWikiCommit | None : 다음 입력 직전 Wiki commit을 적용합니다.
 #   - describe_wiki_commit_failure(exc: BaseException) -> str : 실패 예외를 compensation_errors까지 포함한 사람이 읽을 문자열로 만듭니다.

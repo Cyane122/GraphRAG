@@ -248,7 +248,7 @@ def _validate_world_scenarios(world_root: Path, default_scene_type: str) -> int:
             )
             validate_wiki_prompt_bundle(bundle)
             combined_prompt = "\n".join(
-                (bundle.fixed_prompt, bundle.genre_prompt, bundle.dynamic_prompt)
+                (bundle.fixed_prompt, bundle.dynamic_prompt)
             )
             _assert_prompt_leaks(combined_prompt, setup, scenario_ids)
             _assert_prompt_block_counts(vault_root, setup, bundle)

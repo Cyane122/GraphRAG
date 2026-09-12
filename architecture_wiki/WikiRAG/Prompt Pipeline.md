@@ -40,12 +40,12 @@ Actor-visible Wiki 문서는 조립 전에 독립 prompt 모듈로 검사한다.
   `prose_rules`를 정확히 한 번 포함한다.
 - Dynamic은 비어 있지 않으며 `current_scene`과 `user_input`을 정확히 한 번
   포함한다.
-- `current_*` 상태는 Fixed와 Genre에 들어가지 않는다.
-- 작품별 prose 규칙은 Genre나 Dynamic으로 이동하지 않는다.
+- `current_*` 상태는 Fixed에 들어가지 않는다.
+- 작품별 prose 규칙은 Dynamic으로 이동하지 않는다.
 
-`tests/smoke_wiki_runtime.py`는 현재 다섯 시나리오의 Fixed/Genre/Dynamic
+`tests/smoke_wiki_runtime.py`는 현재 다섯 시나리오의 Fixed/Dynamic
 SHA-256 snapshot을 고정한다. 같은 일상 장면에서 사용자 입력과 최근 서사가
-바뀌어도 Fixed와 Genre는 유지되고 Dynamic만 바뀌는지도 함께 검사한다.
+바뀌어도 Fixed는 유지되고 Dynamic만 바뀌는지도 함께 검사한다.
 
 ## Fixed
 
@@ -65,12 +65,12 @@ SHA-256 snapshot을 고정한다. 같은 일상 장면에서 사용자 입력과
 - 파일 경로, revision과 내부 ID
 
 `prose.md`는 PromptBuilder의 전용 prose 슬롯에 정확히 한 번만 들어간다.
-`world_lore` 안에 다시 복제하지 않는다. 공용 `CORE`, `POV`, `EMOTION`,
-`STYLE`, `NPC_BEHAVIOR`가 담당하는 출력 언어·제한 시점·감정 증거·물리
-연속성·관계 변화·열린 종결 규정도 world prose에서 반복하지 않는다.
+`world_lore` 안에 다시 복제하지 않는다. 공용 `simulation_core`와 선택된 산문
+프로필이 담당하는 출력 언어·제한 시점·감정 증거·물리 연속성·관계 변화·열린
+종결 규정도 world prose에서 반복하지 않는다.
 
 월드 루트의 optional `blacklist.md`는 Graph와 같은 `additional_blacklist` 슬롯으로
-들어간다. optional `cot_append.md`는 턴 checklist의 `world_cot_append` 슬롯으로
+들어간다. optional `cot_append.md`는 Dynamic의 `<world_turn_constraints>` 블록으로
 들어가며, 선택 시나리오의 `cot_append.md`가 있으면 월드 파일을 교체한다. 추가문은
 world lore로 직렬화하지 않고 파일 경로와 선택 과정도 prompt에 노출하지 않는다.
 
@@ -88,10 +88,12 @@ world lore로 직렬화하지 않고 파일 경로와 선택 과정도 prompt에
 한 사실을 요약본과 상세본으로 여러 문서에 반복하지 않는다. 장면 종결, 범용
 POV, 감정 표시, NPC 주체성과 친밀 장면의 공통 계약은 PromptBuilder가 소유한다.
 
-## Genre
+## Scene Type
 
-기존 prompt factory의 공용 문체 규칙과 checklist를 사용한다. Wiki 턴은 Graph와
-같은 `classifier.classify_scene_types` 공개 경로를 사용한다. 명시적 친밀 입력은
+문체는 대화의 산문 프로필 한 축에서만 나온다. scene type은 상태 라우팅과
+블랙리스트 선택에만 쓰이며, scene prompt Markdown은 더 이상 Actor prompt로
+주입되지 않는다. Wiki 턴은 Graph와 같은 `classifier.classify_scene_types` 공개
+경로를 사용한다. 명시적 친밀 입력은
 결정적 shortcut으로 처리하고, 일반 입력은 scene-only classifier로 `daily`,
 `bonding`, `intimate`, `formal`, `tense`, `conflict`, `vulnerable`, `action`,
 `ambient` 중 하나 이상을 고른다.
@@ -100,7 +102,8 @@ Prompt 조립 전에는 실제 asset이 있는 8개 key로 정규화한다. `vul
 `emotional`은 `bonding`, `physical`은 `action`, `workplace`는 `formal`로 연결한다.
 `daily`, `bonding`, `formal`, `tense`, `conflict`, `action`, `ambient`의 과거
 0-byte asset은 장면 목표, 연속성, 과잉 전개 방지, 열린 종결 규칙을 가진 공용
-Markdown으로 채웠다. `intimate`는 기존 전용 Genre overlay도 함께 사용한다.
+Markdown으로 채웠다. 성인 장면의 게이트·합의·페이즈는 adult 엔진이, 표현 규칙은
+선택된 성인 modifier가 소유한다.
 
 Wiki 월드는 `worlds/<world_id>/scenes/<scene_type>.md`로 월드 공통 장면 규정을,
 `scenarios/<scenario_id>/scenes/<scene_type>.md`로 선택 상황 전용 override를 둘 수
@@ -116,9 +119,9 @@ PromptBuilder asset으로 fallback한다. 각 문서의 `description`은 공용 
 
 순서:
 
-1. 현재 header와 선택된 Wiki world/scenario scene-specific prompt. 없으면 공용 prompt
+1. 현재 header
 2. 현재 `scene/current.md`
-3. thread character의 `현재 상태`. `Reproductive State`는 이 블록에서 통째로 제거한다. 주기 정보는 활성 Actor 캐릭터의 정본에서 뽑아 공용 checklist의 `CYCLE:` 한 줄로만 전달하며, 정수 대신 국면과 `pregnancy_risk`만 노출한다(Graph와 동일한 `_cycle_status` 경로를 재사용하고 국면·임신 단계 표를 복제하지 않는다). 정본과 `updater_documents`는 손대지 않는다
+3. thread character의 `현재 상태`. `Reproductive State`는 이 블록에서 통째로 제거한다. 주기 정보는 활성 Actor 캐릭터의 정본에서 뽑아 `<reproductive_state>` 블록으로만 전달하고, 이 블록은 adult 엔진이 켜져 있을 때만 렌더된다. 정수 대신 국면과 `pregnancy_risk`만 노출한다(Graph와 동일한 `_cycle_status` 경로를 재사용하고 국면·임신 단계 표를 복제하지 않는다). 정본과 `updater_documents`는 손대지 않는다
 4. actor visibility를 가진 기타 상태 문서. Memory·Relationship·Goal·Item은 `owner`가 현재 Actor profile과 일치하고, Secret은 현재 Actor가 owner 또는 knower인 문서만 포함
 5. 최근 Actor 응답
 6. usernote와 OOC

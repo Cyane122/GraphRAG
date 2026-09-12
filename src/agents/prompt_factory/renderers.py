@@ -10,7 +10,8 @@
 # Functions
 #   - _read_optional_prompt(relative_path: str) -> str : prompt/ 하위 Markdown 파일 읽기
 #   - _render_prompt_block(tag: str, body: str) -> str : 본문을 XML 블록으로 감싸기
-#   - build_genre_section(genres: list[str], world_config: dict | None) -> str : 장르별 프롬프트 렌더링
+#   - render_current_pov(pov_mode: str, impersonation_allowed: bool, current_pov: dict | None) -> str : 현재 POV 동적 블록 렌더링
+#   - render_reproductive_state(char_data: dict, npcs: list[dict]) -> str : 등장 여성 캐릭터 생식 상태 렌더링
 #   - render_state_line(dyn_state: dict, world_config: dict | None) -> str : 상태 한 줄 렌더링
 #   - clean_prompt_dict(data: dict) -> dict : 내부 키·null 값 제거
 #   - join_rendered_context(rendered_context: dict[str, str]) -> str : 동적 컨텍스트 블록 결합
@@ -20,6 +21,10 @@
 
 from datetime import datetime
 from pathlib import Path
+
+from src.simulation.systems.world_dynamics.organic_models import (
+    normalize_contraception_value,
+)
 
 PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
 
@@ -61,7 +66,7 @@ class _SafeFormatDict(dict):
 def _render_prompt_block(tag: str, body: str) -> str:
     """Wrap optional prompt text in a named block.
 
-    The tag parameter may include attributes, e.g. 'genre name="intimate"'.
+    The tag parameter may include attributes, e.g. 'scene type="intimate"'.
     Closing tag uses only the tag name (before the first space).
     """
     if not body:
@@ -70,29 +75,200 @@ def _render_prompt_block(tag: str, body: str) -> str:
 
 
 # ----------------
-# Genre prompt
+# Current POV
 # ----------------
 
-def build_genre_section(genres: list[str], world_config: dict | None = None) -> str:
-    """Render common genre-specific protocol blocks.
+def render_current_pov(
+    pov_mode: str,
+    impersonation_allowed: bool,
+    current_pov: dict | None = None,
+) -> str:
+    """Render the turn's narrator anchor and player-ownership scope.
 
-    Genre md files are tagless. Tags are added here.
-
-    Rules:
-    - This renderer only reads common prompt_factory genre prompt.
-    - World-specific scene prompt are handled by PromptBuilder.build_scene_specific_prompt().
-    - World prompt/scenes/{scene_type}.md overrides prompt_factory default scene prompt.
-    - No world-specific genre key such as intimate_sses is handled here.
-    - Missing genre body is omitted.
+    Replaces the POV / USER CONTROL / PRE-DRAFT checklist slots: the same facts now
+    reach the Actor as a dynamic state block instead of a self-report template.
+    {char} and {user} stay as placeholders for the caller's variable substitution.
     """
-    parts = []
+    if pov_mode.startswith("1p_"):
+        pov_line = (
+            "POV: 1P | narrator={char} | access={char} perception/body/thought/dialogue/action "
+            "| blocked={user}/NPC hidden state"
+        )
+        first_beat = (
+            "{char} perception/action first; {user} action within allowed scope"
+            if impersonation_allowed
+            else "{char} perception/action only; no {user} action/speech/feeling"
+        )
+    else:
+        anchor = "{user}" if pov_mode.endswith("_user") else "{char}"
+        pov_line = (
+            f"POV: 3P | anchor={anchor} | access=anchor perception/observable behavior "
+            "| blocked=non-anchor hidden state"
+        )
+        first_beat = (
+            "anchor perception/observable first; {user} action within allowed scope"
+            if impersonation_allowed
+            else "anchor perception/observable only; no {user} action/speech/feeling"
+        )
 
-    for genre in genres:
-        body = _read_optional_prompt(f"genre_specific/{genre}.md")
-        if body:
-            parts.append(_render_prompt_block(f'genre name="{genre}"', body))
+    if impersonation_allowed:
+        user_control = "USER CONTROL: {user} action may be narrated within the granted scope; keep its scale proportional to the player input."
+    else:
+        user_control = "USER CONTROL: never narrate {user} action, speech, inner state, sensation, or decision."
 
-    return "\n\n".join(parts)
+    lines = [
+        pov_line,
+        user_control,
+        f"FIRST BEAT: {first_beat}",
+        f"NARRATOR: {_render_current_pov_line(current_pov or {})}",
+    ]
+    return _render_prompt_block("current_pov", "\n".join(lines))
+
+
+def _render_current_pov_line(current_pov: dict) -> str:
+    """Render the selected POV candidate as one compact phrase."""
+    selected = current_pov.get("selected") or {}
+    if not selected:
+        return "unknown -> keep narrator as current primary character."
+    name = str(selected.get("name") or selected.get("id") or "unknown").strip()
+    if selected.get("hide_metadata") is True:
+        return name
+    char_id = str(selected.get("id") or "").strip()
+    source = str(selected.get("source") or "unknown").strip()
+    label = f"{name}({char_id})" if char_id and char_id != name else name
+    facts = _compact_pov_facts(selected)
+    facts_part = f" | canon={facts}" if facts else ""
+    return f"{label} | source={source} | access=current_pov only{facts_part}"
+
+
+def _compact_pov_facts(selected: dict) -> str:
+    """Return stable current-POV canon facts that prevent identity hallucination."""
+    profile = selected.get("profile") or {}
+    dynamic_state = selected.get("dynamic_state") or {}
+    fields = [
+        ("age", profile.get("age")),
+        ("gender", profile.get("gender")),
+        ("role", profile.get("role")),
+        ("status", profile.get("current_status") or dynamic_state.get("current_status")),
+        ("location", dynamic_state.get("location_id")),
+    ]
+    parts = [f"{key}={value}" for key, value in fields if value not in (None, "")]
+    return "; ".join(parts)
+
+
+# ----------------
+# Reproductive state
+# ----------------
+
+# 임신 단계 묘사 가이드.
+#   - DB의 pregnancy_day는 일(day) 단위이므로 의학적 "주(week)"를 일 범위로 변환했다
+#     (기존 코드 관례와 동일: 일수 = 주수 × 7, 주 N = (N-1)*7+1 ~ N*7일).
+#   - 정확한 일수/주수는 프롬프트에 노출하지 않는다(모델이 "53일째/N주차"로 받아쓰는 것을
+#     막기 위함). 대신 현재 단계의 몸 상태 + 묘사 포인트만 정성적으로 흘린다.
+#   - (max_day, 단계, 몸 상태, 묘사 포인트) — preg_day <= max_day인 첫 항목을 채택.
+_PREGNANCY_STAGES: list[tuple[int, str, str, str]] = [
+    (28,  "very early",
+          "Often unaware herself. Missed period, faint fatigue. No visible change.",
+          "Keep it subtle: \"body feels oddly heavy\", \"the smell of coffee is off-putting\"."),
+    (56,  "early",
+          "Pregnancy noticed/confirmed. Fatigue, drowsiness, breast tenderness, nausea, scent sensitivity. Almost no visible change.",
+          "Show it as condition suddenly collapsing, not through appearance."),
+    (84,  "late-early",
+          "Nausea, mood swings, frequent urination may stand out. Belly still barely shows.",
+          "\"More irritable than usual\", \"tears up out of nowhere\", \"goes to the bathroom often\"."),
+    (112, "early-mid",
+          "Nausea and fatigue ease. Belly starts to show just slightly.",
+          "Ambiguous to others, but her own clothes start to feel tight."),
+    (140, "mid",
+          "Belly starts to look like a pregnant belly. Often feels the first fetal movement.",
+          "First kicks: \"a light tap\", \"like a fish brushing past\", \"a bubble popping inside\"."),
+    (168, "late-mid",
+          "Belly noticeably out; lower-back/pelvis strain rises. Skin changes, stretch marks, breast changes possible.",
+          "Hard to stand for long; conscious of the belly when sitting. Use kicks in emotional beats."),
+    (196, "end-of-mid",
+          "Sleep discomfort, back pain, belly tightening, indigestion may increase.",
+          "\"Has to lie on her side\", \"rests a hand to cradle the belly\", \"walks slower\"."),
+    (224, "early-late",
+          "Shortness of breath, frequent urination, leg swelling, false contractions possible.",
+          "Movement gets sluggish; stairs and long walks feel taxing."),
+    (252, "late",
+          "Pressure on stomach/lungs/bladder intensifies. Hard to sleep, tires easily.",
+          "\"Bothersome to get up once seated\", \"pauses for breath mid-sentence\", \"belly tightens often\"."),
+    (10_000, "near-term",
+          "Belly feels dropped low. False labor, mucus plug, water breaking possible.",
+          "Tension rising. Hospital bag, timing contractions, overprotective people around her."),
+]
+
+
+def render_reproductive_state(char_data: dict, npcs: list[dict]) -> str:
+    """Render cycle phase, pregnancy stage, and contraception risk for present women.
+
+    Returns an empty string when no present character tracks a cycle, so the caller
+    can omit the block entirely. The caller is responsible for rendering this only
+    while the adult engine is enabled.
+    """
+    entries: list[tuple[str, dict]] = []
+    seen_names: set[str] = set()
+
+    for source in [char_data, *npcs]:
+        dyn = source.get("dynamic_state", {})
+        name = source.get("name", "?")
+        if dyn.get("has_menstrual_cycle") is True and name not in seen_names:
+            entries.append((name, dyn))
+            seen_names.add(name)
+
+    if not entries:
+        return ""
+
+    lines: list[str] = []
+    has_risk = False
+    for name, dyn in entries:
+        status = _cycle_status(dyn)
+        lines.append(f"{name}: {status}")
+        if "pregnancy_risk=있음" in status:
+            has_risk = True
+    if has_risk:
+        lines.append(
+            "pregnancy_risk=있음 캐릭터가 있다. 피임이 생략된 접촉이면 본문 안에서 그 사실이 드러나게 한다."
+        )
+    return _render_prompt_block("reproductive_state", "\n".join(lines))
+
+
+def _cycle_status(dyn_state: dict) -> str:
+    """단일 캐릭터의 생리 주기 상태를 한 줄로 반환합니다."""
+    cycle_day = int(dyn_state.get("cycle_day") or 1)
+    pregnant  = bool(dyn_state.get("pregnant") or False)
+    preg_day  = int(dyn_state.get("pregnancy_day") or 0)
+    contraception = normalize_contraception_value(dyn_state.get("contraception"))
+
+    if pregnant:
+        stage, body, hint = next(
+            ((s, body, hint) for max_day, s, body, hint in _PREGNANCY_STAGES if preg_day <= max_day),
+            _PREGNANCY_STAGES[-1][1:],
+        )
+        return (
+            f"pregnant [{stage}] {body} CUES: {hint} "
+            "NOTE: never count or state exact days/weeks - people do not recall dates precisely."
+        )
+
+    phase_ranges = {
+        range(1, 6):  ("생리 중", False),
+        range(6, 10): ("난포기",  False),
+        range(10, 18):("가임기",  True),
+        range(18, 29):("황체기",  False),
+    }
+    phase, fertile = next(
+        (v for r, v in phase_ranges.items() if cycle_day in r),
+        ("황체기", False),
+    )
+    if not fertile:
+        risk = "없음"
+    elif contraception == "oral":
+        risk = "낮음" + (" (배란 피크)" if cycle_day == 14 else "")
+    else:
+        risk = "있음" + (" (배란 피크)" if cycle_day == 14 else "")
+    # cycle_day 정수는 노출하지 않는다(국면·가임 위험만으로 충분; "N일째" 받아쓰기 방지).
+    return f"{phase} / pregnancy_risk={risk}"
 
 
 # ----------------

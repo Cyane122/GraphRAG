@@ -51,17 +51,21 @@ def validate_actor_document_body(body: str, document: WikiDocument) -> None:
 
 
 def validate_wiki_prompt_bundle(bundle: WikiPromptBundle) -> None:
-    """컴파일된 prompt의 필수 태그 수와 Fixed/Genre/Dynamic 배치를 검증합니다."""
+    """컴파일된 prompt의 필수 태그 수와 Fixed/Dynamic 배치를 검증합니다."""
     if not bundle.fixed_prompt.strip():
         raise WikiPromptContractError("Wiki Fixed prompt must not be empty")
     if not bundle.dynamic_prompt.strip():
         raise WikiPromptContractError("Wiki Dynamic prompt must not be empty")
 
     required_tags = (
+        ("fixed", bundle.fixed_prompt, "simulation_core"),
+        ("fixed", bundle.fixed_prompt, "prose_profile"),
         ("fixed", bundle.fixed_prompt, "world_specific_prose_prompt"),
         ("fixed", bundle.fixed_prompt, "prose_rules"),
         ("dynamic", bundle.dynamic_prompt, "current_scene"),
+        ("dynamic", bundle.dynamic_prompt, "current_pov"),
         ("dynamic", bundle.dynamic_prompt, "user_input"),
+        ("dynamic", bundle.dynamic_prompt, "output_contract"),
     )
     for segment_name, segment, tag in required_tags:
         opening = f"<{tag}>"
@@ -92,24 +96,24 @@ def validate_wiki_prompt_bundle(bundle: WikiPromptBundle) -> None:
         raise WikiPromptContractError(
             "Wiki prose rules must be nested in the Fixed prose wrapper"
         )
-    if "<current_" in bundle.fixed_prompt or "<current_" in bundle.genre_prompt:
+    if "<current_" in bundle.fixed_prompt:
         raise WikiPromptContractError(
             "Mutable Wiki state must remain in the Dynamic prompt"
         )
     if (
-        "<world_specific_prose_prompt>" in bundle.genre_prompt
-        or "<world_specific_prose_prompt>" in bundle.dynamic_prompt
-        or "<prose_rules>" in bundle.genre_prompt
+        "<world_specific_prose_prompt>" in bundle.dynamic_prompt
         or "<prose_rules>" in bundle.dynamic_prompt
     ):
         raise WikiPromptContractError(
             "Wiki prose rules must appear only in the Fixed prompt"
         )
-    if "<current_scene>" in bundle.genre_prompt:
+    if "<prose_profile>" in bundle.dynamic_prompt:
         raise WikiPromptContractError(
-            "Wiki current scene must appear only in the Dynamic prompt"
+            "The prose profile must stay in the cacheable Fixed prompt"
+        )
+    if "<output_contract>" in bundle.fixed_prompt:
+        raise WikiPromptContractError(
+            "The System_Log output contract must stay in the Dynamic prompt"
         )
     if _ACTOR_WIKILINK_RE.search(bundle.fixed_prompt):
         raise WikiPromptContractError("Wiki Fixed prompt contains a wikilink")
-    if _ACTOR_WIKILINK_RE.search(bundle.genre_prompt):
-        raise WikiPromptContractError("Wiki Genre prompt contains a wikilink")

@@ -16,8 +16,9 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 
 from src.agents.prompt_factory.engines import engine_module_catalog
+from src.agents.prompt_factory.profiles import prose_profile_catalog
 from src.apps.app.live_console import get_live_console
-from src.apps.app.models import WorldMode, actor_model_catalog, prose_variant_catalog
+from src.apps.app.models import WorldMode, actor_model_catalog
 from src.apps.app.routers.shared import RouterContext, _APP_DIR, _json_line
 from src.apps.app.runtime import discover_world_profiles, resolve_opening_scene
 
@@ -41,10 +42,10 @@ def create_router(context: RouterContext) -> APIRouter:
         """Return the hosted UI Actor model catalog."""
         return actor_model_catalog()
 
-    @router.get("/api/prose-variants")
-    def api_prose_variants() -> dict[str, str | list[dict[str, str]]]:
-        """Return the hosted UI prose-variant catalog."""
-        return prose_variant_catalog()
+    @router.get("/api/prose-profiles")
+    def api_prose_profiles() -> dict[str, object]:
+        """Return the prose-profile catalog: bases, primaries, and modifiers."""
+        return prose_profile_catalog()
 
     @router.get("/api/engine-modules")
     def api_engine_modules() -> dict:

@@ -1,45 +1,69 @@
 # ================================
 # src/agents/prompt_factory/builder.py
 #
-# 3-part prompt (Fixed / Genre / Dynamic) assembly module.
+# 2-part prompt (Fixed / Dynamic) assembly module.
 # Markdown prompt files are stored tagless; this builder wraps them at assembly time.
 # _render_prompt_block, _SafeFormatDict는 renderers.py에서 import.
 #
 # Classes
-#   - PromptBuilder : Fixed / Genre / Dynamic 3-part 프롬프트 조립기
+#   - PromptBuilder : Fixed / Dynamic 2-part 프롬프트 조립기
 #
 # Functions
+#   - _render_scene_need_hints(hints: dict[str, str]) -> str : 욕구 오버플로우 힌트 블록 렌더링
+#   - _read_default_scene_blacklist(scene_type: str) -> str : 기본 씬 블랙리스트 로드
+#   - _read_global_blacklist_template() -> str : 전역 블랙리스트 템플릿 로드
 #   - _format_prompt_vars(text: str, *, char_name: str, user_name: str, for_add: str) -> str : 프롬프트 변수 치환
 #   - _label_mixed_input(user_input: str, user_name: str) -> str : *...* 상황설명과 PC 대사를 원문 순서대로 레이블링
 # ================================
 
 import re
 from datetime import datetime
-import logging
 from typing import Optional
 
-from src.agents.prompt_factory.checklist import build_turn_checklist
+from src.agents.prompt_factory.engines import normalize_engine_modules
 from src.agents.prompt_factory.fixed import (
     build_fixed_section as render_fixed_section,
-    build_pre_output_checklist,
+    resolve_pov_mode,
+    user_impersonation_allowed,
 )
+from src.agents.prompt_factory.profiles import ProseProfile, normalize_prose_profile
 from src.agents.prompt_factory.renderers import (
-    PROMPT_DIR,
     _SafeFormatDict,
     _read_optional_prompt,
     _render_prompt_block,
-    build_genre_section,
     join_rendered_context,
     render_active_characters_section,
+    render_current_pov,
     render_header,
     render_location_context,
+    render_reproductive_state,
 )
-from src.agents.context.scene_keys import (
-    normalize_prompt_scene_type,
-    normalize_prompt_scene_types,
-)
+from src.agents.context.scene_keys import normalize_prompt_scene_types
 
-logger = logging.getLogger(__name__)
+_SYSTEM_LOG_CONTRACT = """<output_contract>
+Open <analyze> and write only this System_Log, one field per line:
+
+System_Log
+Mode: current scene mode and whether the turn stays in it
+Input: what the player actually attempted
+Cause: what that attempt causes in the world right now
+Cast: who is present and active this turn
+Talk: who speaks and who holds initiative
+Rel: only when a relationship actually changes
+Delta: what is different at the end of the turn
+Guard: the single constraint most at risk this turn
+
+Close </analyze>, then IMMEDIATELY write the Korean prose scene.
+Begin the prose with a Korean date/time/location header in bold.
+KEEP the date and location IDENTICAL to the current header above unless the Player Input
+(or an OOC directive) explicitly moves time or place; do not invent date jumps or location
+changes on your own. Within the same scene you may advance only minutes/hours on the SAME
+calendar day, and never move time backward.
+The scene is mandatory; do not stop after </analyze>.
+
+Before writing, silently verify player ownership, point of view, established facts,
+engine constraints, and the blacklist. Do not print that verification anywhere.
+</output_contract>"""
 
 
 def _render_scene_need_hints(hints: dict[str, str]) -> str:
@@ -48,14 +72,6 @@ def _render_scene_need_hints(hints: dict[str, str]) -> str:
         return ""
     lines = "\n".join(hints.values())
     return _render_prompt_block("scene_need_hints", lines)
-
-
-def _read_default_scene_prompt(scene_type: str) -> str:
-    """Read default scene prompt. World scene prompt overrides this later."""
-    return (
-        _read_optional_prompt(f"genre_specific/scenes/{scene_type}.md")
-        or _read_optional_prompt(f"genre_specific/{scene_type}.md")
-    )
 
 
 def _read_default_scene_blacklist(scene_type: str) -> str:
@@ -72,7 +88,7 @@ def _read_global_blacklist_template() -> str:
 
 
 class PromptBuilder:
-    """Build cacheable, genre-specific, and per-turn prompt sections."""
+    """Build the cacheable fixed section and the per-turn dynamic section."""
 
     def __init__(
         self,
@@ -80,7 +96,7 @@ class PromptBuilder:
         char_name: str = None,
         user_name: str = None,
         perspective: int | None = None,
-        prose_variant: str = "a",
+        prose_profile: ProseProfile | None = None,
         engine_modules: dict[str, str] | None = None,
     ):
         """Initialize a prompt builder for one world and character pair."""
@@ -88,21 +104,15 @@ class PromptBuilder:
         self.char_name = char_name
         self.user_name = user_name
         self.perspective = perspective if perspective is not None else self.world_config.get("perspective", 3)
-        self.prose_variant = prose_variant
-        self.engine_modules = engine_modules
+        self.prose_profile = normalize_prose_profile(prose_profile)
+        self.engine_modules = normalize_engine_modules(engine_modules)
 
         if not char_name:
             raise ValueError("PromptBuilder: char_name cannot be None or empty")
         if not user_name:
             raise ValueError("PromptBuilder: user_name cannot be None or empty")
 
-        self.pre_output_checklist = build_pre_output_checklist(
-            self.world_config,
-            self.char_name,
-            self.user_name,
-            self.perspective,
-            self.prose_variant,
-        )
+        self.pov_mode = resolve_pov_mode(self.world_config, self.perspective)
         self.additional_blacklist = self.world_config.get("additional_blacklist", "")
 
     def build_fixed_section(self) -> str:
@@ -113,58 +123,36 @@ class PromptBuilder:
             self.user_name,
             self.perspective,
             self.additional_blacklist,
-            self.prose_variant,
+            self.prose_profile,
             self.engine_modules,
         )
 
-    def infer_genres(self, scene_types: list[str]) -> list[str]:
-        """Infer additional genre prompt sections from scene types."""
-        # genre overlay는 r18 intimate 씬에만 적용; 다른 씬에서 빈 genre 세그먼트는 정상
-        if self.world_config.get("rating", "r18") != "r18":
-            return []
-        genres = []
-        if "intimate" in scene_types:
-            genres.append("intimate")
-        return genres
+    def build_current_pov(self, current_pov: Optional[dict] = None) -> str:
+        """Render the turn's narrator anchor and player-ownership scope."""
+        return _format_prompt_vars(
+            render_current_pov(
+                self.pov_mode,
+                user_impersonation_allowed(self.pov_mode, self.world_config),
+                current_pov,
+            ),
+            char_name=self.char_name,
+            user_name=self.user_name,
+        )
 
-    def build_dialogue_examples(
-        self,
-        scene_types: list[str],
-        single_type_good: int = 3,
-        single_type_bad: int = 2,
-        multi_type_good: int = 2,
-        multi_type_bad: int = 1,
-    ) -> str:
-        """Render few-shot dialogue examples for the active scene types."""
-        is_multi = len(scene_types) > 1
-        good_n = multi_type_good if is_multi else single_type_good
-        bad_n = multi_type_bad if is_multi else single_type_bad
-        examples_db = {
-            **self.world_config.get("few_shot_examples", {}),
-            **self.world_config.get("prompt", {}).get("few_shot", {}),
-        }
+    def build_reproductive_state(self, char_data: dict, npcs: list[dict]) -> str:
+        """Render reproductive state, but only while the adult engine is enabled."""
+        if self.engine_modules.get("adult", "off") == "off":
+            return ""
+        return render_reproductive_state(char_data, npcs)
 
-        blocks = []
-        for scene_type in scene_types:
-            examples = examples_db.get(scene_type)
-            if not examples:
-                # scene_types는 prompt asset key지만 월드 few-shot은 classifier나
-                # legacy 라벨로 키잉될 수 있어 같은 prompt key로 정규화해 찾는다.
-                examples = next(
-                    (ex for key, ex in examples_db.items()
-                     if normalize_prompt_scene_type(key) == scene_type),
-                    None,
-                )
-            if not examples:
-                logger.warning("PromptBuilder: no few-shot examples for scene_type '%s'", scene_type)
-                continue
-            good_lines = "\n".join(f'  - "{line}"' for line in examples["good"][:good_n])
-            bad_lines = "\n".join(f'  - "{line}"' for line in examples["bad"][:bad_n])
-            structural = f"\n{examples['structural'].strip()}" if examples.get("structural") else ""
-            blocks.append(
-                f"[{scene_type.upper()}]\nGOOD:\n{good_lines}\nBAD:\n{bad_lines}{structural}"
-            )
-        return _render_prompt_block("dialogue_examples", "\n\n".join(blocks))
+    def build_world_turn_constraints(self) -> str:
+        """Render world-authored per-turn constraints previously carried by the checklist."""
+        body = _format_prompt_vars(
+            str(self.world_config.get("world_cot_append", "")).strip(),
+            char_name=self.char_name,
+            user_name=self.user_name,
+        )
+        return _render_prompt_block("world_turn_constraints", body)
 
     def build_character_focus_prompt(self, char_data: dict) -> str:
         """Render narrator-specific prose focus prompt, if configured.
@@ -180,34 +168,6 @@ class PromptBuilder:
         char_id = str(char_data.get("id") or "").strip()
         prompt = prompts.get(char_id) or prompts.get(str(self.char_name or "").strip())
         return _render_prompt_block("character_focus_prompt", prompt)
-
-    def build_scene_specific_prompt(self, scene_types: list[str]) -> str:
-        """Render scene-specific prompt.
-
-        Rule:
-        - world scene prompt exists -> use it
-        - else default scene prompt exists -> use it
-        - else omit
-
-        Prompt md files are tagless. Tags are added here.
-        """
-        world_prompts = (
-            self.world_config.get("scene_specific_prompts", {})
-            or self.world_config.get("prompt", {}).get("scenes", {}).get("prompt", {})
-        )
-        blocks = []
-
-        for scene_type in scene_types:
-            prompt = world_prompts.get(scene_type) or _read_default_scene_prompt(scene_type)
-            if prompt:
-                prompt = _format_prompt_vars(
-                    prompt,
-                    char_name=self.char_name,
-                    user_name=self.user_name,
-                )
-                blocks.append(_render_prompt_block(f'scene type="{scene_type}"', prompt))
-
-        return _render_prompt_block("scene_specific_prompts", "\n\n".join(blocks))
 
     def build_unified_blacklist(self, char_data: dict, scene_types: list[str]) -> str:
         """Render one blacklist block containing global, world, character, and scene bans.
@@ -270,7 +230,6 @@ class PromptBuilder:
         user_input: str,
         location: str,
         dt: Optional[datetime] = None,
-        genres: Optional[list[str]] = None,
         npcs: Optional[list[dict]] = None,
         user_data: dict | None = None,
         rendered_context: Optional[dict[str, str]] = None,
@@ -278,24 +237,10 @@ class PromptBuilder:
         location_nodes: Optional[list[dict]] = None,
         scene_need_hints: Optional[dict[str, str]] = None,
         turn_ooc_directives: str = "",
-    ) -> tuple[str, str, str]:
-        """Return fixed, genre, and dynamic prompt sections for the current turn."""
+    ) -> tuple[str, str]:
+        """Return the fixed and dynamic prompt sections for the current turn."""
         scene_types = normalize_prompt_scene_types(scene_types)
         fixed_prompt = self.build_fixed_section()
-        genre_prompt = build_genre_section(
-            self.infer_genres(scene_types) if genres is None else genres,
-            self.world_config,
-        )
-        checklist = build_turn_checklist(
-            self.pre_output_checklist,
-            scene_types,
-            self.world_config,
-            char_data,
-            current_pov,
-            npcs or [],
-            self.char_name,
-            self.user_name,
-        )
         context_block = join_rendered_context(rendered_context or {})
         need_hints_block = _render_scene_need_hints(scene_need_hints or {})
         characters_block = render_active_characters_section(char_data, user_data or {}, npcs or [], scene_types)
@@ -308,26 +253,17 @@ class PromptBuilder:
                 characters_block,
                 need_hints_block,
                 self.build_character_focus_prompt(char_data),
-                self.build_scene_specific_prompt(scene_types),
                 context_block,
-                self.build_dialogue_examples(scene_types),
+                self.build_current_pov(current_pov),
+                self.build_reproductive_state(char_data, npcs or []),
+                self.build_world_turn_constraints(),
                 self.build_turn_ooc_directives(turn_ooc_directives),
                 _render_prompt_block("user_input", _label_mixed_input(user_input, self.user_name)),
-                checklist,
-                (
-                    "Fill out the <analyze> template from the checklist above. "
-                    "Close </analyze>, then IMMEDIATELY write the Korean prose scene. "
-                    "Begin the final prose with a Korean date/time/location header. "
-                    "KEEP the date and location IDENTICAL to the current header above unless the Player Input "
-                    "(or an OOC directive) explicitly moves time or place; do not invent date jumps or location "
-                    "changes on your own. Within the same scene you may advance only minutes/hours on the SAME "
-                    "calendar day, and never move time backward. "
-                    "The scene is mandatory; do not stop after </analyze>."
-                ),
+                _SYSTEM_LOG_CONTRACT,
             ]
             if part
         )
-        return fixed_prompt, genre_prompt, dynamic_prompt
+        return fixed_prompt, dynamic_prompt
 
     def build_turn_ooc_directives(self, directives: str) -> str:
         """Render per-thread OOC directives as instructions outside Player Input."""

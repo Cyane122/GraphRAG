@@ -5,17 +5,15 @@
 #
 # Functions
 #   - recover_missing_analyze_prose(raw: str) -> tuple[str, bool] : Recover prose when Actor omits closing analyze tag.
-#   - extract_scene_chars(raw_thinking: str, visible_text: str = "") -> list[str] : Extract visible secondary character names.
 #   - _build_generation_config(model_name: str, system_text: str, max_token: int) -> types.GenerateContentConfig : Build a model-compatible generation config.
-#   - _stream_actor_text_chunks(fixed_prompt: str, genre_prompt: str, dynamic_prompt: str, history: list[dict], genai_client: object, model_name: str, max_token: int, usage_sink: dict[str, int | None] | None = None) -> AsyncIterator[str] : Yield provider text chunks.
-#   - _stream_actor_text_chunks_resilient(fixed_prompt: str, genre_prompt: str, dynamic_prompt: str, history: list[dict], genai_client: object, model_name: str, max_token: int, usage_sink: dict[str, int | None] | None = None) -> AsyncIterator[str] : Yield provider text chunks, retrying the whole stream on pre-first-token network blips.
-#   - stream_actor_events(fixed_prompt: str, genre_prompt: str, dynamic_prompt: str, history: list[dict], genai_client: object, model_name: str, max_token: int) -> AsyncIterator[dict] : Yield token events and a final event.
+#   - _stream_actor_text_chunks(fixed_prompt: str, dynamic_prompt: str, history: list[dict], genai_client: object, model_name: str, max_token: int, usage_sink: dict[str, int | None] | None = None) -> AsyncIterator[str] : Yield provider text chunks.
+#   - _stream_actor_text_chunks_resilient(fixed_prompt: str, dynamic_prompt: str, history: list[dict], genai_client: object, model_name: str, max_token: int, usage_sink: dict[str, int | None] | None = None) -> AsyncIterator[str] : Yield provider text chunks, retrying the whole stream on pre-first-token network blips.
+#   - stream_actor_events(fixed_prompt: str, dynamic_prompt: str, history: list[dict], genai_client: object, model_name: str, max_token: int, scene_chars: list[str] | None = None) -> AsyncIterator[dict] : Yield token events and a final event.
 # ================================
 
 from __future__ import annotations
 
 import asyncio
-import json
 import random
 import re
 import time
@@ -64,13 +62,30 @@ _ACTOR_STREAM_BACKOFF_SEC = 0.5  # 네트워크 재시도 간 백오프 기준(�
 # 첫 토큰 전 403/429(주로 Gemini Actor)일 때 exponential backoff 재시도. Actor는 사용자가
 # 기다리는 foreground 호출이라 대기 상한을 updater보다 짧게 잡는다.
 _ACTOR_STREAM_RATE_LIMIT_CAP_SEC = 15
-_META_LINE_RE = re.compile(
-    r"^\s*(?:"
-    r"CHARACTERS|STYLE|PLAN|CHECK|STATE|RELATIONSHIP|EVENT|LOCATION|TIME|SCENE|"
-    r"SAFETY|CONSTRAINT|OUTPUT|SUMMARY|INTENT|SUBTEXT|BEATS?|NOTES?"
-    r")\s*[:：]",
-    re.IGNORECASE,
+# System_Log 계약이 쓰는 필드 이름. 닫는 </analyze>가 없는 응답을 복구할 때, 분석 줄이
+# 본문으로 새어 들어가지 않도록 이 접두사로 시작하는 줄만 버린다.
+_SYSTEM_LOG_FIELDS = (
+    "system_log",
+    "mode",
+    "input",
+    "cause",
+    "cast",
+    "talk",
+    "rel",
+    "delta",
+    "guard",
 )
+
+
+def _is_system_log_line(line: str) -> bool:
+    """Return whether one line is a System_Log field rather than prose."""
+    lowered = line.strip().lower()
+    if lowered == "system_log":
+        return True
+    head, separator, _ = lowered.partition(":")
+    if not separator:
+        head, separator, _ = lowered.partition("：")
+    return bool(separator) and head.strip() in _SYSTEM_LOG_FIELDS
 
 
 def _hour_from_response(text: str) -> int | None:
@@ -93,34 +108,13 @@ def recover_missing_analyze_prose(raw: str) -> tuple[str, bool]:
             if recovered_lines and recovered_lines[-1]:
                 recovered_lines.append("")
             continue
-        if _META_LINE_RE.match(stripped):
+        if _is_system_log_line(stripped):
             continue
-        if stripped.startswith(("-", "*")) and _META_LINE_RE.match(stripped.lstrip("-* ")):
+        if stripped.startswith(("-", "*")) and _is_system_log_line(stripped.lstrip("-* ")):
             continue
         recovered_lines.append(line)
     recovered = "\n".join(recovered_lines).strip()
     return recovered, bool(recovered)
-
-
-def extract_scene_chars(raw_thinking: str, visible_text: str = "") -> list[str]:
-    """Extract visible scene character names from Actor thinking JSON."""
-    chars_m = re.search(r"CHARACTERS:\s*(\[.*?\])", raw_thinking, re.DOTALL)
-    if not chars_m:
-        return []
-    try:
-        parsed = json.loads(chars_m.group(1))
-    except Exception:
-        return []
-    result: list[str] = []
-    for char in parsed:
-        if not isinstance(char, str):
-            continue
-        name = char.strip()
-        if visible_text and name not in visible_text:
-            continue
-        if re.match(r"^[가-힣]{2,4}$", name) or re.match(r"^[가-힣]{2,4}의\s*[가-힣]{2,4}$", name):
-            result.append(name)
-    return result
 
 
 def _compose_full_response(raw: str, raw_thinking: str, prose: str, recovered_missing_analyze: bool) -> str:
@@ -231,21 +225,17 @@ def _gemini_messages(dynamic_prompt: str, history: list[dict]) -> list[dict]:
     return messages
 
 
-def _anthropic_system_blocks(fixed_prompt: str, genre_prompt: str) -> list[dict]:
-    """Build Anthropic-compatible system blocks with cache breakpoints on the stable prefix.
+def _anthropic_system_blocks(fixed_prompt: str) -> list[dict]:
+    """Build Anthropic-compatible system blocks with a cache breakpoint on the stable prefix.
 
-    Fixed는 턴 간 불변이라 항상 캐시 히트하고, Genre는 씬 타입별로 교체되므로
-    별도 breakpoint를 둔다(씬이 바뀌어도 Fixed 블록 prefix는 계속 히트).
+    Fixed는 턴 간 불변이라(operator, simulation core, prose profile, engine modules,
+    월드 전승) 항상 캐시 히트한다. 턴마다 달라지는 사실과 System_Log 지시는 Dynamic에
+    있고 마지막 user 영역으로 들어가므로 여기 오지 않는다.
     cache_control이 없으면 Anthropic은 프롬프트 캐싱을 전혀 하지 않는다.
     """
-    blocks: list[dict] = [
+    return [
         {"type": "text", "text": fixed_prompt, "cache_control": {"type": "ephemeral"}}
     ]
-    if genre_prompt:
-        blocks.append(
-            {"type": "text", "text": genre_prompt, "cache_control": {"type": "ephemeral"}}
-        )
-    return blocks
 
 
 def _anthropic_messages(dynamic_prompt: str, history: list[dict]) -> list[dict]:
@@ -373,7 +363,6 @@ async def _open_deepseek_stream(
 
 async def _stream_actor_text_chunks(
     fixed_prompt: str,
-    genre_prompt: str,
     dynamic_prompt: str,
     history: list[dict],
     genai_client: object,
@@ -385,10 +374,9 @@ async def _stream_actor_text_chunks(
 
     usage_sink는 provider가 토큰 사용량을 보고할 때만 채워진다(현재 Gemini).
     """
-    system_text = f"{fixed_prompt}\n\n{genre_prompt}" if genre_prompt else fixed_prompt
     if _is_gemini_model(model_name):
         async for text in _stream_gemini_text_chunks(
-            system_text,
+            fixed_prompt,
             dynamic_prompt,
             history,
             genai_client,
@@ -400,7 +388,7 @@ async def _stream_actor_text_chunks(
         return
     if _is_claude_model(model_name):
         stream = await _open_claude_stream(
-            _anthropic_system_blocks(fixed_prompt, genre_prompt),
+            _anthropic_system_blocks(fixed_prompt),
             _anthropic_messages(dynamic_prompt, history),
             model_name,
             max_token,
@@ -410,7 +398,7 @@ async def _stream_actor_text_chunks(
         return
     if _is_deepseek_model(model_name):
         stream = await _open_deepseek_stream(
-            _anthropic_system_blocks(fixed_prompt, genre_prompt),
+            _anthropic_system_blocks(fixed_prompt),
             _anthropic_messages(dynamic_prompt, history),
             model_name,
             max_token,
@@ -423,7 +411,6 @@ async def _stream_actor_text_chunks(
 
 async def _stream_actor_text_chunks_resilient(
     fixed_prompt: str,
-    genre_prompt: str,
     dynamic_prompt: str,
     history: list[dict],
     genai_client: object,
@@ -451,7 +438,6 @@ async def _stream_actor_text_chunks_resilient(
         try:
             async for text in _stream_actor_text_chunks(
                 fixed_prompt=fixed_prompt,
-                genre_prompt=genre_prompt,
                 dynamic_prompt=dynamic_prompt,
                 history=history,
                 genai_client=genai_client,
@@ -499,14 +485,19 @@ async def _stream_actor_text_chunks_resilient(
 
 async def stream_actor_events(
     fixed_prompt: str,
-    genre_prompt: str,
     dynamic_prompt: str,
     history: list[dict],
     genai_client: object,
     model_name: str,
     max_token: int,
+    scene_chars: list[str] | None = None,
 ) -> AsyncIterator[dict]:
-    """Yield Actor token events followed by one final event."""
+    """Yield Actor token events followed by one final event.
+
+    scene_chars is the Manager's active cast for this turn. The Actor no longer
+    parses its own analysis block for present characters, so an omitted value
+    simply reports no secondary characters rather than guessing from the prose.
+    """
     raw = _PREFILL
     raw_thinking = ""
     thinking_buf = _PREFILL
@@ -524,7 +515,6 @@ async def stream_actor_events(
     try:
         async for text in _stream_actor_text_chunks_resilient(
             fixed_prompt=fixed_prompt,
-            genre_prompt=genre_prompt,
             dynamic_prompt=dynamic_prompt,
             history=history,
             genai_client=genai_client,
@@ -594,7 +584,7 @@ async def stream_actor_events(
         "type": "complete",
         "content": full_response,
         "visible_text": visible_text,
-        "scene_chars": extract_scene_chars(raw_thinking, visible_text),
+        "scene_chars": list(scene_chars or []),
         "hour": _hour_from_response(visible_text),
         "raw_thinking": raw_thinking,
     }

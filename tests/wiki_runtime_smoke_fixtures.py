@@ -46,34 +46,28 @@ from src.wiki.models import PendingWikiCommit, SectionPatch, WikiDocument  # noq
 
 _EXPECTED_PROMPT_SNAPSHOTS = {
     "lover": {
-        "fixed": "54a6280c261ff43fc639e8fa3bcbd9db3ebe64a97575f86af71e467feb9bcd53",
-        "genre": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "dynamic": "04917ce3ddbfb9a99e431b08a53c8f3e631123853bd2318bf924ea2acae08d49",
+        "fixed": "3ebdab16cf222eabcaba8d1c171125aca6f1c81a38ddddd26731f8d61d802719",
+        "dynamic": "eea6bf9093ba8dd431f719b02ffe2a3d270766598b4e481f9e6737527a5c9cb8",
     },
     "best_friends": {
-        "fixed": "b2a7ceb5a40f040e0b9872134d0b03fa8d1c6786d850301f1aef86023c535362",
-        "genre": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "dynamic": "9658dfc1966887b56e45a78286735a8d8bbd2b6f23f11a183bd9d75472406a54",
+        "fixed": "197083eb3aae846d5a33c8897e9851c71653f06274d9fd072ef547df3cbdf34c",
+        "dynamic": "4f6f0090e61c1d6de53ec9b9a7e0924f8ac1531d327d66d26b962eb9abfdf70c",
     },
     "amputee_fwb": {
-        "fixed": "76f1004e54269e5c83a0d2e00d459c872b179e96cc3ba6e934b5cd2a6d3a032d",
-        "genre": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "dynamic": "7fd49764a6fd78f11522bdfae1521ea6419dec314bac9cbab1254d242e1c3a43",
+        "fixed": "59b9ae725db3ef98ae74b1d6e697335aa57d575901ade05fb80ba0c2170873ca",
+        "dynamic": "51dab38169e2b223d93c53816f7e316920159a42107a68d75b8056ad08b236c3",
     },
     "ntr_lite": {
-        "fixed": "a5748152a9938c17370b85fa1d89c7313f947688332d4392af84ddd0c4dce146",
-        "genre": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "dynamic": "d3621c763e9c915ac2156071caf94557ddcf84588a4f6eb61803ac4fe106cda0",
+        "fixed": "af5fc1a98decac302e4d578e7c4524395496a43a1a0a3644d4665f430ae8ead0",
+        "dynamic": "f20ef7a83da73c672c8121de8be8bc1e084347b1f8a7bf9bbad7da30566d4aec",
     },
     "altered": {
-        "fixed": "3701d34f35c68423490c6c1772d5396a6f40042e7773583039115347b63799b8",
-        "genre": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "dynamic": "13aadd8eba924555820240c995d445978aa3494f500399bddf14e36ca2f9aa73",
+        "fixed": "ad6b36ba95ce45b97be5ee54f5680b0d14c8062ca6d05bfd64ba4bcd9724d523",
+        "dynamic": "8a5a2043062ebc29b063a96ecce4c6e296270128a7ea7f65b5e6afd1c6912d23",
     },
     "boyfriend_platonic": {
-        "fixed": "90dddb55a0590d6d206bf671b886ac60dc9dd55fe3744d2708ca9c6a83b7f608",
-        "genre": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "dynamic": "10bd6d7c828894d4bb694ac507b8a6cc6da2102bff367c308fc1fcdeb0886199",
+        "fixed": "79f4d2bb555829cc08e44c5c4735979e9f9fe62a04e4ece22357c7feb3900300",
+        "dynamic": "a8c94472a223c9fad12917d9fdd277cba0b2cbe24ab248cd2ae21603e74a6d8f",
     },
 }
 
@@ -82,10 +76,9 @@ _OPENING_TAG_RE = re.compile(r"<[a-z_]+(?:\s+[^<>]+?)?>")
 _FIXED_TAGS_12_CHARACTERS = (
     "<operator_policy>",
     "<user_impersonation>",
-    "<pov>",
-    "<core>",
-    "<emotion>",
-    "<style>",
+    "<simulation_core>",
+    "<prose_profile>",
+    "<analyze>",
     "<world_lore>",
     "<world_setting>",
     *("<location_information>",) * 8,
@@ -95,17 +88,15 @@ _FIXED_TAGS_12_CHARACTERS = (
     "<world_specific_prose_prompt>",
     "<prose_rules>",
     "<blacklist>",
-    "<npc_behavior>",
     "<token_limit_constraint>",
     "<analyze>",
 )
 _FIXED_TAGS_13_CHARACTERS = (
     "<operator_policy>",
     "<user_impersonation>",
-    "<pov>",
-    "<core>",
-    "<emotion>",
-    "<style>",
+    "<simulation_core>",
+    "<prose_profile>",
+    "<analyze>",
     "<world_lore>",
     "<world_setting>",
     *("<location_information>",) * 8,
@@ -115,65 +106,58 @@ _FIXED_TAGS_13_CHARACTERS = (
     "<world_specific_prose_prompt>",
     "<prose_rules>",
     "<blacklist>",
-    "<npc_behavior>",
     "<token_limit_constraint>",
     "<analyze>",
 )
 _DYNAMIC_TAGS_12_STATES = (
     "<active_characters>",
-    "<scene_specific_prompts>",
-    '<scene type="daily">',
     "<world_context>",
     "<current_scene>",
     *("<current_character_state>",) * 12,
     "<current_relationship_state>",
+    "<current_pov>",
     "<turn_ooc_directives>",
     *("<ooc>",) * 3,
     "<user_input>",
-    *("<analyze>",) * 3,
+    "<output_contract>",
+    "<analyze>",
 )
 _DYNAMIC_TAGS_13_STATES = (
     "<active_characters>",
-    "<scene_specific_prompts>",
-    '<scene type="daily">',
     "<world_context>",
     "<current_scene>",
     *("<current_character_state>",) * 13,
     "<current_relationship_state>",
+    "<current_pov>",
     "<turn_ooc_directives>",
     *("<ooc>",) * 3,
     "<user_input>",
-    *("<analyze>",) * 3,
+    "<output_contract>",
+    "<analyze>",
 )
 _EXPECTED_PROMPT_STRUCTURES = {
     "lover": {
         "fixed": _FIXED_TAGS_12_CHARACTERS,
-        "genre": (),
         "dynamic": _DYNAMIC_TAGS_12_STATES,
     },
     "best_friends": {
         "fixed": _FIXED_TAGS_12_CHARACTERS,
-        "genre": (),
         "dynamic": _DYNAMIC_TAGS_12_STATES,
     },
     "amputee_fwb": {
         "fixed": _FIXED_TAGS_12_CHARACTERS,
-        "genre": (),
         "dynamic": _DYNAMIC_TAGS_12_STATES,
     },
     "ntr_lite": {
         "fixed": _FIXED_TAGS_13_CHARACTERS,
-        "genre": (),
         "dynamic": _DYNAMIC_TAGS_13_STATES,
     },
     "altered": {
         "fixed": _FIXED_TAGS_13_CHARACTERS,
-        "genre": (),
         "dynamic": _DYNAMIC_TAGS_13_STATES,
     },
     "boyfriend_platonic": {
         "fixed": _FIXED_TAGS_13_CHARACTERS,
-        "genre": (),
         "dynamic": _DYNAMIC_TAGS_13_STATES,
     },
 }

@@ -5,8 +5,8 @@
 #
 # Functions
 #   - rebuild_wiki_derived_state(state: ConversationState) -> None : 현재 메시지에서 Actor history, recent story와 preview를 다시 만듭니다.
-#   - reroll_wiki_assistant(state: ConversationState, assistant_id: str, store: ConversationStore, actor_model: str | None = None, prose_variant: str | None = None, engine_modules: dict[str, str] | None = None) -> dict : 최신 Wiki 응답을 다시 생성합니다.
-#   - edit_wiki_message(state: ConversationState, message_id: str, content: str, store: ConversationStore, actor_model: str | None = None, prose_variant: str | None = None, engine_modules: dict[str, str] | None = None) -> dict : 최신 Wiki 메시지를 수정하고 변경안을 다시 생성합니다.
+#   - reroll_wiki_assistant(state: ConversationState, assistant_id: str, store: ConversationStore, actor_model: str | None = None, prose_profile: ProseProfile | None = None, engine_modules: dict[str, str] | None = None) -> dict : 최신 Wiki 응답을 다시 생성합니다.
+#   - edit_wiki_message(state: ConversationState, message_id: str, content: str, store: ConversationStore, actor_model: str | None = None, prose_profile: ProseProfile | None = None, engine_modules: dict[str, str] | None = None) -> dict : 최신 Wiki 메시지를 수정하고 변경안을 다시 생성합니다.
 #   - activate_wiki_variant(state: ConversationState, message_id: str, version_index: int, store: ConversationStore) -> dict : 최신 Wiki 응답의 저장 버전을 활성화합니다.
 #   - delete_wiki_message(state: ConversationState, message_id: str, store: ConversationStore) -> dict : 최신 Wiki 메시지와 연결된 변경 상태를 삭제합니다.
 # ================================
@@ -17,13 +17,13 @@ from copy import deepcopy
 from pathlib import Path
 
 from src.agents.prompt_factory.engines import normalize_engine_modules
+from src.agents.prompt_factory.profiles import ProseProfile, normalize_prose_profile
 from src.apps.app.models import (
     ChatMessage,
     ConversationState,
     MessageVariant,
     _message_payload,
     normalize_actor_model,
-    normalize_prose_variant,
     resolve_wiki_systems,
 )
 from src.apps.app.storage import ConversationStore
@@ -208,7 +208,7 @@ async def _regenerate_latest_pair(
     store: ConversationStore,
     *,
     actor_model: str | None,
-    prose_variant: str | None = None,
+    prose_profile: ProseProfile | None = None,
     engine_modules: dict[str, str] | None = None,
     edited_user_content: str | None = None,
     retain_variant: bool,
@@ -216,14 +216,14 @@ async def _regenerate_latest_pair(
     """기존 commit을 건드리지 않고 Actor 재생성을 끝낸 뒤 변경안을 교체합니다."""
     snapshot = state.model_copy(deep=True)
     selected_model = normalize_actor_model(actor_model or state.actor_model)
-    selected_variant = normalize_prose_variant(prose_variant or state.prose_variant)
+    selected_variant = normalize_prose_profile(prose_profile or state.prose_profile)
     selected_engine_modules = normalize_engine_modules(
         engine_modules if engine_modules is not None else state.engine_modules
     )
     previous_content = assistant_message.content
     previous_created_at = assistant_message.created_at
     previous_model = assistant_message.actor_model
-    previous_variant = assistant_message.prose_variant
+    previous_variant = assistant_message.prose_profile
     previous_engine_modules = assistant_message.engine_modules
     previous_edited = assistant_message.edited
     previous_variants = [variant.model_copy(deep=True) for variant in assistant_message.variants]
@@ -240,7 +240,7 @@ async def _regenerate_latest_pair(
             user_message.content,
             client_message_id=user_message.id,
             actor_model=selected_model,
-            prose_variant=selected_variant,
+            prose_profile=selected_variant,
             engine_modules=selected_engine_modules,
             apply_pending=False,
             queue_update=False,
@@ -260,7 +260,7 @@ async def _regenerate_latest_pair(
                     content=previous_content,
                     created_at=previous_created_at,
                     actor_model=previous_model,
-                    prose_variant=previous_variant,
+                    prose_profile=previous_variant,
                     engine_modules=previous_engine_modules,
                     edited=previous_edited,
                 ),
@@ -295,7 +295,7 @@ async def reroll_wiki_assistant(
     assistant_id: str,
     store: ConversationStore,
     actor_model: str | None = None,
-    prose_variant: str | None = None,
+    prose_profile: ProseProfile | None = None,
     engine_modules: dict[str, str] | None = None,
 ) -> dict:
     """최신 미반영 Wiki 응답을 다시 생성하고 이전 응답을 variant로 보관합니다."""
@@ -315,7 +315,7 @@ async def reroll_wiki_assistant(
             assistant_message,
             store,
             actor_model=actor_model,
-            prose_variant=prose_variant,
+            prose_profile=prose_profile,
             engine_modules=engine_modules,
             retain_variant=True,
         )
@@ -330,7 +330,7 @@ async def edit_wiki_message(
     content: str,
     store: ConversationStore,
     actor_model: str | None = None,
-    prose_variant: str | None = None,
+    prose_profile: ProseProfile | None = None,
     engine_modules: dict[str, str] | None = None,
 ) -> dict:
     """최신 Wiki 사용자 입력은 재생성하고, 최신 응답은 변경안만 다시 생성합니다."""
@@ -357,7 +357,7 @@ async def edit_wiki_message(
                 assistant_message,
                 store,
                 actor_model=actor_model,
-                prose_variant=prose_variant,
+                prose_profile=prose_profile,
                 engine_modules=engine_modules,
                 edited_user_content=normalized,
                 retain_variant=False,
@@ -411,7 +411,7 @@ async def activate_wiki_variant(
         content=message.content,
         created_at=message.created_at,
         actor_model=message.actor_model,
-        prose_variant=message.prose_variant,
+        prose_profile=message.prose_profile,
         engine_modules=message.engine_modules,
         edited=message.edited,
     )
@@ -421,7 +421,7 @@ async def activate_wiki_variant(
     ]
     message.content = selected.content
     message.actor_model = selected.actor_model
-    message.prose_variant = selected.prose_variant
+    message.prose_profile = selected.prose_profile
     message.engine_modules = selected.engine_modules
     message.edited = selected.edited
     rebuild_wiki_derived_state(state)

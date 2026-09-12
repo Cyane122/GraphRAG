@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
 
+from src.agents.prompt_factory.profiles import normalize_prose_profile
 from src.apps.app.models import ConversationCreateRequest, WorldMode
 from src.apps.app.routers.shared import RouterContext, _conversation_payload, _conversation_summary
 from src.apps.app.service import create_conversation
@@ -31,7 +32,7 @@ def create_router(context: RouterContext) -> APIRouter:
                 body.scenario_id,
                 store,
                 actor_model=body.actor_model,
-                prose_variant=body.prose_variant,
+                prose_profile=normalize_prose_profile(body.prose_profile, body.prose_variant),
                 engine_modules=body.engine_modules,
                 ooc_config=body.ooc_config,
                 world_mode=body.world_mode,

@@ -68,7 +68,7 @@ def _conversation_summary(state: ConversationState) -> dict[str, object]:
         "preview": state.preview,
         "updated_at": state.updated_at.isoformat(),
         "actor_model": state.actor_model,
-        "prose_variant": state.prose_variant,
+        "proseProfile": state.prose_profile.model_dump(),
         "engine_modules": state.engine_modules,
         "archived": state.archived,
         "npc_name_kor": state.npc_name_kor,

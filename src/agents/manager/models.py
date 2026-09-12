@@ -7,7 +7,7 @@
 #   - ManagerBootstrap : World instance, config, and global state bundle
 #   - SceneTimePlan : Scene types and prompt time baseline bundle
 #   - CoreContext : Graph context bundle for prompt rendering
-#   - PromptParts : Fixed, genre, and dynamic prompt bundle
+#   - PromptParts : Fixed and dynamic prompt bundle
 # ================================
 from dataclasses import dataclass
 from datetime import datetime
@@ -64,5 +64,4 @@ class PromptParts:
     """Final prompt segments returned by the manager."""
 
     fixed: str
-    genre: str
     dynamic: str
