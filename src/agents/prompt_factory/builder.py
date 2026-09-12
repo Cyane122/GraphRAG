@@ -80,12 +80,16 @@ class PromptBuilder:
         char_name: str = None,
         user_name: str = None,
         perspective: int | None = None,
+        prose_variant: str = "a",
+        engine_modules: dict[str, str] | None = None,
     ):
         """Initialize a prompt builder for one world and character pair."""
         self.world_config = world_config or {}
         self.char_name = char_name
         self.user_name = user_name
         self.perspective = perspective if perspective is not None else self.world_config.get("perspective", 3)
+        self.prose_variant = prose_variant
+        self.engine_modules = engine_modules
 
         if not char_name:
             raise ValueError("PromptBuilder: char_name cannot be None or empty")
@@ -97,6 +101,7 @@ class PromptBuilder:
             self.char_name,
             self.user_name,
             self.perspective,
+            self.prose_variant,
         )
         self.additional_blacklist = self.world_config.get("additional_blacklist", "")
 
@@ -108,6 +113,8 @@ class PromptBuilder:
             self.user_name,
             self.perspective,
             self.additional_blacklist,
+            self.prose_variant,
+            self.engine_modules,
         )
 
     def infer_genres(self, scene_types: list[str]) -> list[str]:

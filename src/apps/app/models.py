@@ -30,6 +30,8 @@
 #   - _message_payload(message: ChatMessage) -> dict : Convert a persisted message into frontend JSON.
 #   - actor_model_catalog() -> dict[str, str | list[dict[str, str]]] : Return the ordered Actor model catalog for the hosted UI.
 #   - normalize_actor_model(model_name: str | None) -> str : Return a supported Actor model id.
+#   - prose_variant_catalog() -> dict[str, str | list[dict[str, str]]] : Return the ordered prose-variant catalog for the hosted UI.
+#   - normalize_prose_variant(value: str | None) -> str : Return a supported prose-variant id.
 #   - normalize_wiki_system_overrides(overrides: Mapping[str, object] | None) -> dict[str, bool] : 저장용 Wiki system override를 canonical bool dict로 정리합니다.
 #   - resolve_wiki_systems(overrides: Mapping[str, object] | None, defaults: Mapping[str, bool]) -> dict[str, bool] : override와 기본값을 합쳐 대화의 유효 Wiki system 표를 만듭니다.
 #   - overridden_wiki_system_names(overrides: Mapping[str, object] | None) -> list[str] : 명시적으로 설정된 Wiki system 키를 canonical 순서로 반환합니다.
@@ -51,6 +53,7 @@ WikiUpdateStatus = Literal["idle", "queued", "failed", "applied", "skipped"]
 
 SUPPORTED_ACTOR_MODELS = {
     "gemini-3.1-pro-preview": "Gemini 3.1 Pro Preview",
+    "gemini-3.8-flash": "Gemini 3.8 Flash",
     "gemini-3.7-flash": "Gemini 3.7 Flash",
     "gemini-3.6-flash": "Gemini 3.6 Flash",
     "claude-opus-5": "Claude Opus 5",
@@ -89,6 +92,32 @@ def normalize_actor_model(model_name: str | None) -> str:
     if candidate in SUPPORTED_ACTOR_MODELS:
         return candidate
     return DEFAULT_ACTOR_MODEL
+
+
+SUPPORTED_PROSE_VARIANTS = {
+    "a": "A · 현행",
+    "b": "B · 현행+완화",
+    "c": "C · 통합 가이드",
+    "d": "D · 구조 정리",
+}
+DEFAULT_PROSE_VARIANT = "a"
+
+
+def prose_variant_catalog() -> dict[str, str | list[dict[str, str]]]:
+    """Return the ordered prose-variant catalog for the hosted UI."""
+    variants = [
+        {"id": variant_id, "label": label}
+        for variant_id, label in SUPPORTED_PROSE_VARIANTS.items()
+    ]
+    return {"default": DEFAULT_PROSE_VARIANT, "variants": variants}
+
+
+def normalize_prose_variant(value: str | None) -> str:
+    """Return a supported prose-variant id, falling back to the default."""
+    candidate = str(value or "").strip().lower()
+    if candidate in SUPPORTED_PROSE_VARIANTS:
+        return candidate
+    return DEFAULT_PROSE_VARIANT
 
 
 def normalize_wiki_system_overrides(
@@ -149,6 +178,8 @@ class MessageVariant(BaseModel):
     content: str
     created_at: datetime
     actor_model: str | None = None
+    prose_variant: str | None = None
+    engine_modules: dict[str, str] | None = None
     edited: bool = False
 
 
@@ -162,6 +193,8 @@ class ChatMessage(BaseModel):
     parent_user_id: str | None = None
     edited: bool = False
     actor_model: str | None = None
+    prose_variant: str | None = None
+    engine_modules: dict[str, str] | None = None
     variants: list[MessageVariant] = Field(default_factory=list)
     ooc_config: str = ""
     wiki_commit_id: str | None = None
@@ -177,6 +210,8 @@ def _message_payload(message: ChatMessage) -> dict:
         "parentUserId": message.parent_user_id,
         "edited": message.edited,
         "actorModel": message.actor_model,
+        "proseVariant": message.prose_variant,
+        "engineModules": message.engine_modules,
         "oocConfig": message.ooc_config,
         "wikiCommitId": message.wiki_commit_id,
         "variants": [
@@ -185,6 +220,8 @@ def _message_payload(message: ChatMessage) -> dict:
                 "content": variant.content,
                 "createdAt": variant.created_at.strftime("%H:%M"),
                 "actorModel": variant.actor_model,
+                "proseVariant": variant.prose_variant,
+                "engineModules": variant.engine_modules,
                 "edited": variant.edited,
             }
             for variant in message.variants
@@ -215,6 +252,8 @@ class ConversationState(BaseModel):
     usernotes: list[dict[str, Any]] = Field(default_factory=list)
     narrative_turns: list[dict[str, Any]] = Field(default_factory=list)
     actor_model: str = DEFAULT_ACTOR_MODEL
+    prose_variant: str = DEFAULT_PROSE_VARIANT
+    engine_modules: dict[str, str] = Field(default_factory=dict)
     world_config: dict[str, Any] = Field(default_factory=dict)
     pc_id: str = ""
     npc_id: str = ""
@@ -270,6 +309,8 @@ class ConversationCreateRequest(BaseModel):
     world_mode: WorldMode = "graph"
     scenario_id: str | None = None
     actor_model: str | None = None
+    prose_variant: str | None = None
+    engine_modules: dict[str, str] | None = None
     ooc_config: str = ""
 
 
@@ -279,12 +320,16 @@ class MessageCreateRequest(BaseModel):
     content: str
     client_message_id: str | None = None
     actor_model: str | None = None
+    prose_variant: str | None = None
+    engine_modules: dict[str, str] | None = None
 
 
 class MessageRerollRequest(BaseModel):
     """Request body for rerolling an assistant response."""
 
     actor_model: str | None = None
+    prose_variant: str | None = None
+    engine_modules: dict[str, str] | None = None
 
 
 class MessageEditRequest(BaseModel):
@@ -292,6 +337,8 @@ class MessageEditRequest(BaseModel):
 
     content: str
     actor_model: str | None = None
+    prose_variant: str | None = None
+    engine_modules: dict[str, str] | None = None
 
 
 class LocationMoveRequest(BaseModel):
@@ -349,6 +396,7 @@ class AppSettingsRequest(BaseModel):
 
     output_repair_enabled: bool | None = None
     actor_thinking_level: str | None = None
+    wiki_updater_model: str | None = None
     wiki_updater_thinking_level: str | None = None
 
 

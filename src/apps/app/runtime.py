@@ -49,9 +49,12 @@ def _discover_graph_world_profiles() -> list[dict]:
         world_id = schema_path.parent.name
         if world_id == "default":
             continue
+        world_label = world_id
         scenarios: list[dict] = []
         try:
             module = import_module(f"src.assets.worlds.{world_id}.schema")
+            world = getattr(module, "world_instance", None)
+            world_label = getattr(module, "DISPLAY_NAME", None) or getattr(world, "DISPLAY_NAME", None) or world_id
             scenario_defs = getattr(module, "SCENARIOS", None)
             if isinstance(scenario_defs, list) and scenario_defs:
                 scenarios = [
@@ -62,7 +65,6 @@ def _discover_graph_world_profiles() -> list[dict]:
                     for scenario in scenario_defs
                 ]
             else:
-                world = getattr(module, "world_instance", None)
                 world_scenarios = getattr(world, "SCENARIOS", None)
                 if isinstance(world_scenarios, dict) and world_scenarios:
                     scenarios = [
@@ -77,7 +79,7 @@ def _discover_graph_world_profiles() -> list[dict]:
         worlds.append(
             {
                 "id": world_id,
-                "label": world_id,
+                "label": world_label,
                 "mode": "graph",
                 "runtime_ready": True,
                 "scenarios": scenarios or [{"id": "default", "label": "default"}],

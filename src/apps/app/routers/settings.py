@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from src.apps.app.models import AppSettingsRequest, OocConfigRequest
+from src.apps.app.models import AppSettingsRequest, OocConfigRequest, normalize_actor_model
 from src.apps.app.routers.shared import RouterContext, _load_or_404
 from src.apps.app.settings import load_settings, normalize_thinking_level, save_settings
 
@@ -45,6 +45,8 @@ def create_router(context: RouterContext) -> APIRouter:
                 body.actor_thinking_level,
                 settings.actor_thinking_level,
             )
+        if body.wiki_updater_model is not None:
+            settings.wiki_updater_model = normalize_actor_model(body.wiki_updater_model)
         if body.wiki_updater_thinking_level is not None:
             settings.wiki_updater_thinking_level = normalize_thinking_level(
                 body.wiki_updater_thinking_level,

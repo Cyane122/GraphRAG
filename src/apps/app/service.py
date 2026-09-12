@@ -6,19 +6,19 @@
 #
 # Functions
 #   - preview_text(value: str) -> str : Build a compact sidebar preview from assistant output.
-#   - create_conversation(world_id: str, scenario_id: str | None, store: ConversationStore, actor_model: str | None = None, ooc_config: str = "", world_mode: WorldMode = "graph") -> ConversationState : Create a persisted conversation in one engine mode.
+#   - create_conversation(world_id: str, scenario_id: str | None, store: ConversationStore, actor_model: str | None = None, prose_variant: str | None = None, engine_modules: dict[str, str] | None = None, ooc_config: str = "", world_mode: WorldMode = "graph") -> ConversationState : Create a persisted conversation in one engine mode.
 #   - _should_parse_ooc(content: str) -> bool : Decide whether input contains actionable OOC spans.
 #   - _prepare_generation_input(state: ConversationState, content: str, include_pending_ooc: bool = True) -> tuple[str, dict | None] : Split OOC parsing from Actor scene input.
 #   - _append_ooc_display_block(content: str, ooc_result: dict | None) -> str : Append OOC display metadata to assistant content.
 #   - _format_ooc_change_details(ooc_result: dict) -> str : Render OOC parser changes as compact character-scoped lines.
 #   - _display_change_value(value: object) -> str : Return a readable OOC change value.
 #   - refresh_graph_snapshot_best_effort(state: ConversationState) -> None : Refresh graph viewer cache for the current web conversation.
-#   - append_user_and_stream(state: ConversationState, content: str, store: ConversationStore, client_message_id: str | None = None, actor_model: str | None = None) -> AsyncIterator[dict] : Commit previous pending, append user input, and stream Actor output.
+#   - append_user_and_stream(state: ConversationState, content: str, store: ConversationStore, client_message_id: str | None = None, actor_model: str | None = None, prose_variant: str | None = None, engine_modules: dict[str, str] | None = None) -> AsyncIterator[dict] : Commit previous pending, append user input, and stream Actor output.
 #   - run_database_tool(state: ConversationState, tool_name: str, store: ConversationStore) -> dict : Run a read-only database tool and persist its message.
 #   - _persist_pregnancy_result(state: ConversationState, store: ConversationStore, ooc: str) -> dict : Persist a pregnancy OOC message and queue it for the actor.
 #   - force_pregnancy(state: ConversationState, mother_id: str, father_id: str | None, store: ConversationStore) -> dict : Force a pregnancy and persist the result.
 #   - simulate_pregnancy(state: ConversationState, mother_id: str, father_id: str | None, shots: int, store: ConversationStore) -> dict : Simulate N internal ejaculations and persist the result.
-#   - _collect_generation(state, content, user_msg_id, store, *, actor_model, ooc_result, turn_ooc_directives, persist) -> dict : Run generation to completion and return the final event.
+#   - _collect_generation(state, content, user_msg_id, store, *, actor_model, prose_variant, engine_modules, ooc_result, turn_ooc_directives, persist) -> dict : Run generation to completion and return the final event.
 #
 # _message_payload moved to models.py (single definition; see models.py header).
 # ================================
@@ -34,6 +34,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from src.agents.manager import run_manager
+from src.agents.prompt_factory.engines import normalize_engine_modules
 from src.agents.prompt_factory.ooc_handler import is_ooc
 from src.simulation.state.apply.ooc import handle_ooc
 from src.agents.prompt_factory.usernote import build_usernotes_block
@@ -61,6 +62,7 @@ from src.apps.app.models import (
     WorldMode,
     _message_payload,
     normalize_actor_model,
+    normalize_prose_variant,
 )
 from src.apps.app.runtime import (
     ActiveConversation,
@@ -130,6 +132,8 @@ def create_conversation(
     scenario_id: str | None,
     store: ConversationStore,
     actor_model: str | None = None,
+    prose_variant: str | None = None,
+    engine_modules: dict[str, str] | None = None,
     ooc_config: str = "",
     world_mode: WorldMode = "graph",
 ) -> ConversationState:
@@ -178,6 +182,10 @@ def create_conversation(
             or str(state.world_config.get("prompt", {}).get("sections", {}).get("opening_scene") or "")
         ).strip()
     state.actor_model = normalize_actor_model(actor_model or state.actor_model)
+    state.prose_variant = normalize_prose_variant(prose_variant or state.prose_variant)
+    state.engine_modules = normalize_engine_modules(
+        engine_modules if engine_modules is not None else state.engine_modules
+    )
     state.ooc_config = str(ooc_config or "")
     state.usernotes = store.load_world_usernotes(state)
     if opening_scene:
@@ -378,6 +386,8 @@ async def _run_generation_events(
     user_msg_id: str | None,
     *,
     actor_model: str | None = None,
+    prose_variant: str | None = None,
+    engine_modules: dict[str, str] | None = None,
     ooc_result: dict | None = None,
     turn_ooc_directives: str = "",
 ) -> AsyncIterator[dict]:
@@ -385,6 +395,12 @@ async def _run_generation_events(
     sync_conversation_perspective(state)
     selected_actor_model = normalize_actor_model(actor_model or state.actor_model)
     state.actor_model = selected_actor_model
+    selected_prose_variant = normalize_prose_variant(prose_variant or state.prose_variant)
+    state.prose_variant = selected_prose_variant
+    selected_engine_modules = normalize_engine_modules(
+        engine_modules if engine_modules is not None else state.engine_modules
+    )
+    state.engine_modules = selected_engine_modules
     commit_id = uuid4().hex
     prev_game_time = await snapshot_game_time()
     recent_story = "\n".join(state.recent_responses[-RECENT_STORY_TURNS:])
@@ -407,6 +423,8 @@ async def _run_generation_events(
         thread_id=state.thread_id,
         commit_id=None if ooc_result else commit_id,
         turn_ooc_directives=turn_ooc_directives,
+        prose_variant=selected_prose_variant,
+        engine_modules=selected_engine_modules,
     )
     fixed = prompts.fixed
     genre = prompts.genre
@@ -495,6 +513,8 @@ async def _run_generation_events(
         content=display_response,
         parent_user_id=user_msg_id,
         actor_model=selected_actor_model,
+        prose_variant=selected_prose_variant,
+        engine_modules=selected_engine_modules,
     )
     state.messages.append(assistant_msg)
     state.history += [
@@ -556,6 +576,8 @@ async def append_user_and_stream(
     store: ConversationStore,
     client_message_id: str | None = None,
     actor_model: str | None = None,
+    prose_variant: str | None = None,
+    engine_modules: dict[str, str] | None = None,
 ) -> AsyncIterator[dict]:
     """Commit previous pending, append user input, and stream Actor output."""
     if state.world_mode == "wiki":
@@ -565,6 +587,8 @@ async def append_user_and_stream(
                 content,
                 client_message_id=client_message_id,
                 actor_model=actor_model,
+                prose_variant=prose_variant,
+                engine_modules=engine_modules,
             ):
                 yield event
         finally:
@@ -598,6 +622,8 @@ async def append_user_and_stream(
                 effective_input,
                 user_msg.id,
                 actor_model=actor_model,
+                prose_variant=prose_variant,
+                engine_modules=engine_modules,
                 ooc_result=ooc_result,
                 turn_ooc_directives=state.ooc_config,
             ):
@@ -678,6 +704,8 @@ async def _collect_generation(
     store: ConversationStore,
     *,
     actor_model: str | None = None,
+    prose_variant: str | None = None,
+    engine_modules: dict[str, str] | None = None,
     ooc_result: dict | None = None,
     turn_ooc_directives: str = "",
     persist: bool = True,
@@ -693,6 +721,8 @@ async def _collect_generation(
         content,
         user_msg_id,
         actor_model=actor_model,
+        prose_variant=prose_variant,
+        engine_modules=engine_modules,
         ooc_result=ooc_result,
         turn_ooc_directives=turn_ooc_directives,
     ):

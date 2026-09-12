@@ -22,6 +22,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from src.config import MODEL_PRO_UPDATER
+from src.apps.app.models import normalize_actor_model
 
 _SETTINGS_FILE = Path("data") / "app_settings.json"
 _THINKING_LEVELS = {"LOW", "MEDIUM", "HIGH"}
@@ -34,6 +35,7 @@ class AppSettings(BaseModel):
 
     output_repair_enabled: bool = True
     actor_thinking_level: str = _DEFAULT_ACTOR_THINKING_LEVEL
+    wiki_updater_model: str = MODEL_PRO_UPDATER
     wiki_updater_thinking_level: str = _DEFAULT_WIKI_UPDATER_THINKING_LEVEL
 
 
@@ -64,6 +66,9 @@ def load_settings() -> AppSettings:
         payload.get("actor_thinking_level"),
         _DEFAULT_ACTOR_THINKING_LEVEL,
     )
+    payload["wiki_updater_model"] = normalize_actor_model(
+        payload.get("wiki_updater_model", MODEL_PRO_UPDATER),
+    )
     payload["wiki_updater_thinking_level"] = normalize_thinking_level(
         payload.get("wiki_updater_thinking_level"),
         _DEFAULT_WIKI_UPDATER_THINKING_LEVEL,
@@ -87,10 +92,6 @@ def save_settings(settings: AppSettings) -> AppSettings:
 def wiki_updater_model_name() -> str:
     """Wiki updater 호출(update_accepted_turn)에 쓸 모델 이름을 한 곳에서 해석한다.
 
-    지금은 `src.config.MODEL_PRO_UPDATER` 고정값을 그대로 반환한다. 대화별로
-    updater 모델을 고를 수 있게 할지는 아직 미해결 갈래(F4)이고 이 함수는 그
-    질문과 무관하게, 나중에 F4가 "가능"으로 결론 나도 참조 지점을 한 곳만
-    바꾸면 되도록 세 호출부(wiki_controls/wiki_message_ops/wiki_service)를
-    묶어 두는 역할만 한다.
+    앱 전역 설정이 없으면 기존 기본값을 유지한다.
     """
-    return MODEL_PRO_UPDATER
+    return load_settings().wiki_updater_model

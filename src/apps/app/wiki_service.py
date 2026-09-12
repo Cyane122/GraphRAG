@@ -4,7 +4,7 @@
 # Wiki 모드의 Actor 스트리밍과 지연 Markdown 업데이트를 조율합니다.
 #
 # Functions
-#   - stream_wiki_turn(state: ConversationState, content: str, client_message_id: str | None = None, actor_model: str | None = None, apply_pending: bool = True, queue_update: bool = True) -> AsyncIterator[dict] : 한 Wiki 사용자 턴을 스트리밍하고 필요할 때 commit.md를 생성합니다.
+#   - stream_wiki_turn(state: ConversationState, content: str, client_message_id: str | None = None, actor_model: str | None = None, prose_variant: str | None = None, engine_modules: dict[str, str] | None = None, apply_pending: bool = True, queue_update: bool = True) -> AsyncIterator[dict] : 한 Wiki 사용자 턴을 스트리밍하고 필요할 때 commit.md를 생성합니다.
 # ================================
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from pathlib import Path
 import re
 from uuid import uuid4
 
+from src.agents.prompt_factory.engines import normalize_engine_modules
 from src.agents.prompt_factory.usernote import build_usernotes_block
 from src.agents.manager.classifier import classify_scene_types
 from src.apps.app.actor import stream_actor_events
@@ -24,6 +25,7 @@ from src.apps.app.models import (
     ConversationState,
     _message_payload,
     normalize_actor_model,
+    normalize_prose_variant,
     resolve_wiki_systems,
 )
 from src.apps.app.output_guard import find_forbidden_terms, find_pov_violations
@@ -190,6 +192,8 @@ async def stream_wiki_turn(
     content: str,
     client_message_id: str | None = None,
     actor_model: str | None = None,
+    prose_variant: str | None = None,
+    engine_modules: dict[str, str] | None = None,
     *,
     apply_pending: bool = True,
     queue_update: bool = True,
@@ -224,6 +228,12 @@ async def stream_wiki_turn(
 
     selected_model = normalize_actor_model(actor_model or state.actor_model)
     state.actor_model = selected_model
+    selected_variant = normalize_prose_variant(prose_variant or state.prose_variant)
+    state.prose_variant = selected_variant
+    selected_engine_modules = normalize_engine_modules(
+        engine_modules if engine_modules is not None else state.engine_modules
+    )
+    state.engine_modules = selected_engine_modules
     recent_story = "\n".join(state.recent_responses[-_RECENT_STORY_TURNS:])
     effective_input = content
     note_block = build_usernotes_block(state.usernotes)
@@ -251,6 +261,8 @@ async def stream_wiki_turn(
         recent_story,
         state.ooc_config,
         scene_types,
+        selected_variant,
+        selected_engine_modules,
     )
     debug_dir = write_turn_debug_snapshot(
         user_input=effective_input,
@@ -316,6 +328,8 @@ async def stream_wiki_turn(
         content=full_response,
         parent_user_id=user_message.id,
         actor_model=selected_model,
+        prose_variant=selected_variant,
+        engine_modules=selected_engine_modules,
     )
     state.messages.append(assistant_message)
     state.history.extend([

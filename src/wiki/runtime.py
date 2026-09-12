@@ -6,7 +6,7 @@
 # Functions
 #   - initialize_wiki_conversation(vault_root: Path, world_id: str, scenario_id: str, thread_id: str) -> WikiConversationSetup : Wiki thread를 초기화합니다.
 #   - resolve_wiki_opening_scene(vault_root: Path, world_id: str, scenario_id: str) -> str : 선택 시나리오의 첫 장면 원문을 반환합니다.
-#   - build_wiki_prompt_bundle(vault_root: Path, setup: WikiConversationSetup, user_input: str, recent_story: str = "", turn_ooc_directives: str = "", scene_types: list[str] | None = None) -> WikiPromptBundle : 기존 PromptBuilder로 Actor prompt를 조립합니다.
+#   - build_wiki_prompt_bundle(vault_root: Path, setup: WikiConversationSetup, user_input: str, recent_story: str = "", turn_ooc_directives: str = "", scene_types: list[str] | None = None, prose_variant: str = "a", engine_modules: dict[str, str] | None = None) -> WikiPromptBundle : 기존 PromptBuilder로 Actor prompt를 조립합니다.
 #   - apply_pending_wiki_commit(vault_root: Path, thread_id: str) -> PendingWikiCommit | None : 다음 입력 직전 commit.md를 적용합니다.
 # ================================
 
@@ -454,6 +454,8 @@ def build_wiki_prompt_bundle(
     recent_story: str = "",
     turn_ooc_directives: str = "",
     scene_types: list[str] | None = None,
+    prose_variant: str = "a",
+    engine_modules: dict[str, str] | None = None,
 ) -> WikiPromptBundle:
     """최신 Markdown을 읽어 기존 PromptBuilder의 Fixed/Genre/Dynamic을 조립합니다."""
     assets = read_wiki_actor_assets(vault_root, setup.world_id, setup.scenario_id)
@@ -479,6 +481,8 @@ def build_wiki_prompt_bundle(
         char_name=setup.npc_name,
         user_name=setup.pc_name,
         perspective=setup.perspective,
+        prose_variant=prose_variant,
+        engine_modules=engine_modules,
     )
     char_data = {"id": setup.npc_name, "name": setup.npc_name}
     if (dynamic_state := _actor_cycle_dynamic_state(thread_documents, setup.npc_id)) is not None:

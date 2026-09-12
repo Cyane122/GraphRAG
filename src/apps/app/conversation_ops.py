@@ -57,6 +57,8 @@ class ConversationOps(Protocol):
         store: ConversationStore,
         *,
         actor_model: str | None = None,
+        prose_variant: str | None = None,
+        engine_modules: dict[str, str] | None = None,
     ) -> dict:
         """assistant_id가 가리키는 응답을 재생성합니다."""
         ...
@@ -69,6 +71,8 @@ class ConversationOps(Protocol):
         store: ConversationStore,
         *,
         actor_model: str | None = None,
+        prose_variant: str | None = None,
+        engine_modules: dict[str, str] | None = None,
     ) -> dict:
         """message_id가 가리키는 메시지를 새 content로 수정합니다."""
         ...
@@ -103,9 +107,18 @@ class _GraphConversationOps:
         store: ConversationStore,
         *,
         actor_model: str | None = None,
+        prose_variant: str | None = None,
+        engine_modules: dict[str, str] | None = None,
     ) -> dict:
         """Graph 대화에서 assistant 응답을 재생성합니다."""
-        return await reroll_assistant(state, assistant_id, store, actor_model=actor_model)
+        return await reroll_assistant(
+            state,
+            assistant_id,
+            store,
+            actor_model=actor_model,
+            prose_variant=prose_variant,
+            engine_modules=engine_modules,
+        )
 
     async def edit(
         self,
@@ -115,9 +128,19 @@ class _GraphConversationOps:
         store: ConversationStore,
         *,
         actor_model: str | None = None,
+        prose_variant: str | None = None,
+        engine_modules: dict[str, str] | None = None,
     ) -> dict:
         """Graph 대화의 메시지를 수정합니다."""
-        return await edit_message(state, message_id, content, store, actor_model=actor_model)
+        return await edit_message(
+            state,
+            message_id,
+            content,
+            store,
+            actor_model=actor_model,
+            prose_variant=prose_variant,
+            engine_modules=engine_modules,
+        )
 
     async def activate(
         self,
@@ -149,9 +172,18 @@ class _WikiConversationOps:
         store: ConversationStore,
         *,
         actor_model: str | None = None,
+        prose_variant: str | None = None,
+        engine_modules: dict[str, str] | None = None,
     ) -> dict:
         """Wiki 대화에서 최신 미반영 응답을 재생성합니다."""
-        return await reroll_wiki_assistant(state, assistant_id, store, actor_model=actor_model)
+        return await reroll_wiki_assistant(
+            state,
+            assistant_id,
+            store,
+            actor_model=actor_model,
+            prose_variant=prose_variant,
+            engine_modules=engine_modules,
+        )
 
     async def edit(
         self,
@@ -161,9 +193,19 @@ class _WikiConversationOps:
         store: ConversationStore,
         *,
         actor_model: str | None = None,
+        prose_variant: str | None = None,
+        engine_modules: dict[str, str] | None = None,
     ) -> dict:
         """Wiki 대화의 최신 메시지를 수정합니다."""
-        return await edit_wiki_message(state, message_id, content, store, actor_model=actor_model)
+        return await edit_wiki_message(
+            state,
+            message_id,
+            content,
+            store,
+            actor_model=actor_model,
+            prose_variant=prose_variant,
+            engine_modules=engine_modules,
+        )
 
     async def activate(
         self,

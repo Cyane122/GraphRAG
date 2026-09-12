@@ -97,22 +97,22 @@ ownership, prompt contracts, commit lifecycle, or conflict policy changes.
 
 ## User Interface Ownership
 
-`hosted-ui/` is the active user interface. Implement new user-facing screens,
-controls, and interaction changes there.
+`graphrag-chat-site/` is the active user interface. Implement new user-facing
+screens, controls, and interaction changes there.
 
-`frontend/app/` is the legacy local client. Do not add features to it. Limit
-changes to critical fixes and to keeping it working against the current engine
-API. A new control does not need to be mirrored there.
+`hosted-ui/` and `frontend/app/` are legacy clients. Do not add features to
+either. Limit changes to critical fixes and to keeping them working against the
+current engine API. A new control does not need to be mirrored there.
 
-Both clients call the same engine over its JSON API, so a change that only
-exposes existing engine behavior is UI-only work and belongs in `hosted-ui/`.
-When a feature also needs engine support, keep the engine change in `src/` and
-the presentation in `hosted-ui/`; do not move product decisions into the client
-or business rules into either client.
+All clients call the same engine over its JSON API, so a change that only
+exposes existing engine behavior is UI-only work and belongs in
+`graphrag-chat-site/`. When a feature also needs engine support, keep the engine
+change in `src/` and the presentation in `graphrag-chat-site/`; do not move
+product decisions into the client or business rules into any client.
 
-`hosted-ui/` is a separate Next.js project with its own Git repository and
-package manifest. Do not assume the parent repository's Python toolchain,
-tests, or commit state apply to it.
+`graphrag-chat-site/` and `hosted-ui/` are separate Next.js projects with their
+own package manifests. Do not assume the parent repository's Python toolchain,
+tests, or commit state apply to them.
 
 ## Graph And Wiki State Rules
 

@@ -31,6 +31,8 @@ def create_router(context: RouterContext) -> APIRouter:
                 body.scenario_id,
                 store,
                 actor_model=body.actor_model,
+                prose_variant=body.prose_variant,
+                engine_modules=body.engine_modules,
                 ooc_config=body.ooc_config,
                 world_mode=body.world_mode,
             )

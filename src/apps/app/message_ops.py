@@ -5,8 +5,8 @@
 # These functions mutate conversation state and always call store.save() to persist.
 #
 # Functions
-#   - reroll_assistant(state: ConversationState, assistant_id: str, store: ConversationStore, actor_model: str | None = None) -> dict : Regenerate an assistant message from its paired user input.
-#   - edit_message(state: ConversationState, message_id: str, content: str, store: ConversationStore, actor_model: str | None = None) -> dict : Edit a message and update state.
+#   - reroll_assistant(state: ConversationState, assistant_id: str, store: ConversationStore, actor_model: str | None = None, prose_variant: str | None = None, engine_modules: dict[str, str] | None = None) -> dict : Regenerate an assistant message from its paired user input.
+#   - edit_message(state: ConversationState, message_id: str, content: str, store: ConversationStore, actor_model: str | None = None, prose_variant: str | None = None, engine_modules: dict[str, str] | None = None) -> dict : Edit a message and update state.
 #   - activate_variant(state: ConversationState, message_id: str, version_index: int, store: ConversationStore) -> dict : Activate a specific version of an assistant message by index (oldest-first).
 #   - delete_message(state: ConversationState, message_id: str, store: ConversationStore) -> dict : Delete a message and update state.
 # ================================
@@ -15,11 +15,13 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+from src.agents.prompt_factory.engines import normalize_engine_modules
 from src.apps.app.models import (
     ConversationState,
     MessageVariant,
     _message_payload,
     normalize_actor_model,
+    normalize_prose_variant,
 )
 from src.apps.app.pending_store import discard_pending_commit, save_pending_commit
 from src.apps.app.runtime import ActiveConversation, initialize_conversation, restore_game_time
@@ -54,6 +56,8 @@ async def reroll_assistant(
     assistant_id: str,
     store: ConversationStore,
     actor_model: str | None = None,
+    prose_variant: str | None = None,
+    engine_modules: dict[str, str] | None = None,
 ) -> dict:
     """Regenerate an assistant message from its paired user message."""
     if not state.pc_id or not state.npc_id:
@@ -64,12 +68,18 @@ async def reroll_assistant(
             latest_user = next((msg for msg in reversed(state.messages) if msg.role == "user"), None)
             if latest_user and (not state.messages or state.messages[-1].id == latest_user.id):
                 selected_actor_model = normalize_actor_model(actor_model or state.actor_model)
+                selected_prose_variant = normalize_prose_variant(prose_variant or state.prose_variant)
+                selected_engine_modules = normalize_engine_modules(
+                    engine_modules if engine_modules is not None else state.engine_modules
+                )
                 return await _generate(
                     state,
                     latest_user.content,
                     latest_user.id,
                     store,
                     actor_model=selected_actor_model,
+                    prose_variant=selected_prose_variant,
+                    engine_modules=selected_engine_modules,
                     turn_ooc_directives=latest_user.ooc_config,
                 )
             raise KeyError("assistant message not found")
@@ -78,6 +88,10 @@ async def reroll_assistant(
         if parent is None:
             raise KeyError("paired user message not found")
         selected_actor_model = normalize_actor_model(actor_model or state.actor_model)
+        selected_prose_variant = normalize_prose_variant(prose_variant or state.prose_variant)
+        selected_engine_modules = normalize_engine_modules(
+            engine_modules if engine_modules is not None else state.engine_modules
+        )
         original_messages = [msg.model_copy(deep=True) for msg in state.messages]
         original_history = deepcopy(state.history)
         original_recent = list(state.recent_responses)
@@ -126,6 +140,8 @@ async def reroll_assistant(
                 content=assistant.content,
                 created_at=assistant.created_at,
                 actor_model=assistant.actor_model,
+                prose_variant=assistant.prose_variant,
+                engine_modules=assistant.engine_modules,
                 edited=assistant.edited,
             ),
         )
@@ -136,6 +152,8 @@ async def reroll_assistant(
                 parent.id,
                 store,
                 actor_model=selected_actor_model,
+                prose_variant=selected_prose_variant,
+                engine_modules=selected_engine_modules,
                 turn_ooc_directives=parent.ooc_config,
                 persist=False,
             )
@@ -149,6 +167,8 @@ async def reroll_assistant(
             assistant.parent_user_id = new_message.parent_user_id
             assistant.edited = new_message.edited
             assistant.actor_model = new_message.actor_model
+            assistant.prose_variant = new_message.prose_variant
+            assistant.engine_modules = new_message.engine_modules
             state.messages = [msg for msg in state.messages if msg.id != new_message.id]
             state.history = [
                 {"role": msg.role, "content": msg.content, "msg_id": msg.id}
@@ -202,6 +222,8 @@ async def edit_message(
     content: str,
     store: ConversationStore,
     actor_model: str | None = None,
+    prose_variant: str | None = None,
+    engine_modules: dict[str, str] | None = None,
 ) -> dict:
     """Edit a message and update conversation state."""
     if not state.pc_id or not state.npc_id:
@@ -222,6 +244,10 @@ async def edit_message(
             return {"message": _message_payload(message), "preview": state.preview}
 
         selected_actor_model = normalize_actor_model(actor_model or state.actor_model)
+        selected_prose_variant = normalize_prose_variant(prose_variant or state.prose_variant)
+        selected_engine_modules = normalize_engine_modules(
+            engine_modules if engine_modules is not None else state.engine_modules
+        )
         original_messages = [msg.model_copy(deep=True) for msg in state.messages]
         original_history = deepcopy(state.history)
         original_recent = list(state.recent_responses)
@@ -250,6 +276,8 @@ async def edit_message(
                 message.id,
                 store,
                 actor_model=selected_actor_model,
+                prose_variant=selected_prose_variant,
+                engine_modules=selected_engine_modules,
                 turn_ooc_directives=message.ooc_config,
             )
         except Exception:
@@ -294,12 +322,16 @@ def activate_variant(
         content=msg.content,
         created_at=msg.created_at,
         actor_model=msg.actor_model,
+        prose_variant=msg.prose_variant,
+        engine_modules=msg.engine_modules,
         edited=msg.edited,
     )
     remaining = [v for v in msg.variants if v is not selected]
     msg.variants = [old_current] + remaining
     msg.content = selected.content
     msg.actor_model = selected.actor_model
+    msg.prose_variant = selected.prose_variant
+    msg.engine_modules = selected.engine_modules
     msg.edited = selected.edited
 
     state.history = [

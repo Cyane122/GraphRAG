@@ -10,7 +10,7 @@
 #   - _load_or_404(store: ConversationStore, thread_id: str) -> ConversationState : Load a conversation or raise HTTP 404
 #   - _require_graph_mode(state: ConversationState) -> None : Reject graph-only tools for Wiki threads
 #   - _require_wiki_mode(state: ConversationState) -> None : Reject Wiki controls for Graph threads
-#   - _conversation_summary(state: ConversationState) -> dict[str, object] : Return compact conversation metadata
+#   - _conversation_summary(state: ConversationState) -> dict[str, object] : Return compact conversation metadata, including the Wiki character display name
 #   - _conversation_payload(state: ConversationState) -> dict[str, object] : Return the full conversation payload
 #   - _json_line(payload: dict) -> bytes : Encode one newline-delimited JSON event
 # ================================
@@ -68,7 +68,10 @@ def _conversation_summary(state: ConversationState) -> dict[str, object]:
         "preview": state.preview,
         "updated_at": state.updated_at.isoformat(),
         "actor_model": state.actor_model,
+        "prose_variant": state.prose_variant,
+        "engine_modules": state.engine_modules,
         "archived": state.archived,
+        "npc_name_kor": state.npc_name_kor,
     }
 
 

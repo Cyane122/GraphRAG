@@ -14,7 +14,8 @@ USER CONTROL: {user_control_line}
 CORE: continued=[yes/no] | continuity=[yes/no] | new-conflict-overresolved=[quote/none]
 REALITY: time=[plausible/issue] | posture/reach/LOS=[ok/issue] | impossible-action=[quote/none]
 STYLE: flow=[connected/choppy] | sensory-entry=[yes/no] | fragment-chain=[quote/none] | narrator-overreach=[quote/none] | closing=[body/object/env/action/thought]
-EMOTION: evidence-only=[yes/no] | show-then-tell=[quote/none] | repeated-reaction=[quote/none]
+{emotion_scan_line}
+{variant_scan_line}
 USER IMPERSONATION: {user_impersonation_line}
 POV LEAK: {pov_leak_line}
 {scene_specific_scan}

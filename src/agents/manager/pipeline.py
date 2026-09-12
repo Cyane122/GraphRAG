@@ -4,7 +4,7 @@
 # Manager turn-preparation pipeline orchestration.
 #
 # Functions
-#   - run_manager_pipeline(user_input: str, pc_id: str, npc_id: str, recent_story: str, world_id: str | None, scenario_id: str | None, perspective: int, suppress_time_plan: bool, scene_need_hints: dict[str, str] | None = None, pending_kakao_messages: list[dict] | None = None, enable_kakao_preprocessing: bool = True, social_media_features: dict | None = None, thread_id: str | None = None, commit_id: str | None = None, turn_ooc_directives: str = "") -> tuple[PromptParts, list[str], dict] : Run turn-preparation pipeline
+#   - run_manager_pipeline(user_input: str, pc_id: str, npc_id: str, recent_story: str, world_id: str | None, scenario_id: str | None, perspective: int, suppress_time_plan: bool, scene_need_hints: dict[str, str] | None = None, pending_kakao_messages: list[dict] | None = None, enable_kakao_preprocessing: bool = True, social_media_features: dict | None = None, thread_id: str | None = None, commit_id: str | None = None, turn_ooc_directives: str = "", prose_variant: str = "a", engine_modules: dict[str, str] | None = None) -> tuple[PromptParts, list[str], dict] : Run turn-preparation pipeline
 # ================================
 
 from dataclasses import replace
@@ -37,6 +37,8 @@ async def run_manager_pipeline(
     thread_id: str | None = None,
     commit_id: str | None = None,
     turn_ooc_directives: str = "",
+    prose_variant: str = "a",
+    engine_modules: dict[str, str] | None = None,
 ) -> tuple[PromptParts, list[str], dict]:
     """Run turn preparation and optional pre-Actor KakaoTalk preprocessing."""
     bootstrap = await bootstrap_manager(world_id, scenario_id, perspective)
@@ -161,5 +163,7 @@ async def run_manager_pipeline(
         world_context,
         scene_need_hints=scene_need_hints or {},
         turn_ooc_directives=turn_ooc_directives,
+        prose_variant=prose_variant,
+        engine_modules=engine_modules,
     )
     return prompts, scene_plan.scene_types, scene_plan.manager_effects

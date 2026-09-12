@@ -48,6 +48,8 @@ def create_router(context: RouterContext) -> APIRouter:
                     store,
                     client_message_id=body.client_message_id,
                     actor_model=body.actor_model,
+                    prose_variant=body.prose_variant,
+                    engine_modules=body.engine_modules,
                 ):
                     yield _json_line(event)
             except Exception as exc:
@@ -72,6 +74,8 @@ def create_router(context: RouterContext) -> APIRouter:
                 assistant_id,
                 store,
                 actor_model=body.actor_model if body else None,
+                prose_variant=body.prose_variant if body else None,
+                engine_modules=body.engine_modules if body else None,
             )
         except KeyError as exc:
             raise HTTPException(404, detail=str(exc)) from exc
@@ -101,7 +105,15 @@ def create_router(context: RouterContext) -> APIRouter:
         state = _load_or_404(store, thread_id)
         ops = get_conversation_ops(state.world_mode)
         try:
-            return await ops.edit(state, message_id, body.content, store, actor_model=body.actor_model)
+            return await ops.edit(
+                state,
+                message_id,
+                body.content,
+                store,
+                actor_model=body.actor_model,
+                prose_variant=body.prose_variant,
+                engine_modules=body.engine_modules,
+            )
         except KeyError as exc:
             raise HTTPException(404, detail=str(exc)) from exc
         except ValueError as exc:
