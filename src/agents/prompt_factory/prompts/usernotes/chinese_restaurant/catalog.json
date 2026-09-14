@@ -1,0 +1,126 @@
+{
+  "slots": [
+    {
+      "id": "main",
+      "name": "메인엔진",
+      "description": "인과, NPC 자율성, 전투 판정을 관리합니다.",
+      "policy_group": "impersonation",
+      "options": [
+        {
+          "value": "base",
+          "label": "일반",
+          "file": "jjamppong-38-v1.2-base.md",
+          "recommended_for": "1:1 밀착, 장편, 범용 롤플레잉"
+        },
+        {
+          "value": "anti",
+          "label": "사칭방지",
+          "file": "jjamppong-38-v1.2-anti-impersonation.md",
+          "recommended_for": "플레이어 주도 서사, 사용자 대필 방지"
+        },
+        {
+          "value": "impersonation",
+          "label": "사칭",
+          "file": "jjamppong-38-v1.2-impersonation.md",
+          "recommended_for": "연출 보강, 사칭 허용 플레이"
+        }
+      ]
+    },
+    {
+      "id": "memory",
+      "name": "기억엔진",
+      "description": "사건, 부상, 미결 인과를 유지합니다.",
+      "policy_group": "impersonation",
+      "options": [
+        {
+          "value": "base",
+          "label": "일반",
+          "file": "jjamppong-memory-v2-base.md",
+          "recommended_for": "장편 대서사, 사건 증발 방지"
+        },
+        {
+          "value": "anti",
+          "label": "사칭방지",
+          "file": "jjamppong-memory-v2-anti-impersonation.md",
+          "recommended_for": "사칭방지 + 장편 대서사"
+        },
+        {
+          "value": "impersonation",
+          "label": "사칭",
+          "file": "jjamppong-memory-v2-impersonation.md",
+          "recommended_for": "사칭 허용 + 장편 대서사"
+        }
+      ]
+    },
+    {
+      "id": "multiplay",
+      "name": "다인플레이 엔진",
+      "description": "다인 장면의 발화와 행동을 배분합니다.",
+      "policy_group": null,
+      "options": [
+        {
+          "value": "on",
+          "label": "ON",
+          "file": "jjajang-control-tower-v1-base.md",
+          "recommended_for": "파티, 회의, 전장, 다인 시뮬레이션"
+        }
+      ]
+    },
+    {
+      "id": "character_memory",
+      "name": "인물기억 엔진",
+      "description": "재등장 인물의 관계와 호칭을 유지합니다.",
+      "policy_group": null,
+      "options": [
+        {
+          "value": "on",
+          "label": "ON",
+          "file": "gunmandu-character-memory-v2-base.md",
+          "recommended_for": "재회가 많은 장편, 관계·호칭 연속성"
+        }
+      ]
+    },
+    {
+      "id": "event",
+      "name": "사건엔진",
+      "description": "플레이어 밖 세계의 사건을 진행합니다.",
+      "policy_group": null,
+      "options": [
+        {
+          "value": "on",
+          "label": "ON",
+          "file": "fate-clock-v1-base.md",
+          "recommended_for": "세력전, 도시물, 배경 세계 진행"
+        }
+      ]
+    },
+    {
+      "id": "adult",
+      "name": "성인엔진",
+      "description": "성인 장면에서만 사용하는 묘사 규칙입니다.",
+      "policy_group": null,
+      "options": [
+        {
+          "value": "on",
+          "label": "ON",
+          "file": "tangsuyuk-yass-v1-base.md",
+          "recommended_for": "성인 장면 전용"
+        }
+      ]
+    },
+    {
+      "id": "inner",
+      "name": "속사정 모드",
+      "description": "!!TMI 명령에서만 속사정 패널을 출력합니다.",
+      "policy_group": null,
+      "options": [
+        {
+          "value": "on",
+          "label": "ON",
+          "file": "inner-thought-mode-v1.3.md",
+          "recommended_for": "명시적 TMI 패널 사용"
+        }
+      ]
+    }
+  ]
+}

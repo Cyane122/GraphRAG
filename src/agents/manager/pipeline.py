@@ -163,7 +163,6 @@ async def run_manager_pipeline(
     )
     prompts = build_prompt_parts(
         user_input,
-        recent_story,
         perspective,
         prompt_world_config,
         scene_plan,

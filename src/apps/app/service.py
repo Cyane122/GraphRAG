@@ -34,7 +34,6 @@ from pathlib import Path
 from uuid import uuid4
 
 from src.agents.manager import run_manager
-from src.agents.prompt_factory.engines import normalize_engine_modules
 from src.agents.prompt_factory.ooc_handler import is_ooc
 from src.simulation.state.apply.ooc import handle_ooc
 from src.agents.prompt_factory.usernote import build_usernotes_block
@@ -44,7 +43,7 @@ from src.simulation.systems.world_dynamics.organic import (
 )
 from src.config import MAX_TOKEN, MODEL_OUTPUT_REPAIR, WIKI_VAULT_ROOT
 from src.core.llm.client import get_client
-from src.agents.prompt_factory.profiles import ProseProfile, normalize_prose_profile
+from src.agents.prompt_factory.profiles import ProseProfile
 from src.apps.app.input_routing import TurnInputType, route_user_input
 from src.apps.app.output_guard import find_forbidden_terms, find_pov_violations
 from src.apps.app.output_repair import repair_actor_output
@@ -62,7 +61,7 @@ from src.apps.app.models import (
     ConversationState,
     WorldMode,
     _message_payload,
-    normalize_actor_model,
+    resolve_generation_selection,
 )
 from src.apps.app.runtime import (
     ActiveConversation,
@@ -181,13 +180,15 @@ def create_conversation(
             str(state.world_config.get("opening_scene") or "")
             or str(state.world_config.get("prompt", {}).get("sections", {}).get("opening_scene") or "")
         ).strip()
-    state.actor_model = normalize_actor_model(actor_model or state.actor_model)
-    state.prose_profile = normalize_prose_profile(prose_profile or state.prose_profile)
-    state.engine_modules = normalize_engine_modules(
-        engine_modules if engine_modules is not None else state.engine_modules
+    state.actor_model, state.prose_profile, state.engine_modules = resolve_generation_selection(
+        state,
+        actor_model=actor_model,
+        prose_profile=prose_profile,
+        engine_modules=engine_modules,
     )
     state.ooc_config = str(ooc_config or "")
-    state.usernotes = store.load_world_usernotes(state)
+    state.enabled_usernote_ids = []
+    state.usernotes = store.load_usernotes(state)
     if opening_scene:
         state.messages.append(
             ChatMessage(
@@ -393,13 +394,14 @@ async def _run_generation_events(
 ) -> AsyncIterator[dict]:
     """Run Manager and Actor, yielding frontend stream events."""
     sync_conversation_perspective(state)
-    selected_actor_model = normalize_actor_model(actor_model or state.actor_model)
-    state.actor_model = selected_actor_model
-    selected_prose_profile = normalize_prose_profile(prose_profile or state.prose_profile)
-    state.prose_profile = selected_prose_profile
-    selected_engine_modules = normalize_engine_modules(
-        engine_modules if engine_modules is not None else state.engine_modules
+    selected_actor_model, selected_prose_profile, selected_engine_modules = resolve_generation_selection(
+        state,
+        actor_model=actor_model,
+        prose_profile=prose_profile,
+        engine_modules=engine_modules,
     )
+    state.actor_model = selected_actor_model
+    state.prose_profile = selected_prose_profile
     state.engine_modules = selected_engine_modules
     commit_id = uuid4().hex
     prev_game_time = await snapshot_game_time()
@@ -426,24 +428,12 @@ async def _run_generation_events(
         prose_profile=selected_prose_profile,
         engine_modules=selected_engine_modules,
     )
-    dynamic = prompts.dynamic
     manager_effects = _apply_ooc_effects(manager_effects, ooc_result, state.pc_id)
-
-    if state.npc_name_kor:
-        dynamic = (
-            dynamic
-            + "\n\n[Character Naming Lock]\n"
-            + f"- Current primary NPC: {state.npc_name_kor} ({state.npc_id}).\n"
-            + f"- Use `{state.npc_name_kor}` or the established short name when referring to this character.\n"
-            + "- Do not replace a named active character with generic labels such as `여학생`, `여자`, `학생`, or `그 여자` unless explicitly referring to an unnamed extra.\n"
-        )
-    if state.prev_cot:
-        dynamic = dynamic + f"\n\n[Previous Turn CoT]\n{state.prev_cot}"
 
     debug_dir = write_turn_debug_snapshot(
         user_input=user_input,
         fixed_prompt=prompts.fixed,
-        dynamic_prompt=dynamic,
+        dynamic_prompt=prompts.dynamic,
         scene_types=scene_types,
         manager_effects=manager_effects,
         history=state.history,
@@ -460,7 +450,7 @@ async def _run_generation_events(
     recent_snapshot = list(state.recent_responses)
     actor_kwargs = dict(
         fixed_prompt=prompts.fixed,
-        dynamic_prompt=dynamic,
+        dynamic_prompt=prompts.dynamic,
         history=state.history,
         genai_client=_GENAI_CLIENT,
         model_name=selected_actor_model,
@@ -524,7 +514,6 @@ async def _run_generation_events(
     recent_text = (final_event.get("visible_text") or "").strip() or _strip_reasoning_blocks(full_response)
     state.recent_responses.append(recent_text[:1500])
     state.recent_responses = state.recent_responses[-RECENT_STORY_TURNS:]
-    state.prev_cot = str(final_event.get("raw_thinking") or "")
     state.preview = preview_text(display_response)
     state.title = f"{state.world_id}/{state.scenario_id}"
     if manager_effects.get("kakao_processed"):
@@ -549,7 +538,6 @@ async def _run_generation_events(
         debug_dir=debug_dir,
         user_msg_id=user_msg_id,
         response_msg_id=assistant_msg.id,
-        prev_cot=state.prev_cot,
     )
     state.pending_commit = pending_commit.model_dump(mode="json")
     save_pending_commit(state.pending_commit, state.world_id, state.pc_id, state.npc_id)

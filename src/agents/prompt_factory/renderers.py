@@ -1,7 +1,8 @@
 # ================================
 # src/agents/prompt_factory/renderers.py
 #
-# Actor prompt dynamic section renderers.
+# Actor prompt dynamic section renderers, plus the shared prompt-variable
+# formatting and blacklist-mode helpers used by both fixed.py and builder.py.
 # Markdown prompt files are tagless; renderers wrap them at assembly time.
 #
 # Classes
@@ -10,9 +11,11 @@
 # Functions
 #   - _read_optional_prompt(relative_path: str) -> str : prompt/ 하위 Markdown 파일 읽기
 #   - _render_prompt_block(tag: str, body: str) -> str : 본문을 XML 블록으로 감싸기
+#   - format_prompt_vars(text: str, *, char_name: str, user_name: str, for_add: str) -> str : 1-pass 프롬프트 변수 치환 (builder.py 동적 세그먼트용)
+#   - format_prompt_vars_twice(text: str, *, char_name: str, user_name: str) -> str : 2-pass char/user 전용 치환 (fixed.py 고정 세그먼트용)
+#   - is_unified_blacklist(world_config: dict) -> bool : 월드가 unified 블랙리스트 모드인지 판정
 #   - render_current_pov(pov_mode: str, impersonation_allowed: bool, current_pov: dict | None) -> str : 현재 POV 동적 블록 렌더링
 #   - render_reproductive_state(char_data: dict, npcs: list[dict]) -> str : 등장 여성 캐릭터 생식 상태 렌더링
-#   - render_state_line(dyn_state: dict, world_config: dict | None) -> str : 상태 한 줄 렌더링
 #   - clean_prompt_dict(data: dict) -> dict : 내부 키·null 값 제거
 #   - join_rendered_context(rendered_context: dict[str, str]) -> str : 동적 컨텍스트 블록 결합
 #   - render_active_characters_section(char_data: dict, user_data: dict, npcs: list[dict], scene_types: list[str]) -> str : 현재 등장 캐릭터 프로필 렌더링 (전체 필드)
@@ -34,15 +37,6 @@ _PROMPT_HIDDEN_STATE_KEYS: frozenset[str] = frozenset({
 })
 
 
-_DEFAULT_STATE_FIELDS: list[tuple[str, str, frozenset]] = [
-    ("mood", "mood", frozenset()),
-    ("physical_condition", "physical", frozenset()),
-    ("mental_condition", "mental", frozenset()),
-    ("stress_level", "stress", frozenset({None})),
-    ("outfit", "outfit", frozenset({"", None})),
-    ("injury_marks", "injury", frozenset({"없음", "", None})),
-]
-
 # ----------------
 # Prompt file helpers
 # ----------------
@@ -56,7 +50,9 @@ def _read_optional_prompt(relative_path: str) -> str:
 class _SafeFormatDict(dict):
     """str.format_map용 dict — 미등록 플레이스홀더를 원형 그대로 보존한다.
 
-    Preserved examples: {state_line}, {current_pov_line}, {for_add}
+    A key absent from the dict (e.g. a world-authored `{for_add}` reaching
+    format_prompt_vars_twice, which never supplies one) survives the format
+    call unchanged instead of raising KeyError.
     """
 
     def __missing__(self, key: str) -> str:
@@ -72,6 +68,48 @@ def _render_prompt_block(tag: str, body: str) -> str:
     if not body:
         return ""
     return f"<{tag}>\n{body.strip()}\n</{tag.split()[0]}>"
+
+
+# ----------------
+# Shared prompt-variable formatting
+# ----------------
+
+def format_prompt_vars(text: str, *, char_name: str, user_name: str, for_add: str = "") -> str:
+    """Single-pass {char}/{user}/{for_add} substitution for builder.py's dynamic segment.
+
+    Unknown placeholders (e.g. a stray `{unknown}`) are preserved as-is via
+    _SafeFormatDict. `for_add` always participates (defaulting to ""), so a
+    `{for_add}` placeholder in dynamic-segment text (e.g. world_cot_append) is
+    always resolved, never left dangling.
+    """
+    if not text:
+        return ""
+    return text.format_map(_SafeFormatDict(char=char_name, user=user_name, for_add=for_add))
+
+
+def format_prompt_vars_twice(text: str, *, char_name: str, user_name: str) -> str:
+    """Two-pass {char}/{user}-only substitution for fixed.py's cacheable segment.
+
+    World-authored Fixed-section assets may double-escape a literal token as
+    `{{char}}`/`{{user}}` so authors can show the placeholder name in prose. One
+    format_map pass only unescapes that to a still-braced `{char}`/`{user}`; the
+    second pass resolves it down to the real name. `for_add` is deliberately not
+    in scope here (the fixed section never substitutes it), so a `{for_add}` in
+    Fixed text is preserved untouched, like any other unknown placeholder.
+    """
+    if not text:
+        return ""
+    values = {"char": char_name, "user": user_name}
+    once = text.format_map(_SafeFormatDict(values))
+    return once.format_map(_SafeFormatDict(values))
+
+
+def is_unified_blacklist(world_config: dict) -> bool:
+    """Return whether a world uses one unified blacklist block instead of the fixed-section global BLACKLIST.md."""
+    return bool(
+        world_config.get("unified_blacklist")
+        or world_config.get("prompt", {}).get("blacklist", {}).get("unified", False)
+    )
 
 
 # ----------------
@@ -274,21 +312,6 @@ def _cycle_status(dyn_state: dict) -> str:
 # ----------------
 # Dynamic state / context renderers
 # ----------------
-
-def render_state_line(dyn_state: dict, world_config: dict | None = None) -> str:
-    """Render selected DynamicState fields as one compact checklist line."""
-    fields = list(_DEFAULT_STATE_FIELDS)
-    fields.extend((world_config or {}).get("extra_state_fields", []))
-
-    parts = []
-    for key, label, skip_if in fields:
-        val = dyn_state.get(key)
-        if val is None or val in skip_if:
-            continue
-        parts.append(f"{label}={val}")
-
-    return " | ".join(parts) if parts else "없음"
-
 
 def clean_prompt_dict(data: dict) -> dict:
     """Remove internal keys and null values before injecting graph records into prompt."""

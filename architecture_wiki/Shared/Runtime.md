@@ -19,7 +19,7 @@ tags:
 | Local UI | `frontend/app/` | FastAPI가 직접 제공하는 정적 채팅 화면 |
 | API routes | `src/apps/app/app.py` | JSON/NDJSON 계약과 mode guard |
 | Conversation service | `src/apps/app/service.py` | Graph/Wiki 진입 분기와 상태 저장 |
-| Conversation store | `src/apps/app/storage.py` | thread JSON과 mode별 usernote hydration |
+| Conversation store | `src/apps/app/storage.py` | thread JSON과 전역 usernote 라이브러리 hydration |
 | Actor bridge | `src/apps/app/actor.py` | provider 차이를 숨기는 streaming event |
 | Prompt factory | `src/agents/prompt_factory/` | Fixed/Genre/Dynamic 공통 출력 계약 |
 | LLM client | `src/core/llm/` | 모델 선택, 동시성, timeout, 429 재시도 |
@@ -50,7 +50,7 @@ sequenceDiagram
 
 - `world_mode=graph`와 `world_mode=wiki`는 대화 생성부터 목록 조회까지 유지한다.
 - Schema, 위치 이동과 임신은 Graph 전용이다. reroll/edit/delete와 응답 버전 선택은 mode별 상태 정책으로 분기한다.
-- 동일한 `world_id`라도 mode가 다르면 대화 목록과 usernote namespace가 다르다.
+- 동일한 `world_id`라도 mode가 다르면 대화 목록이 다르다. usernote는 world·mode와 무관하게 하나의 전역 라이브러리를 공유하며, enabled 여부만 대화 thread별로 분리된다.
 - UI는 엔진 규칙을 결정하지 않고 서버가 제공한 mode와 capability를 표현한다.
 
 ## Sites의 위치
@@ -67,7 +67,7 @@ Sites가 정상이어도 로컬 엔진이 꺼져 있거나 이전 브랜치를 �
 - Actor event 형식을 바꾸면 Graph와 Wiki streaming을 모두 검사한다.
 - PromptBuilder를 바꾸면 두 엔진에서 Fixed cache와 Dynamic 상태 포함 여부를 확인한다.
 - ConversationState 필드를 바꾸면 저장된 두 mode thread의 하위 호환성을 확인한다.
-- usernote/OOC 변경은 mode/world/thread 소유 범위를 다시 확인한다.
+- usernote 변경 시 라이브러리 필드(이름·본문)는 전역, enabled는 thread 소유임을 다시 확인하고, OOC 변경은 mode/world/thread 소유 범위를 다시 확인한다.
 - accepted-turn 상태 반영을 추가할 때 mode-aware Updater 요청을 확장하고 Graph/Wiki
   전용 공개 Updater 파일을 따로 만들지 않는다.
 

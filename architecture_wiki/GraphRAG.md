@@ -38,7 +38,7 @@ GraphRAG 전용 모듈은 [[WikiRAG]]의 Markdown 상태를 직접 수정하지 
 ```text
 data/threads/<thread_id>/schema/
 data/threads/<thread_id>.json
-data/worlds/graph/<world_id>/usernotes.json
+data/usernotes.json
 ```
 
 - standalone FastAPI 대화의 Kuzu 경로는 `src/apps/app/runtime.py`의 `conversation_db_path()`가 결정한다.

@@ -16,16 +16,15 @@ from pathlib import Path
 import re
 from uuid import uuid4
 
-from src.agents.prompt_factory.engines import normalize_engine_modules
 from src.agents.prompt_factory.usernote import build_usernotes_block
 from src.agents.manager.classifier import classify_scene_types
-from src.agents.prompt_factory.profiles import ProseProfile, normalize_prose_profile
+from src.agents.prompt_factory.profiles import ProseProfile
 from src.apps.app.actor import stream_actor_events
 from src.apps.app.models import (
     ChatMessage,
     ConversationState,
     _message_payload,
-    normalize_actor_model,
+    resolve_generation_selection,
     resolve_wiki_systems,
 )
 from src.apps.app.output_guard import find_forbidden_terms, find_pov_violations
@@ -226,13 +225,14 @@ async def stream_wiki_turn(
     state.messages.append(user_message)
     yield {"type": "user", "message": _message_payload(user_message)}
 
-    selected_model = normalize_actor_model(actor_model or state.actor_model)
-    state.actor_model = selected_model
-    selected_variant = normalize_prose_profile(prose_profile or state.prose_profile)
-    state.prose_profile = selected_variant
-    selected_engine_modules = normalize_engine_modules(
-        engine_modules if engine_modules is not None else state.engine_modules
+    selected_model, selected_prose_profile, selected_engine_modules = resolve_generation_selection(
+        state,
+        actor_model=actor_model,
+        prose_profile=prose_profile,
+        engine_modules=engine_modules,
     )
+    state.actor_model = selected_model
+    state.prose_profile = selected_prose_profile
     state.engine_modules = selected_engine_modules
     recent_story = "\n".join(state.recent_responses[-_RECENT_STORY_TURNS:])
     effective_input = content
@@ -261,7 +261,7 @@ async def stream_wiki_turn(
         recent_story,
         state.ooc_config,
         scene_types,
-        selected_variant,
+        selected_prose_profile,
         selected_engine_modules,
     )
     debug_dir = write_turn_debug_snapshot(
@@ -326,7 +326,7 @@ async def stream_wiki_turn(
         content=full_response,
         parent_user_id=user_message.id,
         actor_model=selected_model,
-        prose_profile=selected_variant,
+        prose_profile=selected_prose_profile,
         engine_modules=selected_engine_modules,
     )
     state.messages.append(assistant_message)
@@ -338,7 +338,6 @@ async def stream_wiki_turn(
     visible = _strip_hidden_blocks(full_response)
     state.recent_responses.append(visible[:1500])
     state.recent_responses = state.recent_responses[-_RECENT_STORY_TURNS:]
-    state.prev_cot = str(final_event.get("raw_thinking") or "")
     state.preview = _preview_text(full_response)
     state.title = f"{state.world_id}/{state.scenario_id}"
     state.pending_commit = None

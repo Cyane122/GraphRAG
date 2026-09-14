@@ -15,7 +15,7 @@ tags:
 | --- | --- | --- |
 | standalone thread graph | `data/threads/<thread_id>/schema/` | Kuzu driver |
 | 대화 메시지와 UI 상태 | `data/threads/<thread_id>.json` | ConversationStore |
-| Graph world usernote | `data/worlds/graph/<world_id>/usernotes.json` | ConversationStore |
+| 전역 usernote 라이브러리 | `data/usernotes.json` | ConversationStore |
 | prompt/turn debug | `logs/turn_debug/<timestamp>/` | turn debug writer |
 
 ## Driver 계층
@@ -61,7 +61,7 @@ sequenceDiagram
 ## 격리 불변식
 
 - thread A의 driver로 thread B를 조회하지 않는다.
-- world ID가 같아도 Wiki mode usernote와 공유하지 않는다.
+- usernote는 world·mode 구분 없이 전역 라이브러리(`data/usernotes.json`)를 공유하며, enabled 상태만 대화 thread(`enabled_usernote_ids`)별로 분리된다.
 - UI metadata JSON을 Kuzu 상태의 대체 원본으로 사용하지 않는다.
 - Graph Viewer snapshot은 조회·표시용이며 canonical graph가 아니다.
 

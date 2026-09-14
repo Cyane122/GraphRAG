@@ -6,7 +6,8 @@
 # Functions
 #   - _check_recall() -> None : Validate recall budget trimming and ranking behavior.
 #   - _check_migrations() -> None : Validate the thread migration marker write path.
-#   - _check_diagnostics(vault_root: Path) -> None : Validate duplicate document and frontmatter diagnostics.
+#   - _write_diagnostics_fixture_document(path: Path, document_id: str, document_type: str, title: str) -> None : Write a minimal frontmatter document for diagnostics scope fixtures.
+#   - _check_diagnostics(vault_root: Path) -> None : Validate duplicate document and frontmatter diagnostics, including world/scenario override scoping.
 #   - _check_explorer(vault_root: Path) -> None : Validate explorer output summaries.
 #   - _check_world_scaffold_contracts(root: Path, vault_root: Path, world: object, world_store: WikiStore, world_document: WikiDocument) -> None : Validate world scaffold directories and frontmatter contracts.
 #   - _check_thread_scaffold_contracts(root: Path, vault_root: Path) -> WikiStore : Validate thread scaffold prerequisites and generated scene metadata.
@@ -27,6 +28,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 import sys
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -184,6 +186,28 @@ def _check_migrations() -> None:
     else:
         raise AssertionError("Future schema_version must be rejected")
 
+def _write_diagnostics_fixture_document(
+    path: Path,
+    document_id: str,
+    document_type: str,
+    title: str,
+) -> None:
+    """진단 스캔 테스트용 최소 frontmatter를 갖춘 Markdown 문서를 씁니다."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "---\n"
+        f"id: {document_id}\n"
+        f"type: {document_type}\n"
+        "schema_version: 1\n"
+        "world_id: demo_world\n"
+        "visibility: [actor, updater, player]\n"
+        "created_at: 2026-07-21T00:00:00+00:00\n"
+        "---\n"
+        f"# {title}\n",
+        encoding="utf-8",
+    )
+
+
 def _check_diagnostics(vault_root: Path) -> None:
     """중복 문서 ID와 잘못된 frontmatter를 vault 진단이 잡는지 검증합니다."""
     healthy_codes = {
@@ -211,6 +235,101 @@ def _check_diagnostics(vault_root: Path) -> None:
     assert "frontmatter" in codes, codes
     for name in ("a.md", "b.md", "broken.md"):
         (events / name).unlink()
+
+    # Duplicate-id scope must match runtime resolution: world root (minus
+    # scenarios/) and each scenario directory are independent id spaces, a
+    # scenario document may override a world document of the same id and
+    # type, and different scenarios may reuse each other's ids.
+    world_root = vault_root / "worlds" / "demo_world"
+    scenario_a = world_root / "scenarios" / "diag_scen_a"
+    scenario_b = world_root / "scenarios" / "diag_scen_b"
+    try:
+        # True duplicate inside the world-level tree must still be reported.
+        _write_diagnostics_fixture_document(
+            world_root / "locations" / "diag_dup_a.md",
+            "location:diag_dup_world",
+            "location",
+            "Dup A",
+        )
+        _write_diagnostics_fixture_document(
+            world_root / "locations" / "diag_dup_b.md",
+            "location:diag_dup_world",
+            "location",
+            "Dup B",
+        )
+        # A scenario document reusing a world id with the SAME type is an
+        # intentional override and must not be reported.
+        _write_diagnostics_fixture_document(
+            world_root / "characters" / "diag_shared.md",
+            "character_profile:diag_shared",
+            "character_profile",
+            "World Shared",
+        )
+        _write_diagnostics_fixture_document(
+            scenario_a / "characters" / "diag_shared.md",
+            "character_profile:diag_shared",
+            "character_profile",
+            "Scenario A Shared",
+        )
+        # Two different scenarios may reuse the same id (no world-level
+        # equivalent) without being reported.
+        _write_diagnostics_fixture_document(
+            scenario_a / "characters" / "diag_cross.md",
+            "character_profile:diag_cross",
+            "character_profile",
+            "Scenario A Cross",
+        )
+        _write_diagnostics_fixture_document(
+            scenario_b / "characters" / "diag_cross.md",
+            "character_profile:diag_cross",
+            "character_profile",
+            "Scenario B Cross",
+        )
+        # A true duplicate inside one scenario directory must still be
+        # reported.
+        _write_diagnostics_fixture_document(
+            scenario_a / "characters" / "diag_inner_dup_1.md",
+            "character_profile:diag_inner_dup",
+            "character_profile",
+            "Inner Dup 1",
+        )
+        _write_diagnostics_fixture_document(
+            scenario_a / "characters" / "diag_inner_dup_2.md",
+            "character_profile:diag_inner_dup",
+            "character_profile",
+            "Inner Dup 2",
+        )
+        # A scenario document reusing a world id with a DIFFERENT type is
+        # still an error - it is not a valid override. The document `id`
+        # normally forces a matching `type` (WikiMetadata._validate_type_contract),
+        # so the only realistic same-id/different-type collision is the
+        # scaffolded prose.md id ("world:demo_world:prose", type "prose"):
+        # its loose "world:" prefix contract also accepts a plain
+        # `type: world` document with that exact id.
+        _write_diagnostics_fixture_document(
+            scenario_b / "characters" / "diag_type_mismatch.md",
+            "world:demo_world:prose",
+            "world",
+            "Scenario Mismatch",
+        )
+
+        scope_diagnostics = diagnose_wiki_scope(vault_root, "thread_001", "demo_world")
+        duplicate_messages = " | ".join(
+            diagnostic.message
+            for diagnostic in scope_diagnostics
+            if diagnostic.code == "duplicate_id"
+        )
+        assert "location:diag_dup_world" in duplicate_messages, duplicate_messages
+        assert "character_profile:diag_inner_dup" in duplicate_messages, duplicate_messages
+        assert "world:demo_world:prose" in duplicate_messages, duplicate_messages
+        assert "character_profile:diag_shared" not in duplicate_messages, duplicate_messages
+        assert "character_profile:diag_cross" not in duplicate_messages, duplicate_messages
+    finally:
+        (world_root / "locations" / "diag_dup_a.md").unlink(missing_ok=True)
+        (world_root / "locations" / "diag_dup_b.md").unlink(missing_ok=True)
+        (world_root / "characters" / "diag_shared.md").unlink(missing_ok=True)
+        shutil.rmtree(scenario_a, ignore_errors=True)
+        shutil.rmtree(scenario_b, ignore_errors=True)
 
 def _check_explorer(vault_root: Path) -> None:
     """Explorer 문서 목록이 world/thread 문서를 종류와 함께 나열하는지 검증합니다."""

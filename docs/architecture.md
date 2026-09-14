@@ -54,9 +54,10 @@ The main backend entry point is `python -m src.apps.app`.
 
 ### Shared user notes
 
-User notes are shared by engine mode and world under
-`data/worlds/<graph|wiki>/<world_id>/usernotes.json`. Graph and Wiki namespaces
-must never share notes implicitly.
+User notes live in one global library at `data/usernotes.json`, shared across every
+world and both engine modes. Each note's enabled state is stored per conversation
+thread (`ConversationState.enabled_usernote_ids`), so toggling a note in one thread
+never affects another thread's prompt.
 
 ## 3. Accepted-Turn Contract
 
@@ -184,6 +185,20 @@ Style comes from exactly one axis: the conversation's prose profile
 `modifiers`. Engine modules carry causal, state, and output-block rules only; they
 do not restate prose rules. There is no separate genre segment, no per-turn
 checklist template, and no few-shot example block.
+
+The `main` and `memory` engine-module slots share a `policy_group`
+(`"impersonation"`); `normalize_engine_modules` (`src/agents/prompt_factory/engines.py`)
+keeps whichever of the two is enabled on the same user-narration policy, so an
+enabled slot never drifts out of sync with its enabled peer, and a slot left off
+is never turned on. The four `erotic_*` prose modifiers share the
+`adult_register` group and are mutually exclusive (the client and the server both
+keep only the last-selected one). They render only while the `adult` engine
+module is enabled, and `effective_prose_profile` defaults to the commercial
+register when the adult engine is on and none is selected; this coupling happens
+at render time only and never mutates the stored profile selection. The Dynamic
+segment's `<output_contract>` is the single owner of output order, including
+where enabled engine-module blocks go relative to the prose (before, after, or
+not at all, per module).
 
 Supported shared classifier labels are `daily`, `bonding`, `intimate`, `formal`,
 `tense`, `conflict`, `vulnerable`, `action`, and `ambient`. Scene types drive state

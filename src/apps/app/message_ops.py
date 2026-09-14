@@ -15,13 +15,12 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from src.agents.prompt_factory.engines import normalize_engine_modules
-from src.agents.prompt_factory.profiles import ProseProfile, normalize_prose_profile
+from src.agents.prompt_factory.profiles import ProseProfile
 from src.apps.app.models import (
     ConversationState,
     MessageVariant,
     _message_payload,
-    normalize_actor_model,
+    resolve_generation_selection,
 )
 from src.apps.app.pending_store import discard_pending_commit, save_pending_commit
 from src.apps.app.runtime import ActiveConversation, initialize_conversation, restore_game_time
@@ -67,10 +66,11 @@ async def reroll_assistant(
         if assistant_index is None:
             latest_user = next((msg for msg in reversed(state.messages) if msg.role == "user"), None)
             if latest_user and (not state.messages or state.messages[-1].id == latest_user.id):
-                selected_actor_model = normalize_actor_model(actor_model or state.actor_model)
-                selected_prose_profile = normalize_prose_profile(prose_profile or state.prose_profile)
-                selected_engine_modules = normalize_engine_modules(
-                    engine_modules if engine_modules is not None else state.engine_modules
+                selected_actor_model, selected_prose_profile, selected_engine_modules = resolve_generation_selection(
+                    state,
+                    actor_model=actor_model,
+                    prose_profile=prose_profile,
+                    engine_modules=engine_modules,
                 )
                 return await _generate(
                     state,
@@ -87,10 +87,11 @@ async def reroll_assistant(
         parent = next((msg for msg in state.messages if msg.id == assistant.parent_user_id), None)
         if parent is None:
             raise KeyError("paired user message not found")
-        selected_actor_model = normalize_actor_model(actor_model or state.actor_model)
-        selected_prose_profile = normalize_prose_profile(prose_profile or state.prose_profile)
-        selected_engine_modules = normalize_engine_modules(
-            engine_modules if engine_modules is not None else state.engine_modules
+        selected_actor_model, selected_prose_profile, selected_engine_modules = resolve_generation_selection(
+            state,
+            actor_model=actor_model,
+            prose_profile=prose_profile,
+            engine_modules=engine_modules,
         )
         original_messages = [msg.model_copy(deep=True) for msg in state.messages]
         original_history = deepcopy(state.history)
@@ -110,13 +111,11 @@ async def reroll_assistant(
             and state.pending_commit.get("response_msg_id") == assistant.id
         )
         original_created_at = assistant.created_at
-        original_prev_cot = state.prev_cot
         if is_current:
             pending = state.pending_commit
             await restore_game_time(pending.get("prev_game_time"))
             state.history = list(pending.get("history_snapshot") or [])
             state.recent_responses = list(pending.get("recent_snapshot") or [])
-            state.prev_cot = str(pending.get("prev_cot") or "")
             discard_pending_commit(pending, state.world_id, state.pc_id, state.npc_id)
             state.pending_commit = None
         else:
@@ -189,7 +188,6 @@ async def reroll_assistant(
                     save_pending_commit(original_pending, state.world_id, state.pc_id, state.npc_id)
                 state.recent_responses = original_recent
                 state.preview = original_preview
-                state.prev_cot = original_prev_cot
             store.save(state)
             return {
                 "message": _message_payload(assistant),
@@ -208,7 +206,6 @@ async def reroll_assistant(
             state.history = original_history
             state.recent_responses = original_recent
             state.preview = original_preview
-            state.prev_cot = original_prev_cot
             state.pending_commit = original_pending
             if state.pending_commit:
                 save_pending_commit(state.pending_commit, state.world_id, state.pc_id, state.npc_id)
@@ -243,10 +240,11 @@ async def edit_message(
             store.save(state)
             return {"message": _message_payload(message), "preview": state.preview}
 
-        selected_actor_model = normalize_actor_model(actor_model or state.actor_model)
-        selected_prose_profile = normalize_prose_profile(prose_profile or state.prose_profile)
-        selected_engine_modules = normalize_engine_modules(
-            engine_modules if engine_modules is not None else state.engine_modules
+        selected_actor_model, selected_prose_profile, selected_engine_modules = resolve_generation_selection(
+            state,
+            actor_model=actor_model,
+            prose_profile=prose_profile,
+            engine_modules=engine_modules,
         )
         original_messages = [msg.model_copy(deep=True) for msg in state.messages]
         original_history = deepcopy(state.history)

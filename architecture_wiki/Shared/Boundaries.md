@@ -18,7 +18,7 @@ GraphRAG와 WikiRAG는 하나의 UI와 Actor 기반을 공유하지만 서로 �
 - output guard와 선택적 repair
 - Fixed/Genre/Dynamic이라는 PromptBuilder 출력 계약
 - `mode=graph|wiki`를 받는 accepted-turn Updater 공개 계약
-- mode를 포함한 world별 usernote 저장 규칙
+- world·mode 구분 없는 전역 usernote 라이브러리와 thread별 enabled 저장 규칙
 
 ## 공유하면 안 되는 상태
 

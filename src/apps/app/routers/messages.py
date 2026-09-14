@@ -16,7 +16,6 @@ from fastapi import APIRouter, Body, HTTPException
 from fastapi.responses import StreamingResponse
 
 from src.apps.app.conversation_ops import get_conversation_ops
-from src.agents.prompt_factory.profiles import normalize_prose_profile
 from src.apps.app.models import (
     MessageCreateRequest,
     MessageEditRequest,
@@ -49,7 +48,7 @@ def create_router(context: RouterContext) -> APIRouter:
                     store,
                     client_message_id=body.client_message_id,
                     actor_model=body.actor_model,
-                    prose_profile=normalize_prose_profile(body.prose_profile, body.prose_variant),
+                    prose_profile=body.prose_profile,
                     engine_modules=body.engine_modules,
                 ):
                     yield _json_line(event)
@@ -75,7 +74,7 @@ def create_router(context: RouterContext) -> APIRouter:
                 assistant_id,
                 store,
                 actor_model=body.actor_model if body else None,
-                prose_profile=normalize_prose_profile(body.prose_profile, body.prose_variant) if body else None,
+                prose_profile=body.prose_profile if body else None,
                 engine_modules=body.engine_modules if body else None,
             )
         except KeyError as exc:
@@ -112,7 +111,7 @@ def create_router(context: RouterContext) -> APIRouter:
                 body.content,
                 store,
                 actor_model=body.actor_model,
-                prose_profile=normalize_prose_profile(body.prose_profile, body.prose_variant),
+                prose_profile=body.prose_profile,
                 engine_modules=body.engine_modules,
             )
         except KeyError as exc:

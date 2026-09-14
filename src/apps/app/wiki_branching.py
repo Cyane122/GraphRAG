@@ -220,7 +220,7 @@ def branch_wiki_conversation_before_message(
         branch.wiki_update_error = ""
         branch.wiki_pending_commit_id = None
         rebuild_wiki_derived_state(branch)
-        branch.usernotes = store.load_world_usernotes(branch)
+        branch.usernotes = store.load_usernotes(branch)
         store.save(branch)
     except Exception:
         if branch_root.is_dir() and branch_root.parent == threads_root:

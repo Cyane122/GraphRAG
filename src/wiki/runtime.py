@@ -472,7 +472,6 @@ def build_wiki_prompt_bundle(
     fixed, dynamic = builder.build(
         scene_types=selected_scene_types,
         char_data=char_data,
-        recent_story=recent_story,
         user_input=user_input,
         location=location,
         dt=current_dt,

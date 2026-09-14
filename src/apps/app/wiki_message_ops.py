@@ -16,14 +16,13 @@ from __future__ import annotations
 from copy import deepcopy
 from pathlib import Path
 
-from src.agents.prompt_factory.engines import normalize_engine_modules
-from src.agents.prompt_factory.profiles import ProseProfile, normalize_prose_profile
+from src.agents.prompt_factory.profiles import ProseProfile
 from src.apps.app.models import (
     ChatMessage,
     ConversationState,
     MessageVariant,
     _message_payload,
-    normalize_actor_model,
+    resolve_generation_selection,
     resolve_wiki_systems,
 )
 from src.apps.app.storage import ConversationStore
@@ -215,15 +214,16 @@ async def _regenerate_latest_pair(
 ) -> dict:
     """기존 commit을 건드리지 않고 Actor 재생성을 끝낸 뒤 변경안을 교체합니다."""
     snapshot = state.model_copy(deep=True)
-    selected_model = normalize_actor_model(actor_model or state.actor_model)
-    selected_variant = normalize_prose_profile(prose_profile or state.prose_profile)
-    selected_engine_modules = normalize_engine_modules(
-        engine_modules if engine_modules is not None else state.engine_modules
+    selected_model, selected_prose_profile, selected_engine_modules = resolve_generation_selection(
+        state,
+        actor_model=actor_model,
+        prose_profile=prose_profile,
+        engine_modules=engine_modules,
     )
     previous_content = assistant_message.content
     previous_created_at = assistant_message.created_at
     previous_model = assistant_message.actor_model
-    previous_variant = assistant_message.prose_profile
+    previous_prose_profile = assistant_message.prose_profile
     previous_engine_modules = assistant_message.engine_modules
     previous_edited = assistant_message.edited
     previous_variants = [variant.model_copy(deep=True) for variant in assistant_message.variants]
@@ -240,7 +240,7 @@ async def _regenerate_latest_pair(
             user_message.content,
             client_message_id=user_message.id,
             actor_model=selected_model,
-            prose_profile=selected_variant,
+            prose_profile=selected_prose_profile,
             engine_modules=selected_engine_modules,
             apply_pending=False,
             queue_update=False,
@@ -260,7 +260,7 @@ async def _regenerate_latest_pair(
                     content=previous_content,
                     created_at=previous_created_at,
                     actor_model=previous_model,
-                    prose_profile=previous_variant,
+                    prose_profile=previous_prose_profile,
                     engine_modules=previous_engine_modules,
                     edited=previous_edited,
                 ),

@@ -46,28 +46,28 @@ from src.wiki.models import PendingWikiCommit, SectionPatch, WikiDocument  # noq
 
 _EXPECTED_PROMPT_SNAPSHOTS = {
     "lover": {
-        "fixed": "3ebdab16cf222eabcaba8d1c171125aca6f1c81a38ddddd26731f8d61d802719",
-        "dynamic": "eea6bf9093ba8dd431f719b02ffe2a3d270766598b4e481f9e6737527a5c9cb8",
+        "fixed": "0100994fab10408f063e6077659eba1badfd533a21a8d5cc39b2965fdd4c5dbc",
+        "dynamic": "78ac12b6cd34bf0364e95dd20ed8062a23aba29dbce044abf59c99a71233560a",
     },
     "best_friends": {
-        "fixed": "197083eb3aae846d5a33c8897e9851c71653f06274d9fd072ef547df3cbdf34c",
-        "dynamic": "4f6f0090e61c1d6de53ec9b9a7e0924f8ac1531d327d66d26b962eb9abfdf70c",
+        "fixed": "79445bb951486b99778873331e9144cd67b9424329d5de943eff168421a576f1",
+        "dynamic": "ee5f12dccc0c4dc7243da5a2929799d5a474f5681106c94c5eed750600bd9f33",
     },
     "amputee_fwb": {
-        "fixed": "59b9ae725db3ef98ae74b1d6e697335aa57d575901ade05fb80ba0c2170873ca",
-        "dynamic": "51dab38169e2b223d93c53816f7e316920159a42107a68d75b8056ad08b236c3",
+        "fixed": "a59f03e20bda0c1f7f3937e516e02f35945371027e21eb8252176e0b44698d2e",
+        "dynamic": "a9454b8dafb21c585eff554adb22bf62d8f941290fe81463ac0523cdbff54cde",
     },
     "ntr_lite": {
-        "fixed": "af5fc1a98decac302e4d578e7c4524395496a43a1a0a3644d4665f430ae8ead0",
-        "dynamic": "f20ef7a83da73c672c8121de8be8bc1e084347b1f8a7bf9bbad7da30566d4aec",
+        "fixed": "4d0400f35674c887d6f3dcf4ce798a3825acb0d648aef1f6a70b60a3c757d044",
+        "dynamic": "a495edb4dffe6d98d002123cf04f3098153504172680d971bc8a13c9e741513a",
     },
     "altered": {
-        "fixed": "ad6b36ba95ce45b97be5ee54f5680b0d14c8062ca6d05bfd64ba4bcd9724d523",
-        "dynamic": "8a5a2043062ebc29b063a96ecce4c6e296270128a7ea7f65b5e6afd1c6912d23",
+        "fixed": "b82d744cd1e6f320d0e4d24099267e094088ee756636219b4f03e2bd07df791a",
+        "dynamic": "c1b87c307a79578a64019ecb2c8bf714c58fbf256735acb2b17368cdc314ae7d",
     },
     "boyfriend_platonic": {
-        "fixed": "79f4d2bb555829cc08e44c5c4735979e9f9fe62a04e4ece22357c7feb3900300",
-        "dynamic": "a8c94472a223c9fad12917d9fdd277cba0b2cbe24ab248cd2ae21603e74a6d8f",
+        "fixed": "145817a07a6c0ba12f9d5fdec5e2aaafaa6731064f4f2b2a18d8bec94b636fde",
+        "dynamic": "55a9d9dd1e3fb3ba8070308c989b4093d7bdc2a2e61ae8ead1956e577b5cf5b8",
     },
 }
 
@@ -78,7 +78,6 @@ _FIXED_TAGS_12_CHARACTERS = (
     "<user_impersonation>",
     "<simulation_core>",
     "<prose_profile>",
-    "<analyze>",
     "<world_lore>",
     "<world_setting>",
     *("<location_information>",) * 8,
@@ -96,7 +95,6 @@ _FIXED_TAGS_13_CHARACTERS = (
     "<user_impersonation>",
     "<simulation_core>",
     "<prose_profile>",
-    "<analyze>",
     "<world_lore>",
     "<world_setting>",
     *("<location_information>",) * 8,

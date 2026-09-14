@@ -26,11 +26,13 @@
 #   - ForcePregnancyRequest : Request body for forcing a pregnancy (mother + optional father).
 #   - SimulatePregnancyRequest : Request body for simulating N internal ejaculations.
 #   - _LegacyProseVariantInput : 저장·요청에 남은 legacy prose_variant를 받아주는 공용 베이스.
+#   - GenerationSelection : Resolved actor model, prose profile, and engine modules for one turn.
 #
 # Functions
 #   - _message_payload(message: ChatMessage) -> dict : Convert a persisted message into frontend JSON.
 #   - actor_model_catalog() -> dict[str, str | list[dict[str, str]]] : Return the ordered Actor model catalog for the hosted UI.
 #   - normalize_actor_model(model_name: str | None) -> str : Return a supported Actor model id.
+#   - resolve_generation_selection(state: ConversationState, *, actor_model: str | None, prose_profile: ProseProfile | None, engine_modules: dict[str, str] | None) -> GenerationSelection : Resolve the effective actor model, prose profile, and engine modules for a turn, falling back to the conversation's stored selection.
 #   - normalize_wiki_system_overrides(overrides: Mapping[str, object] | None) -> dict[str, bool] : 저장용 Wiki system override를 canonical bool dict로 정리합니다.
 #   - resolve_wiki_systems(overrides: Mapping[str, object] | None, defaults: Mapping[str, bool]) -> dict[str, bool] : override와 기본값을 합쳐 대화의 유효 Wiki system 표를 만듭니다.
 #   - overridden_wiki_system_names(overrides: Mapping[str, object] | None) -> list[str] : 명시적으로 설정된 Wiki system 키를 canonical 순서로 반환합니다.
@@ -40,11 +42,12 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal, Mapping
+from typing import Any, Literal, Mapping, NamedTuple
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
 
+from src.agents.prompt_factory.engines import normalize_engine_modules
 from src.agents.prompt_factory.profiles import ProseProfile, normalize_prose_profile
 from src.config import WIKI_SYSTEM_KEYS
 
@@ -95,12 +98,20 @@ def normalize_actor_model(model_name: str | None) -> str:
 
 
 def _migrate_legacy_prose_variant(values: object) -> object:
-    """Map a stored or posted `prose_variant` onto `prose_profile` before validation."""
+    """Map a stored or posted `prose_variant` onto `prose_profile` before validation.
+
+    Also tolerantly normalizes a raw `prose_profile` dict (e.g. from disk, or a
+    client payload with unknown/malformed modifiers) through `normalize_prose_profile`
+    before Pydantic validates it against `ProseProfile`, so a shape like
+    `{"modifiers": "x"}` degrades to an empty modifier list instead of raising.
+    """
     if not isinstance(values, dict):
         return values
     legacy = values.pop("prose_variant", None)
     if values.get("prose_profile") is None and legacy is not None:
         values["prose_profile"] = normalize_prose_profile(None, str(legacy)).model_dump()
+    elif isinstance(values.get("prose_profile"), dict):
+        values["prose_profile"] = normalize_prose_profile(values["prose_profile"]).model_dump()
     return values
 
 
@@ -238,12 +249,12 @@ class ConversationState(_LegacyProseVariantInput):
     history: list[dict[str, Any]] = Field(default_factory=list)
     recent_responses: list[str] = Field(default_factory=list)
     pending_commit: dict[str, Any] | None = None
-    prev_cot: str = ""
     scene_need_hints: dict[str, str] = Field(default_factory=dict)
     pending_kakao_messages: list[dict[str, Any]] = Field(default_factory=list)
     pending_ooc: str = ""
     ooc_config: str = ""
     usernotes: list[dict[str, Any]] = Field(default_factory=list)
+    enabled_usernote_ids: list[str] | None = None
     narrative_turns: list[dict[str, Any]] = Field(default_factory=list)
     actor_model: str = DEFAULT_ACTOR_MODEL
     prose_profile: ProseProfile = Field(default_factory=ProseProfile)
@@ -258,6 +269,38 @@ class ConversationState(_LegacyProseVariantInput):
     wiki_update_error: str = ""
     wiki_pending_commit_id: str | None = None
     wiki_system_overrides: dict[str, bool] = Field(default_factory=dict)
+
+
+class GenerationSelection(NamedTuple):
+    """Resolved actor model, prose profile, and engine modules for one generation call."""
+
+    actor_model: str
+    prose_profile: ProseProfile
+    engine_modules: dict[str, str]
+
+
+def resolve_generation_selection(
+    state: ConversationState,
+    *,
+    actor_model: str | None,
+    prose_profile: ProseProfile | None,
+    engine_modules: dict[str, str] | None,
+) -> GenerationSelection:
+    """Resolve the effective actor model, prose profile, and engine modules for a turn.
+
+    `actor_model` and `prose_profile` fall back to the conversation's stored
+    selection with `or` (an explicit falsy override, e.g. `""`, also falls back).
+    `engine_modules` falls back only when omitted (`None`); an explicit `{}` is
+    honored as "all slots off". Each value is then normalized against its
+    catalog, matching the triplet previously duplicated at each call site.
+    """
+    return GenerationSelection(
+        actor_model=normalize_actor_model(actor_model or state.actor_model),
+        prose_profile=normalize_prose_profile(prose_profile or state.prose_profile),
+        engine_modules=normalize_engine_modules(
+            engine_modules if engine_modules is not None else state.engine_modules
+        ),
+    )
 
 
 class WikiBranchResult(BaseModel):
@@ -296,46 +339,42 @@ class WikiSystemsResponse(BaseModel):
     authored_cycle_characters: list[str]
 
 
-class ConversationCreateRequest(BaseModel):
+class ConversationCreateRequest(_LegacyProseVariantInput):
     """Request body for creating a standalone conversation."""
 
     world_id: str
     world_mode: WorldMode = "graph"
     scenario_id: str | None = None
     actor_model: str | None = None
-    prose_profile: dict[str, Any] | None = None
-    prose_variant: str | None = None
+    prose_profile: ProseProfile | None = None
     engine_modules: dict[str, str] | None = None
     ooc_config: str = ""
 
 
-class MessageCreateRequest(BaseModel):
+class MessageCreateRequest(_LegacyProseVariantInput):
     """Request body for generating an assistant response."""
 
     content: str
     client_message_id: str | None = None
     actor_model: str | None = None
-    prose_profile: dict[str, Any] | None = None
-    prose_variant: str | None = None
+    prose_profile: ProseProfile | None = None
     engine_modules: dict[str, str] | None = None
 
 
-class MessageRerollRequest(BaseModel):
+class MessageRerollRequest(_LegacyProseVariantInput):
     """Request body for rerolling an assistant response."""
 
     actor_model: str | None = None
-    prose_profile: dict[str, Any] | None = None
-    prose_variant: str | None = None
+    prose_profile: ProseProfile | None = None
     engine_modules: dict[str, str] | None = None
 
 
-class MessageEditRequest(BaseModel):
+class MessageEditRequest(_LegacyProseVariantInput):
     """Request body for editing a user or assistant message."""
 
     content: str
     actor_model: str | None = None
-    prose_profile: dict[str, Any] | None = None
-    prose_variant: str | None = None
+    prose_profile: ProseProfile | None = None
     engine_modules: dict[str, str] | None = None
 
 
@@ -363,6 +402,7 @@ class UserNoteCreateRequest(BaseModel):
 
     name: str
     content: str
+    enabled: bool = True
 
 
 class UserNoteUpdateRequest(BaseModel):

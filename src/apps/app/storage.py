@@ -4,7 +4,8 @@
 # JSON persistence for standalone web UI conversations.
 #
 # Classes
-#   - ConversationStore : Persist conversations and mode-scoped, world-shared usernotes.
+#   - ConversationStore : Persist conversations and a global usernote library shared by
+#     every world and mode, with each note's enabled state stored per conversation thread.
 #
 # Functions
 #   - _parse_datetime(value: object) -> datetime : Parse a stored timestamp.
@@ -78,7 +79,7 @@ class ConversationStore:
         """Create a store rooted at the given directory."""
         self.root = Path(root)
         self.world_root = self.root.parent / "worlds"
-        self._world_usernotes_lock = Lock()
+        self._usernotes_lock = Lock()
 
     def _path(self, thread_id: str) -> Path:
         """Return the JSON path for a thread id."""
@@ -117,24 +118,28 @@ class ConversationStore:
 
         A streaming generation loads a snapshot at turn start and re-persists the whole
         state in its `finally` block. That save can run many seconds later, so any usernote
-        or thread-level OOC config or Wiki system override the user edited while the response
-        was streaming would be clobbered by the stale snapshot. The generation path never
-        writes these fields, so re-reading the current on-disk values just before that save
-        prevents the lost update.
+        toggle or thread-level OOC config or Wiki system override the user edited while the
+        response was streaming would be clobbered by the stale snapshot. The generation path
+        never writes these fields, so re-reading the current on-disk values just before that
+        save prevents the lost update.
         """
-        state.usernotes = self.load_world_usernotes(state)
         path = self._path(state.thread_id)
-        if not path.exists():
-            return
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return
-        if isinstance(payload.get("ooc_config"), str):
-            state.ooc_config = payload["ooc_config"]
-        state.wiki_system_overrides = normalize_wiki_system_overrides(
-            payload.get("wiki_system_overrides")
-        )
+        if path.exists():
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                payload = None
+            if isinstance(payload, dict):
+                if isinstance(payload.get("enabled_usernote_ids"), list):
+                    state.enabled_usernote_ids = [
+                        str(note_id) for note_id in payload["enabled_usernote_ids"]
+                    ]
+                if isinstance(payload.get("ooc_config"), str):
+                    state.ooc_config = payload["ooc_config"]
+                state.wiki_system_overrides = normalize_wiki_system_overrides(
+                    payload.get("wiki_system_overrides")
+                )
+        state.usernotes = self.load_usernotes(state)
 
     def load(self, thread_id: str) -> ConversationState:
         """Load a conversation state or raise FileNotFoundError."""
@@ -144,58 +149,170 @@ class ConversationStore:
         else:
             payload = json.loads(path.read_text(encoding="utf-8"))
             state = ConversationState.model_validate(payload)
-        state.usernotes = self.load_world_usernotes(state)
+        state.usernotes = self.load_usernotes(state)
         return sync_conversation_perspective(state)
 
-    def load_world_usernotes(self, state: ConversationState) -> list[dict[str, Any]]:
-        """Load usernotes shared by every thread in the same mode and world."""
-        with self._world_usernotes_lock:
-            return self._ensure_world_usernotes_unlocked(state)
+    def load_usernotes(self, state: ConversationState) -> list[dict[str, Any]]:
+        """Load the global usernote library, hydrated with this thread's enabled state.
 
-    def add_world_usernote(
+        Migrates the global library from legacy per-world files and legacy thread-embedded
+        notes on first access, and derives this thread's `enabled_usernote_ids` from its
+        legacy sources the first time it is loaded after the migration.
+        """
+        with self._usernotes_lock:
+            library = self._ensure_library_unlocked()
+            self._ensure_enabled_ids_unlocked(state, library)
+            return self._hydrate_usernotes(library, state.enabled_usernote_ids or [])
+
+    def add_usernote(
         self,
         state: ConversationState,
         note: dict[str, Any],
     ) -> list[dict[str, Any]]:
-        """Append one usernote to a mode-scoped world and return the updated list."""
-        with self._world_usernotes_lock:
-            notes = self._ensure_world_usernotes_unlocked(state)
-            notes.append(note)
-            self._write_world_usernotes_unlocked(state, notes)
-            return notes
+        """Add one usernote to the global library and enable it for this thread only."""
+        with self._usernotes_lock:
+            library = self._ensure_library_unlocked()
+            self._ensure_enabled_ids_unlocked(state, library)
+            note_id = str(note["id"])
+            library.append(
+                {"id": note_id, "name": note.get("name", ""), "content": note.get("content", "")}
+            )
+            self._write_library_unlocked(library)
+            ids = list(state.enabled_usernote_ids or [])
+            if note.get("enabled", True):
+                if note_id not in ids:
+                    ids.append(note_id)
+            elif note_id in ids:
+                ids.remove(note_id)
+            state.enabled_usernote_ids = ids
+            return self._hydrate_usernotes(library, ids)
 
-    def update_world_usernote(
+    def update_usernote(
         self,
         state: ConversationState,
         note_id: str,
         changes: dict[str, Any],
     ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
-        """Update one world-shared usernote and return it with the full list."""
-        with self._world_usernotes_lock:
-            notes = self._ensure_world_usernotes_unlocked(state)
-            note = next((item for item in notes if item.get("id") == note_id), None)
-            if note is None:
-                return None, notes
-            note.update(changes)
-            self._write_world_usernotes_unlocked(state, notes)
-            return note, notes
+        """Update one usernote's library fields and/or this thread's enabled state.
 
-    def delete_world_usernote(
+        `name`/`content` in `changes` are written to the shared global library; `enabled`
+        only changes this thread's `enabled_usernote_ids`. Returns the hydrated note (as
+        seen by this thread) with the full hydrated list, or `(None, list)` if the note id
+        does not exist in the library.
+        """
+        with self._usernotes_lock:
+            library = self._ensure_library_unlocked()
+            self._ensure_enabled_ids_unlocked(state, library)
+            entry = next((item for item in library if item.get("id") == note_id), None)
+            if entry is None:
+                return None, self._hydrate_usernotes(library, state.enabled_usernote_ids or [])
+            library_changes = {key: changes[key] for key in ("name", "content") if key in changes}
+            if library_changes:
+                entry.update(library_changes)
+                self._write_library_unlocked(library)
+            ids = list(state.enabled_usernote_ids or [])
+            if "enabled" in changes:
+                if changes["enabled"]:
+                    if note_id not in ids:
+                        ids.append(note_id)
+                elif note_id in ids:
+                    ids.remove(note_id)
+                state.enabled_usernote_ids = ids
+            hydrated = self._hydrate_usernotes(library, state.enabled_usernote_ids or [])
+            note = next((item for item in hydrated if item.get("id") == note_id), None)
+            return note, hydrated
+
+    def delete_usernote(
         self,
         state: ConversationState,
         note_id: str,
     ) -> tuple[bool, list[dict[str, Any]]]:
-        """Delete one world-shared usernote and return whether it existed."""
-        with self._world_usernotes_lock:
-            notes = self._ensure_world_usernotes_unlocked(state)
-            remaining = [item for item in notes if item.get("id") != note_id]
-            if len(remaining) == len(notes):
-                return False, notes
-            self._write_world_usernotes_unlocked(state, remaining)
-            return True, remaining
+        """Delete one usernote from the global library and from this thread's enabled ids."""
+        with self._usernotes_lock:
+            library = self._ensure_library_unlocked()
+            self._ensure_enabled_ids_unlocked(state, library)
+            remaining = [item for item in library if item.get("id") != note_id]
+            deleted = len(remaining) != len(library)
+            if deleted:
+                self._write_library_unlocked(remaining)
+            ids = [item_id for item_id in (state.enabled_usernote_ids or []) if item_id != note_id]
+            state.enabled_usernote_ids = ids
+            return deleted, self._hydrate_usernotes(remaining, ids)
 
-    def _world_usernotes_path(self, state: ConversationState) -> Path:
-        """Return the shared usernote file for one incompatible world namespace."""
+    def _usernotes_library_path(self) -> Path:
+        """Return the single global usernote library file shared by every world and mode."""
+        return self.root.parent / "usernotes.json"
+
+    def _ensure_library_unlocked(self) -> list[dict[str, Any]]:
+        """Load the global library, migrating legacy sources into it on first access."""
+        path = self._usernotes_library_path()
+        if path.exists():
+            return self._read_library_unlocked(path)
+        library = self._migrate_library_unlocked()
+        self._write_library_unlocked(library)
+        return library
+
+    def _read_library_unlocked(self, path: Path) -> list[dict[str, Any]]:
+        """Read the global usernote library file while the caller holds the store lock."""
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        notes = payload.get("usernotes", []) if isinstance(payload, dict) else []
+        return [
+            {"id": str(note["id"]), "name": note.get("name", ""), "content": note.get("content", "")}
+            for note in notes
+            if isinstance(note, dict) and note.get("id")
+        ]
+
+    def _migrate_library_unlocked(self) -> list[dict[str, Any]]:
+        """Merge legacy per-world usernote files and legacy thread-embedded notes.
+
+        Notes are deduplicated by id (first occurrence wins): every legacy
+        `<world_root>/<mode>/<world_id>/usernotes.json` file, sorted by path, then the
+        legacy `usernotes` arrays embedded in thread JSON files under `self.root`. The
+        legacy `enabled` flag is dropped, since enabled state now lives per thread.
+        """
+        notes_by_id: dict[str, dict[str, Any]] = {}
+        if self.world_root.exists():
+            for path in sorted(self.world_root.glob("*/*/usernotes.json")):
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                notes = payload.get("usernotes", []) if isinstance(payload, dict) else []
+                for note in notes:
+                    if isinstance(note, dict) and note.get("id"):
+                        note_id = str(note["id"])
+                        notes_by_id.setdefault(
+                            note_id,
+                            {"id": note_id, "name": note.get("name", ""), "content": note.get("content", "")},
+                        )
+        if self.root.exists():
+            for path in sorted(self.root.glob("*.json")):
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                for note in payload.get("usernotes") or []:
+                    if isinstance(note, dict) and note.get("id"):
+                        note_id = str(note["id"])
+                        notes_by_id.setdefault(
+                            note_id,
+                            {"id": note_id, "name": note.get("name", ""), "content": note.get("content", "")},
+                        )
+        return list(notes_by_id.values())
+
+    def _write_library_unlocked(self, notes: list[dict[str, Any]]) -> None:
+        """Atomically persist the global usernote library while holding the lock."""
+        path = self._usernotes_library_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps({"usernotes": notes}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        temporary.replace(path)
+
+    def _legacy_scoped_usernotes_path(self, state: ConversationState) -> Path:
+        """Return the legacy mode-scoped world usernote file used only as a migration source."""
         return (
             self.world_root
             / _safe_scope_part(state.world_mode)
@@ -203,63 +320,47 @@ class ConversationStore:
             / "usernotes.json"
         )
 
-    def _ensure_world_usernotes_unlocked(self, state: ConversationState) -> list[dict[str, Any]]:
-        """Load shared notes, migrating legacy thread notes on first access."""
-        path = self._world_usernotes_path(state)
-        if path.exists():
-            return self._read_world_usernotes_unlocked(path)
-        notes = self._legacy_usernotes_for_world(state)
-        self._write_world_usernotes_unlocked(state, notes)
-        return notes
-
-    def _read_world_usernotes_unlocked(self, path: Path) -> list[dict[str, Any]]:
-        """Read a world usernote file while the caller holds the store lock."""
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        notes = payload.get("usernotes", []) if isinstance(payload, dict) else []
-        return [dict(note) for note in notes if isinstance(note, dict)]
-
-    def _legacy_usernotes_for_world(self, state: ConversationState) -> list[dict[str, Any]]:
-        """Collect legacy per-thread notes once when creating a shared world file."""
-        notes_by_id: dict[str, dict[str, Any]] = {}
-        if self.root.exists():
-            for path in sorted(self.root.glob("*.json")):
-                try:
-                    payload = json.loads(path.read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError):
-                    continue
-                payload_mode = str(payload.get("world_mode") or "graph")
-                if payload_mode != state.world_mode or str(payload.get("world_id") or "") != state.world_id:
-                    continue
-                for note in payload.get("usernotes") or []:
-                    if isinstance(note, dict) and note.get("id"):
-                        notes_by_id.setdefault(str(note["id"]), dict(note))
-        for note in state.usernotes:
-            if isinstance(note, dict) and note.get("id"):
-                notes_by_id.setdefault(str(note["id"]), dict(note))
-        return list(notes_by_id.values())
-
-    def _write_world_usernotes_unlocked(
+    def _ensure_enabled_ids_unlocked(
         self,
         state: ConversationState,
-        notes: list[dict[str, Any]],
+        library: list[dict[str, Any]],
     ) -> None:
-        """Atomically persist mode-scoped world usernotes while holding the lock."""
-        path = self._world_usernotes_path(state)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(".tmp")
-        temporary.write_text(
-            json.dumps(
-                {
-                    "world_mode": state.world_mode,
-                    "world_id": state.world_id,
-                    "usernotes": notes,
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-        temporary.replace(path)
+        """Derive `state.enabled_usernote_ids` once from this thread's legacy enabled state.
+
+        When the legacy mode-scoped world usernote file for this thread's world exists, its
+        `enabled` notes seed this thread's enabled ids (preserving what this thread's prompt
+        already showed). Otherwise the thread's own legacy `usernotes` entries are used. Ids
+        that no longer exist in the global library are dropped. Does nothing if this state
+        was already migrated (`enabled_usernote_ids` is not None).
+        """
+        if state.enabled_usernote_ids is not None:
+            return
+        library_ids = {note["id"] for note in library}
+        legacy_path = self._legacy_scoped_usernotes_path(state)
+        ids: list[str] = []
+        if legacy_path.exists():
+            try:
+                payload = json.loads(legacy_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                payload = {}
+            notes = payload.get("usernotes", []) if isinstance(payload, dict) else []
+            for note in notes:
+                if isinstance(note, dict) and note.get("enabled") and note.get("id"):
+                    ids.append(str(note["id"]))
+        else:
+            for note in state.usernotes:
+                if isinstance(note, dict) and note.get("enabled") and note.get("id"):
+                    ids.append(str(note["id"]))
+        state.enabled_usernote_ids = [note_id for note_id in ids if note_id in library_ids]
+
+    def _hydrate_usernotes(
+        self,
+        library: list[dict[str, Any]],
+        enabled_ids: list[str],
+    ) -> list[dict[str, Any]]:
+        """Build this thread's usernote view: every library note tagged with enabled state."""
+        enabled_set = set(enabled_ids)
+        return [{**note, "enabled": note["id"] in enabled_set} for note in library]
 
     def exists(self, thread_id: str) -> bool:
         """Return whether a conversation file exists."""

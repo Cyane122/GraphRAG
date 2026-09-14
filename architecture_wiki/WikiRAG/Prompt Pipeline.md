@@ -103,7 +103,10 @@ Prompt 조립 전에는 실제 asset이 있는 8개 key로 정규화한다. `vul
 `daily`, `bonding`, `formal`, `tense`, `conflict`, `action`, `ambient`의 과거
 0-byte asset은 장면 목표, 연속성, 과잉 전개 방지, 열린 종결 규칙을 가진 공용
 Markdown으로 채웠다. 성인 장면의 게이트·합의·페이즈는 adult 엔진이, 표현 규칙은
-선택된 성인 modifier가 소유한다.
+선택된 성인 modifier가 소유한다. 성인 modifier 네 개(`erotic_commercial`,
+`erotic_hentai`, `erotic_adult_comic`, `erotic_humiliation`)는 하나만 켤 수 있는
+상호 배타 그룹이고, adult 엔진이 켜져 있을 때만 렌더되며, 켜져 있는데 아무것도
+고르지 않으면 상업지(`erotic_commercial`)가 기본값으로 적용된다.
 
 Wiki 월드는 `worlds/<world_id>/scenes/<scene_type>.md`로 월드 공통 장면 규정을,
 `scenarios/<scenario_id>/scenes/<scene_type>.md`로 선택 상황 전용 override를 둘 수

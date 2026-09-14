@@ -3,7 +3,8 @@
 #
 # 2-part prompt (Fixed / Dynamic) assembly module.
 # Markdown prompt files are stored tagless; this builder wraps them at assembly time.
-# _render_prompt_block, _SafeFormatDict는 renderers.py에서 import.
+# _render_prompt_block, _SafeFormatDict, format_prompt_vars, is_unified_blacklist는
+# renderers.py에서 import.
 #
 # Classes
 #   - PromptBuilder : Fixed / Dynamic 2-part 프롬프트 조립기
@@ -11,8 +12,6 @@
 # Functions
 #   - _render_scene_need_hints(hints: dict[str, str]) -> str : 욕구 오버플로우 힌트 블록 렌더링
 #   - _read_default_scene_blacklist(scene_type: str) -> str : 기본 씬 블랙리스트 로드
-#   - _read_global_blacklist_template() -> str : 전역 블랙리스트 템플릿 로드
-#   - _format_prompt_vars(text: str, *, char_name: str, user_name: str, for_add: str) -> str : 프롬프트 변수 치환
 #   - _label_mixed_input(user_input: str, user_name: str) -> str : *...* 상황설명과 PC 대사를 원문 순서대로 레이블링
 # ================================
 
@@ -20,17 +19,19 @@ import re
 from datetime import datetime
 from typing import Optional
 
-from src.agents.prompt_factory.engines import normalize_engine_modules
+from src.agents.prompt_factory.engines import adult_engine_enabled, normalize_engine_modules
 from src.agents.prompt_factory.fixed import (
     build_fixed_section as render_fixed_section,
+    char_focus_configured,
     resolve_pov_mode,
     user_impersonation_allowed,
 )
 from src.agents.prompt_factory.profiles import ProseProfile, normalize_prose_profile
 from src.agents.prompt_factory.renderers import (
-    _SafeFormatDict,
     _read_optional_prompt,
     _render_prompt_block,
+    format_prompt_vars,
+    is_unified_blacklist,
     join_rendered_context,
     render_active_characters_section,
     render_current_pov,
@@ -53,16 +54,16 @@ Rel: only when a relationship actually changes
 Delta: what is different at the end of the turn
 Guard: the single constraint most at risk this turn
 
-Close </analyze>, then IMMEDIATELY write the Korean prose scene.
+Close </analyze>. If an enabled engine module defines a block that goes before the prose, write those blocks next, in engine-module order; otherwise go straight to the prose. Then IMMEDIATELY write the Korean prose scene.
 Begin the prose with a Korean date/time/location header in bold.
 KEEP the date and location IDENTICAL to the current header above unless the Player Input
 (or an OOC directive) explicitly moves time or place; do not invent date jumps or location
 changes on your own. Within the same scene you may advance only minutes/hours on the SAME
 calendar day, and never move time backward.
 The scene is mandatory; do not stop after </analyze>.
+Engine-module blocks defined to follow the prose go after the scene, in engine-module order. Never place an engine block inside the prose.
 
-Before writing, silently verify player ownership, point of view, established facts,
-engine constraints, and the blacklist. Do not print that verification anywhere.
+Before writing, silently verify player ownership, point of view, observed-only knowledge (FOW), mode and gate, causal continuity, a meaningful delta, a valid handoff point, engine-block placement, established facts, engine constraints, and the blacklist. Do not print that verification anywhere.
 </output_contract>"""
 
 
@@ -80,11 +81,6 @@ def _read_default_scene_blacklist(scene_type: str) -> str:
         _read_optional_prompt(f"genre_specific/scenes/{scene_type}.cot_append.md")
         or _read_optional_prompt(f"genre_specific/{scene_type}.cot_append.md")
     )
-
-
-def _read_global_blacklist_template() -> str:
-    """Read tagless global blacklist template from prompt/."""
-    return _read_optional_prompt("blacklist/BLACKLIST.md")
 
 
 class PromptBuilder:
@@ -113,7 +109,6 @@ class PromptBuilder:
             raise ValueError("PromptBuilder: user_name cannot be None or empty")
 
         self.pov_mode = resolve_pov_mode(self.world_config, self.perspective)
-        self.additional_blacklist = self.world_config.get("additional_blacklist", "")
 
     def build_fixed_section(self) -> str:
         """Build the cacheable fixed prompt section."""
@@ -121,15 +116,14 @@ class PromptBuilder:
             self.world_config,
             self.char_name,
             self.user_name,
-            self.perspective,
-            self.additional_blacklist,
+            self.pov_mode,
             self.prose_profile,
             self.engine_modules,
         )
 
     def build_current_pov(self, current_pov: Optional[dict] = None) -> str:
         """Render the turn's narrator anchor and player-ownership scope."""
-        return _format_prompt_vars(
+        return format_prompt_vars(
             render_current_pov(
                 self.pov_mode,
                 user_impersonation_allowed(self.pov_mode, self.world_config),
@@ -141,13 +135,13 @@ class PromptBuilder:
 
     def build_reproductive_state(self, char_data: dict, npcs: list[dict]) -> str:
         """Render reproductive state, but only while the adult engine is enabled."""
-        if self.engine_modules.get("adult", "off") == "off":
+        if not adult_engine_enabled(self.engine_modules):
             return ""
         return render_reproductive_state(char_data, npcs)
 
     def build_world_turn_constraints(self) -> str:
         """Render world-authored per-turn constraints previously carried by the checklist."""
-        body = _format_prompt_vars(
+        body = format_prompt_vars(
             str(self.world_config.get("world_cot_append", "")).strip(),
             char_name=self.char_name,
             user_name=self.user_name,
@@ -160,9 +154,7 @@ class PromptBuilder:
         Character focus prompt are rendered in the fixed (cached) section by fixed.py.
         This method returns empty to avoid duplicating in the dynamic section.
         """
-        if self.world_config.get("character_focus_prompt"):
-            return ""
-        if self.world_config.get("prompt", {}).get("characters", {}).get("focus"):
+        if char_focus_configured(self.world_config):
             return ""
         prompts = self.world_config.get("character_focus_prompts", {})
         char_id = str(char_data.get("id") or "").strip()
@@ -174,11 +166,7 @@ class PromptBuilder:
 
         All blacklist md files are tagless. The final <blacklist> tag is added here.
         """
-        is_unified = (
-            self.world_config.get("unified_blacklist")
-            or self.world_config.get("prompt", {}).get("blacklist", {}).get("unified", False)
-        )
-        if not is_unified:
+        if not is_unified_blacklist(self.world_config):
             return ""
 
         additions = []
@@ -203,9 +191,9 @@ class PromptBuilder:
         if scene_parts:
             additions.append("## Scene-Specific Ban\n" + "\n\n".join(scene_parts))
 
-        blacklist_tpl = _read_global_blacklist_template()
+        blacklist_tpl = _read_optional_prompt("blacklist/BLACKLIST.md")
         if blacklist_tpl:
-            body = _format_prompt_vars(
+            body = format_prompt_vars(
                 blacklist_tpl,
                 char_name=self.char_name,
                 user_name=self.user_name,
@@ -226,7 +214,6 @@ class PromptBuilder:
         self,
         scene_types: list[str],
         char_data: dict,
-        recent_story: str,
         user_input: str,
         location: str,
         dt: Optional[datetime] = None,
@@ -267,7 +254,7 @@ class PromptBuilder:
 
     def build_turn_ooc_directives(self, directives: str) -> str:
         """Render per-thread OOC directives as instructions outside Player Input."""
-        body = _format_prompt_vars(
+        body = format_prompt_vars(
             str(directives or "").strip(),
             char_name=self.char_name,
             user_name=self.user_name,
@@ -287,18 +274,6 @@ class PromptBuilder:
         )
         char_id = str(char_data.get("id") or "").strip()
         return blacklists.get(char_id) or blacklists.get(str(self.char_name or "").strip()) or ""
-
-def _format_prompt_vars(text: str, *, char_name: str, user_name: str, for_add: str = "") -> str:
-    """Apply common prompt variables while preserving unknown placeholders."""
-    if not text:
-        return ""
-    return text.format_map(
-        _SafeFormatDict(
-            char=char_name,
-            user=user_name,
-            for_add=for_add,
-        )
-    )
 
 
 _OOC_SPAN_RE = re.compile(r"(?<!\*)\*(?!\*)(.*?)(?<!\*)\*(?!\*)", re.DOTALL)

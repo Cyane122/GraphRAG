@@ -132,14 +132,30 @@ def _assert_prompt_leaks(
         ("forbidden literal", "scenario_lore"),
         ("forbidden literal", "시나리오 특징"),
         ("forbidden literal", "시나리오 한정"),
+    )
+    for contract, forbidden in literal_checks:
+        _assert_contract(
+            forbidden not in combined_prompt,
+            world_id,
+            scenario_id,
+            contract,
+            f"prompt leaked {forbidden!r}",
+        )
+    # id는 영단어 속 부분 문자열로는 보지 않는다. 앞뒤가 ASCII 글자/숫자로 이어지지
+    # 않을 때만 실제 누출이다. 그래야 공용 blacklist 산문의 일반 영단어
+    # ("possessive")에 우연히 포함된 id("sses")는 통과시키면서, 독립된 id
+    # ("world sses", "sses.")나 밑줄로 이어진 다른 내부 id 안의 id
+    # ("park_sian" in "park_sian_home")는 여전히 실제 누출로 잡는다.
+    id_checks = (
         ("forbidden id", setup.thread_id),
         ("forbidden id", setup.world_id),
         ("forbidden id", setup.pc_id),
         ("forbidden id", setup.npc_id),
     )
-    for contract, forbidden in literal_checks:
+    for contract, forbidden in id_checks:
+        leak_pattern = rf"(?<![A-Za-z0-9]){re.escape(forbidden)}(?![A-Za-z0-9])"
         _assert_contract(
-            forbidden not in combined_prompt,
+            re.search(leak_pattern, combined_prompt) is None,
             world_id,
             scenario_id,
             contract,

@@ -5,7 +5,7 @@
 #
 # Functions
 #   - resolve_prompt_world_config(world: World, world_config: dict, npc_id: str, pc_id: str, perspective: int) -> dict : Resolve prompt world config
-#   - build_prompt_parts(user_input: str, recent_story: str, perspective: int, world_config: dict, scene_plan: SceneTimePlan, context: CoreContext, world_context: dict, scene_need_hints: dict[str, str] | None, turn_ooc_directives: str = "", prose_profile: ProseProfile | None = None, engine_modules: dict[str, str] | None = None) -> PromptParts : Render manager prompt parts
+#   - build_prompt_parts(user_input: str, perspective: int, world_config: dict, scene_plan: SceneTimePlan, context: CoreContext, world_context: dict, scene_need_hints: dict[str, str] | None, turn_ooc_directives: str = "", prose_profile: ProseProfile | None = None, engine_modules: dict[str, str] | None = None) -> PromptParts : Render manager prompt parts
 # ================================
 
 from src.agents.context.renderer import build_rendered_dynamic_context
@@ -32,7 +32,6 @@ async def resolve_prompt_world_config(
 
 def build_prompt_parts(
     user_input: str,
-    recent_story: str,
     perspective: int,
     world_config: dict,
     scene_plan: SceneTimePlan,
@@ -61,7 +60,6 @@ def build_prompt_parts(
         scene_types=scene_plan.scene_types,
         char_data=context.char_data,
         user_data=context.user_data,
-        recent_story=recent_story,
         user_input=user_input,
         location=context.location_name,
         location_nodes=context.location_nodes,

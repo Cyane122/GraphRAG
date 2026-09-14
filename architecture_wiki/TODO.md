@@ -73,7 +73,7 @@ vault 계약이 바뀌면 연결된 `WikiRAG/` 문서와 `docs/wiki_v2_format.md
 
 - [x] `graphRAG/wiki` 브랜치 생성
 - [x] 개발 아키텍처용 `architecture_wiki/`와 플레이 상태용 `wiki_v2/` 분리
-- [x] Graph와 Wiki의 대화·usernote namespace 분리
+- [x] Graph와 Wiki의 대화 namespace 분리, usernote는 전역 라이브러리 공유 + thread별 enabled로 확정
 - [x] Wiki world/scenario 발견과 대화 생성
 - [x] `start_state.md`를 새 thread의 `scene/current.md`로 물질화
 - [x] `opening_scene.md`를 최초 메시지와 첫 턴 문맥으로 전달
@@ -222,7 +222,7 @@ vault 계약이 바뀌면 연결된 `WikiRAG/` 문서와 `docs/wiki_v2_format.md
 
 - [ ] WikiRAG 변경이 Graph 대화 생성과 deferred Kuzu commit을 깨지 않는 회귀 검증을 유지한다.
 - [ ] Graph 전용 도구가 Wiki thread에서 실행되지 않도록 mode guard를 유지한다.
-- [ ] Graph와 Wiki의 동일 `world_id`가 usernote나 상태를 공유하지 않는지 검증한다.
+- [ ] Graph와 Wiki의 동일 `world_id`가 (usernote를 제외한) 상태를 공유하지 않는지 검증한다. usernote는 의도적으로 전역 라이브러리를 공유하며 enabled만 thread별로 분리된다.
 - [ ] 공용 Actor streaming 또는 output guard 변경 시 두 엔진을 모두 smoke test한다.
 - [ ] 공용 `PromptBuilder` 변경 시 Fixed cache 안정성과 Dynamic 상태 노출을 두 엔진에서 확인한다.
 
