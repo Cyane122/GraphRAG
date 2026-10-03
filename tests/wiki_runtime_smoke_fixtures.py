@@ -8,12 +8,12 @@
 #
 # Functions
 #   - _fake_actor_events(**kwargs: object) -> AsyncIterator[dict] : Yield the fixed actor token and complete events used by the smoke tests.
-#   - _fake_scene_classifier(user_input: str, recent_story: str, scene_descriptions: dict[str, str] | None = None) -> list[str] : Return scene types without external classification calls.
+#   - _failing_actor_events(**kwargs: object) -> AsyncIterator[dict] : Simulate Actor 429 retry exhaustion (no tokens emitted) without an LLM call.
 #   - _fake_pending_commit(documents: list[WikiDocument], user_input: str, actor_response: str, model_name: str, max_attempts: int = 3, player_profile_id: str = "", actor_profile_id: str = "", user_message_id: str | None = None, assistant_message_id: str | None = None, thinking_level: str | None = None, debug_root: Path | None = None) -> PendingWikiCommit : Build a deterministic scene patch commit.
 #   - _failing_pending_commit(documents: list[WikiDocument], user_input: str, actor_response: str, model_name: str, max_attempts: int = 3, player_profile_id: str = "", actor_profile_id: str = "", user_message_id: str | None = None, assistant_message_id: str | None = None, thinking_level: str | None = None, debug_root: Path | None = None) -> PendingWikiCommit : Simulate updater retry exhaustion without an LLM call.
 #   - _identity_repair(full_response: str, visible_text: str, state: ConversationState, documents: list[WikiDocument]) -> str : Bypass external repair calls during the smoke tests.
 #   - copy_runtime_world(temporary_root: Path) -> Path : Copy the babe_university Wiki world fixture into a temporary vault root.
-#   - configure_runtime_environment(temporary_root: Path, vault_root: Path) -> None : Point runtime modules at the temporary vault and install fake hooks.
+#   - configure_runtime_environment(temporary_root: Path, vault_root: Path) -> None : Point runtime modules at the temporary vault and logs and install fake hooks.
 #   - main() -> None : Print the standalone success marker for this shared module.
 # ================================
 
@@ -31,6 +31,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from src.config import WIKI_VAULT_ROOT  # noqa: E402
 from src.apps.app.models import ConversationState  # noqa: E402
 from src.apps.app.storage import ConversationStore  # noqa: E402
 import src.apps.app.conversation_lifecycle as conversation_lifecycle  # noqa: E402
@@ -41,6 +42,7 @@ import src.apps.app.wiki_controls as wiki_controls  # noqa: E402
 import src.apps.app.wiki_message_ops as wiki_message_ops  # noqa: E402
 import src.apps.app.wiki_service as wiki_service  # noqa: E402
 import src.wiki as wiki_package  # noqa: E402
+import src.core.logging.conversation_logger as conversation_logger  # noqa: E402
 from src.wiki.markdown import document_revision, parse_markdown_sections  # noqa: E402
 from src.wiki.models import PendingWikiCommit, SectionPatch, WikiDocument  # noqa: E402
 
@@ -78,6 +80,7 @@ _FIXED_TAGS_12_CHARACTERS = (
     "<user_impersonation>",
     "<simulation_core>",
     "<prose_profile>",
+    "<usernote>",
     "<world_lore>",
     "<world_setting>",
     *("<location_information>",) * 8,
@@ -95,6 +98,7 @@ _FIXED_TAGS_13_CHARACTERS = (
     "<user_impersonation>",
     "<simulation_core>",
     "<prose_profile>",
+    "<usernote>",
     "<world_lore>",
     "<world_setting>",
     *("<location_information>",) * 8,
@@ -116,6 +120,7 @@ _DYNAMIC_TAGS_12_STATES = (
     "<current_pov>",
     "<turn_ooc_directives>",
     *("<ooc>",) * 3,
+    "<scene_time_directive>",
     "<user_input>",
     "<output_contract>",
     "<analyze>",
@@ -129,6 +134,7 @@ _DYNAMIC_TAGS_13_STATES = (
     "<current_pov>",
     "<turn_ooc_directives>",
     *("<ooc>",) * 3,
+    "<scene_time_directive>",
     "<user_input>",
     "<output_contract>",
     "<analyze>",
@@ -192,16 +198,17 @@ async def _fake_actor_events(**kwargs: object) -> AsyncIterator[dict]:
         "scene_chars": [],
     }
 
-async def _fake_scene_classifier(
-    user_input: str,
-    recent_story: str,
-    scene_descriptions: dict[str, str] | None = None,
-) -> list[str]:
-    """외부 LLM 없이 intimate 키워드가 있으면 친밀 장면, 아니면 일상을 반환합니다."""
-    del recent_story
-    assert scene_descriptions is not None
-    assert {"daily", "intimate"}.issubset(scene_descriptions)
-    return ["intimate"] if "친밀" in user_input else ["daily"]
+async def _failing_actor_events(**kwargs: object) -> AsyncIterator[dict]:
+    """Actor 429 재시도 소진(토큰 미방출)을 LLM 호출 없이 모사합니다.
+
+    회귀 테스트용: `stream_wiki_turn`이 user 메시지를 append한 뒤 Actor 호출이
+    실패하면 그 user 메시지를 되돌려야 한다는 것을 검증하는 데 쓰인다.
+    """
+    del kwargs
+    if False:  # pragma: no cover - async generator 형태를 만들기 위한 도달 불가 yield.
+        yield {}
+    raise RuntimeError("mock actor exhausted retries (429)")
+
 
 async def _fake_pending_commit(
     documents: list[WikiDocument],
@@ -218,12 +225,9 @@ async def _fake_pending_commit(
 ) -> PendingWikiCommit:
     """현재 scene의 당장 계기 섹션을 바꾸는 검증 가능한 commit을 반환합니다."""
     del (
-        actor_response,
         max_attempts,
         player_profile_id,
         actor_profile_id,
-        user_message_id,
-        assistant_message_id,
         thinking_level,
         debug_root,
     )
@@ -244,9 +248,11 @@ async def _fake_pending_commit(
         confidence=1.0,
     )
     return PendingWikiCommit(
-        user_input_hash="user",
-        actor_response_hash="actor",
+        user_input_hash=sha256(user_input.encode("utf-8")).hexdigest(),
+        actor_response_hash=sha256(actor_response.encode("utf-8")).hexdigest(),
         updater_model=model_name,
+        user_message_id=user_message_id,
+        assistant_message_id=assistant_message_id,
         patches=[patch],
     )
 
@@ -293,13 +299,13 @@ def copy_runtime_world(temporary_root: Path) -> Path:
     """Copy the babe_university Wiki world fixture into a temporary vault root."""
     vault_root = temporary_root / "wiki_v2"
     shutil.copytree(
-        Path("wiki_v2/worlds/babe_university"),
+        WIKI_VAULT_ROOT / "worlds" / "babe_university",
         vault_root / "worlds" / "babe_university",
     )
     return vault_root
 
 def configure_runtime_environment(temporary_root: Path, vault_root: Path) -> None:
-    """Point runtime modules at the temporary vault and install fake hooks."""
+    """Point runtime modules at the temporary vault and logs and install fake hooks."""
     app_runtime.WIKI_VAULT_ROOT = vault_root
     app_service.WIKI_VAULT_ROOT = vault_root
     conversation_lifecycle.WIKI_VAULT_ROOT = vault_root
@@ -307,7 +313,7 @@ def configure_runtime_environment(temporary_root: Path, vault_root: Path) -> Non
     wiki_controls.WIKI_VAULT_ROOT = vault_root
     wiki_message_ops.WIKI_VAULT_ROOT = vault_root
     wiki_service.WIKI_VAULT_ROOT = vault_root
-    wiki_service.classify_scene_types = _fake_scene_classifier
+    conversation_logger.LOGS_DIR = temporary_root / "logs"
     wiki_service.stream_actor_events = _fake_actor_events
     wiki_service._repair_wiki_response = _identity_repair
     wiki_service.write_turn_debug_snapshot = lambda **kwargs: temporary_root / "debug"

@@ -28,6 +28,7 @@ from pathlib import Path
 import re
 from typing import Mapping
 
+from src.config import WIKI_TEMPLATES_ROOT
 from src.wiki.frontmatter import WikiFrontmatterError, parse_frontmatter
 from src.wiki.markdown import (
     MarkdownStructureError,
@@ -38,10 +39,13 @@ from src.wiki.models import WikiDocument, WikiScaffoldResult
 from src.wiki.store import WikiStore
 
 
-_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+# Matches `src/wiki/paths.py`. Thread ids carry world, scenario, pc_preset and
+# timestamp segments, so the shorter 64-character budget rejected ordinary
+# compositions. Worst-case thread path stays under the Windows 260 limit.
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _PLACEHOLDER_RE = re.compile(r"\{\{([A-Z][A-Z0-9_]*?)(_YAML)?\}\}")
 _VALUE_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
-_TEMPLATE_ROOT = Path(__file__).with_name("templates")
+_TEMPLATE_ROOT = WIKI_TEMPLATES_ROOT
 _WORLD_DIRECTORIES = (
     "scenarios",
     "characters",

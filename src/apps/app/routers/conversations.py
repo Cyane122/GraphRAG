@@ -35,6 +35,7 @@ def create_router(context: RouterContext) -> APIRouter:
                 engine_modules=body.engine_modules,
                 ooc_config=body.ooc_config,
                 world_mode=body.world_mode,
+                preset_id=body.preset_id,
             )
         except ValueError as exc:
             raise HTTPException(409, detail=str(exc)) from exc

@@ -7,6 +7,7 @@
 # Functions
 #   - _embedding_dim(raw: str | None) -> int | None : 임베딩 차원 환경변수를 검증·파싱합니다.
 #   - _validate_hf_token(raw: str | None) -> str | None : Hugging Face 토큰을 정규화합니다.
+#   - _repo_path(raw: str) -> Path : 상대 경로를 저장소 루트 기준 절대 경로로 바꿉니다.
 #   - wiki_system_defaults() -> dict[str, bool] : Wiki gated postprocessor의 현재 기본값 표를 반환합니다.
 # ================================
 
@@ -15,12 +16,32 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).parent.parent / ".env")
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+load_dotenv(REPO_ROOT / ".env")
+
+
+def _repo_path(raw: str) -> Path:
+    """상대 경로를 cwd가 아닌 저장소 루트 기준 절대 경로로 바꿉니다."""
+    path = Path(raw)
+    return path if path.is_absolute() else REPO_ROOT / path
+
+
+# ── 저장소 경로 (cwd와 무관하게 저장소 루트 기준) ──────────────
+ASSETS_ROOT = REPO_ROOT / "assets"
+GRAPH_WORLDS_ROOT = ASSETS_ROOT / "worlds" / "graph"
+GRAPH_WORLDS_PACKAGE = "assets.worlds.graph"
+ACTOR_PROMPTS_ROOT = ASSETS_ROOT / "prompts" / "actor"
+WIKI_PROMPTS_ROOT = ASSETS_ROOT / "prompts" / "wiki"
+WIKI_TEMPLATES_ROOT = ASSETS_ROOT / "templates" / "wiki"
+DATA_ROOT = REPO_ROOT / "data"
+LOGS_ROOT = REPO_ROOT / "logs"
+GRAPH_DB_ROOT = REPO_ROOT / "graph"
 
 # ── 앱 설정 ─────────────────────────────────────────────────
 WORLD_ID    = os.getenv("WORLD_ID",    "babe_univ")
 MAX_TOKEN   = int(os.getenv("MAX_TOKEN",   12288))
-WIKI_VAULT_ROOT = Path(os.getenv("WIKI_VAULT_ROOT", "wiki_v2"))
+WIKI_VAULT_ROOT = _repo_path(os.getenv("WIKI_VAULT_ROOT", "assets/wiki_v2"))
 # Wiki recall: 누적 문서(event/memory/goal/item/secret)가 이 예산을 넘을 때만
 # 최근성·구조 관련성으로 축소한다. 예산 이하 thread는 전체 포함으로 동작 변화가 없다.
 # Actor prompt는 정밀도(작게), Updater 입력은 recall(크게)을 우선한다.
@@ -76,6 +97,15 @@ MODEL_OUTPUT_REPAIR   = os.getenv("MODEL_OUTPUT_REPAIR",   "gemini-3-flash-previ
 # ── Google Cloud ────────────────────────────────────────────
 GOOGLE_PROJECT_ID = os.getenv("GOOGLE_PROJECT_ID")
 GOOGLE_CLOUD_LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", os.getenv("CLOUD_ML_REGION", "global"))
+# Gemini Actor가 첫 토큰 전 403/429로 ACTOR_FALLBACK_AFTER_429회 재시도해도 막히면 같은 모델을
+# 이 리전들(쉼표 구분, 순서대로)로 옮겨 호출한다. 빈 값이면 리전 전환을 하지 않는다.
+# 모델마다 제공 리전이 다르다(gemini-3.8-flash: global, us-central1).
+ACTOR_FALLBACK_LOCATIONS = tuple(
+    loc.strip()
+    for loc in os.getenv("ACTOR_FALLBACK_LOCATIONS", "us-central1").split(",")
+    if loc.strip() and loc.strip() != GOOGLE_CLOUD_LOCATION
+)
+ACTOR_FALLBACK_AFTER_429 = int(os.getenv("ACTOR_FALLBACK_AFTER_429", 2))
 
 # ── Direct partner model APIs ───────────────────────────────
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")

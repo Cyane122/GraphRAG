@@ -7,7 +7,7 @@ Wiki V2는 Kuzu나 파생 인덱스가 아니라 UTF-8 Markdown 문서를 상태
 ## Vault 구조
 
 ```text
-wiki_v2/
+assets/wiki_v2/
 ├─ worlds/<world_id>/
 │  ├─ world.md
 │  ├─ prose.md
@@ -19,7 +19,14 @@ wiki_v2/
 │  │  ├─ start_state.md
 │  │  ├─ opening_scene.md
 │  │  ├─ cot_append.md
-│  │  └─ scenes/<scene_type>.md
+│  │  ├─ scenes/<scene_type>.md
+│  │  └─ pc_preset/
+│  │     ├─ <preset_id>.md
+│  │     └─ <preset_id>/
+│  │        ├─ start_state.md
+│  │        ├─ opening_scene.md
+│  │        ├─ scenario.md
+│  │        └─ characters/
 │  ├─ characters/
 │  ├─ locations/
 │  └─ organizations/
@@ -56,6 +63,55 @@ world 프로필을 암묵적으로 되돌려 쓰지 않는다.
 | `start_state.md` | 시작 시각·장소, 관계의 초기값, 인물 상태와 첫 계기 | 완성된 첫 장면 산문 |
 | `opening_scene.md` | 플레이어의 첫 입력 직전에 보여주는 첫 장면 원문 | 장기 운용 규칙과 별도 상태 목록 |
 | `scenes/<scene_type>.md` | 해당 장면 종류가 활성일 때만 적용되는 월드 또는 시나리오 전용 묘사 규정 | 지속 설정, 시작 상태, 다른 장면 종류와의 비교 |
+
+### 시작 프리셋 (`pc_preset/`)
+
+한 시나리오 안에서 플레이어 캐릭터와 시작 상황을 갈아끼우는 선택 축이다. 같은
+시나리오를 폴더째 복제하지 않고 "누구로 시작하는가"만 다른 시작을 여러 개 둔다.
+`pc_preset/`이 없는 시나리오의 동작은 프리셋 도입 전과 완전히 같다.
+
+프리셋 하나는 정의 파일 `pc_preset/<preset_id>.md` 하나다. `start_state.md`,
+`opening_scene.md`, `scenario.md`, 전용 인물 프로필이 필요한 프리셋만 같은 이름의
+폴더 `pc_preset/<preset_id>/`를 덧붙인다. 폴더가 없으면 그 자산은 모두 시나리오
+것을 그대로 쓴다.
+
+정의 파일의 frontmatter는 다음 키를 선택적으로 override한다. 우선순위는
+**world < scenario < preset**이며, 값이 없는 단계는 상위 값을 그대로 물려받는다.
+
+| 키 | 효과 |
+| --- | --- |
+| `pc_profile_id` | 플레이어 캐릭터를 교체한다. world와 scenario에는 없는 프리셋 전용 축이다 |
+| `npc_profile_id` | 시작 상대 인물을 교체한다 |
+| `pov_mode` | 시점을 교체한다 |
+| `rating` | 등급을 교체한다 |
+| `characters` | 인물 allowlist를 **교체**한다. 시나리오 목록과 병합하지 않는다 |
+| `display_name` | 선택 화면에 보일 이름. Actor 본문에는 넣지 않는다 |
+
+정의 파일 본문은 Actor에게 보인다. 시나리오의 `scenario.md`(또는 프리셋이
+교체한 `scenario.md`) 본문을 교체하지 않고 그 뒤에 덧붙으므로, 그 프리셋에서만
+달라지는 특징과 묘사 규정만 둔다. 포장 제목은 `## 프리셋 특징`과
+`## 프리셋 한정 묘사 규정`을 쓰며 Actor 본문에서 제거된다.
+
+프리셋 부속 폴더에 `scenario.md`가 있으면 시나리오의 `scenario.md`를 완전히
+**교체**한다 - start_state.md, opening_scene.md와 같은 규칙이다. 이때도 정의
+파일 `pc_preset/<preset_id>.md`는 그 교체된 `scenario.md` 바로 뒤에 그대로
+덧붙는다. 어느 경우든 Fixed prompt 자산에는 `scenario.md`로 끝나는 문서가
+정확히 하나만 들어간다. 이 시나리오 문서 하나로 판별하는 런타임 로직이 있으므로
+프리셋이 `scenario.md`를 새로 두면 반드시 시나리오 원본을 대신해야 하며 둘 다
+넣을 수 없다. `characters` allowlist가 필요하면 프리셋 정의 파일
+`pc_preset/<preset_id>.md`의 frontmatter에 두고, 교체된 `scenario.md`
+frontmatter에는 두지 않는다 - allowlist override는 정의 파일의 책임이다.
+
+분기 선택기 이름공간은 world 전역이고 scenario ID와 preset ID를 함께 담는다.
+따라서 인물 프로필은 `### <preset_id>` 분기를 가질 수 있고, 활성 분기는
+`[preset_id, scenario_id]` 순으로 처음 일치하는 하나를 고른 뒤 `common`을 항상
+더한다. 둘 다 없으면 `default`로 내려간다. 한 world 안에서 preset ID가 어떤
+scenario ID와도 같으면 두 계층의 선택기가 충돌하므로 즉시 거부한다. 서로 다른
+시나리오의 preset ID끼리 같은 것은 같은 분기를 가리키는 것으로 보고 허용한다.
+
+이 이름공간은 어떤 프리셋을 골랐는지와 무관하게 동일하다. 선택 여부에 따라
+좁히면 preset 분기를 가진 프로필이 프리셋 없이 시작할 때 그 분기를 일반 H3로
+오인해 거부된다.
 
 `scenario.md`의 frontmatter ID와 디렉터리 이름은 런타임 식별자이므로
 `scenario_id`를 포함하지만, Actor용 본문은 시나리오 이름을 되풀이하지 않는다.
@@ -439,7 +495,7 @@ repair가 꺼져 있거나 수정 후에도 남으면 실제 내용을 오류 �
 
 ## 문서 템플릿
 
-템플릿은 `src/wiki/templates/` 아래에 있고 큰 Python 문자열로 복제하지 않는다.
+템플릿은 `assets/templates/wiki/` 아래에 있고 큰 Python 문자열로 복제하지 않는다.
 현재 제공되는 문서 종류는 world, prose, thread, scene, scene_prompt, scenario, character
 profile, thread character, relationship, event, memory, goal, item, secret,
 location, organization이다. Scenario 문서 종류에는 역할이 분리된

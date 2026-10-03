@@ -1,7 +1,7 @@
 # ================================
 # src/apps/app/routers/catalog.py
 #
-# General catalog, frontend, and local-console web routes.
+# General catalog and local-console web routes.
 #
 # Functions
 #   - create_router(context: RouterContext) -> APIRouter : Register general catalog routes
@@ -13,24 +13,19 @@ import asyncio
 from collections.abc import AsyncIterator
 from ipaddress import ip_address
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 
 from src.agents.prompt_factory.engines import engine_module_catalog
 from src.agents.prompt_factory.profiles import prose_profile_catalog
 from src.apps.app.live_console import get_live_console
 from src.apps.app.models import WorldMode, actor_model_catalog
-from src.apps.app.routers.shared import RouterContext, _APP_DIR, _json_line
+from src.apps.app.routers.shared import RouterContext, _json_line
 from src.apps.app.runtime import discover_world_profiles, resolve_opening_scene
 
 def create_router(context: RouterContext) -> APIRouter:
     """Register general catalog routes using the shared application context."""
     del context
     router = APIRouter()
-
-    @router.get("/")
-    def index() -> FileResponse:
-        """Serve the standalone frontend entrypoint."""
-        return FileResponse(_APP_DIR / "index.html")
 
     @router.get("/api/worlds")
     def api_worlds(world_mode: WorldMode = Query(default="graph", alias="mode")) -> dict:
@@ -105,14 +100,21 @@ def create_router(context: RouterContext) -> APIRouter:
     def api_opening_scene(
         world_id: str = Query(...),
         scenario_id: str | None = Query(default=None),
+        preset_id: str | None = Query(default=None),
         world_mode: WorldMode = Query(default="graph", alias="mode"),
     ) -> dict:
-        """Return the opening scene for a world/scenario without creating a thread."""
+        """Return the opening scene for a world/scenario/preset without creating a thread."""
         return {
             "world_id": world_id,
             "world_mode": world_mode,
             "scenario_id": scenario_id or "default",
-            "opening_scene": resolve_opening_scene(world_id, scenario_id or "default", world_mode),
+            "preset_id": preset_id,
+            "opening_scene": resolve_opening_scene(
+                world_id,
+                scenario_id or "default",
+                world_mode,
+                preset_id,
+            ),
         }
 
     return router

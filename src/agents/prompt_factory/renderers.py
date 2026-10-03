@@ -9,7 +9,7 @@
 #   - _SafeFormatDict : str.format_map용 dict — 미등록 플레이스홀더를 원형 그대로 보존
 #
 # Functions
-#   - _read_optional_prompt(relative_path: str) -> str : prompt/ 하위 Markdown 파일 읽기
+#   - load_prompt(relative_path: str) -> str : assets/prompts/actor/ 하위 필수 Markdown 자산 읽기 (없으면 FileNotFoundError)
 #   - _render_prompt_block(tag: str, body: str) -> str : 본문을 XML 블록으로 감싸기
 #   - format_prompt_vars(text: str, *, char_name: str, user_name: str, for_add: str) -> str : 1-pass 프롬프트 변수 치환 (builder.py 동적 세그먼트용)
 #   - format_prompt_vars_twice(text: str, *, char_name: str, user_name: str) -> str : 2-pass char/user 전용 치환 (fixed.py 고정 세그먼트용)
@@ -25,11 +25,12 @@
 from datetime import datetime
 from pathlib import Path
 
+from src.config import ACTOR_PROMPTS_ROOT
 from src.simulation.systems.world_dynamics.organic_models import (
     normalize_contraception_value,
 )
 
-PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
+PROMPT_DIR = ACTOR_PROMPTS_ROOT
 
 _PROMPT_HIDDEN_STATE_KEYS: frozenset[str] = frozenset({
     "contraception",
@@ -41,10 +42,12 @@ _PROMPT_HIDDEN_STATE_KEYS: frozenset[str] = frozenset({
 # Prompt file helpers
 # ----------------
 
-def _read_optional_prompt(relative_path: str) -> str:
-    """Read a tagless Markdown prompt file from prompt_factory/prompt/."""
-    path = PROMPT_DIR / relative_path
-    return path.read_text(encoding="utf-8") if path.exists() else ""
+def load_prompt(relative_path: str) -> str:
+    """Read a required tagless Markdown asset under assets/prompts/actor/.
+
+    A missing asset raises FileNotFoundError instead of silently dropping its block.
+    """
+    return (PROMPT_DIR / relative_path).read_text(encoding="utf-8")
 
 
 class _SafeFormatDict(dict):

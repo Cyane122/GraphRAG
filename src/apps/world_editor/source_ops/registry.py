@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 from src.apps.world_editor.source_ops.creator_support import *
+from src.config import GRAPH_WORLDS_PACKAGE
 
 def register_character(world_id: str, class_name: str, char_id: str, char_type: str) -> dict:
     """생성된 캐릭터를 characters/__init__.py 와 schema.py(import + chars 리스트 + narrator/pc)에 등록합니다."""
@@ -54,7 +55,7 @@ def register_character(world_id: str, class_name: str, char_id: str, char_type: 
     edits: list[tuple[int, int, str]] = []  # (start, end, new_src) — 우→좌 적용
 
     # 2a. import 라인 (마지막 최상위 import 뒤).
-    import_stmt = f"from src.assets.worlds.{world_id}.characters import {class_name}\n"
+    import_stmt = f"from {GRAPH_WORLDS_PACKAGE}.{world_id}.characters import {class_name}\n"
     if import_stmt not in text:
         last_import = None
         for stmt in tree.body:
@@ -286,7 +287,7 @@ def set_scenario_characters(world_id: str, scenario_id: str | None, char_ids: li
     edits: list[tuple[int, int, str]] = []
 
     # 필요한 import 보강 (chars 에 쓰는 클래스가 schema 에 import 돼 있어야 컴파일됨).
-    needed = [f"from src.assets.worlds.{world_id}.characters import {cn}\n"
+    needed = [f"from {GRAPH_WORLDS_PACKAGE}.{world_id}.characters import {cn}\n"
               for cn in class_names if f"import {cn}\n" not in text and f"import {cn}" not in text]
     if needed:
         last_import = None

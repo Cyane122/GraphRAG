@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from src.config import WIKI_VAULT_ROOT
 import src.apps.app.service as app_service
 import src.apps.app.wiki_controls as wiki_controls
 from src.apps.app.storage import ConversationStore
@@ -48,7 +49,7 @@ async def _run_validation(
     with tempfile.TemporaryDirectory(prefix="wiki_llm_validation_") as temporary:
         temporary_root = Path(temporary)
         vault_root = temporary_root / "wiki_v2"
-        source_world = Path("wiki_v2/worlds/babe_university")
+        source_world = WIKI_VAULT_ROOT / "worlds" / "babe_university"
         shutil.copytree(
             source_world,
             vault_root / "worlds" / "babe_university",

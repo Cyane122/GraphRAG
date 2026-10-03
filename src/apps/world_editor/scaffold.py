@@ -106,7 +106,7 @@ def _fail(message: str) -> dict:
 # ──────────────────────────────────────────────────────────────────────
 
 _SCHEMA_TMPL = '''# ================================
-# src/assets/worlds/%%WID%%/schema.py
+# assets/worlds/graph/%%WID%%/schema.py
 #
 # %%DISPLAY%% 세계 정의. (world_editor 로 생성)
 # ================================
@@ -118,8 +118,8 @@ from pathlib import Path
 
 import kuzu
 
-from src.assets.worlds.base import World, Scenario, insert_rule, insert_schedule
-from src.assets.worlds.utils import read_inherited_md_map, read_optional_md, parse_few_shot
+from src.worlds.base import World, Scenario, insert_rule, insert_schedule
+from src.worlds.utils import read_inherited_md_map, read_optional_md, parse_few_shot
 # 캐릭터 import 는 world_editor 가 캐릭터 생성 시 자동으로 추가합니다.
 
 _PROMPT_DIR = Path(__file__).parent / "prompt"
@@ -293,7 +293,7 @@ world_instance = SCENARIOS[0].world
 '''
 
 _CHARACTER_TMPL = '''# ================================
-# src/assets/worlds/%%WID%%/characters/%%CID%%.py
+# assets/worlds/graph/%%WID%%/characters/%%CID%%.py
 #
 # %%NAME%% 캐릭터 정의. (world_editor 로 생성)
 #
@@ -305,7 +305,7 @@ from __future__ import annotations
 
 import kuzu
 
-from src.assets.worlds.base_character import Character, _insert_rel
+from src.worlds.base_character import Character, _insert_rel
 
 
 class %%CLASS%%(Character):

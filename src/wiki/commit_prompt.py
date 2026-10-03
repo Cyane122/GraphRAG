@@ -10,11 +10,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
+from src.config import WIKI_PROMPTS_ROOT
 from src.wiki.models import WikiDocument
 
-_PROMPT_PATH = Path(__file__).parent / "prompts" / "updater.md"
+_PROMPT_PATH = WIKI_PROMPTS_ROOT / "updater.md"
 
 
 def build_updater_prompt(

@@ -15,6 +15,8 @@ import json
 import re
 from pathlib import Path
 
+from src.config import DATA_ROOT
+
 
 _SAFE_PART_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 
@@ -34,7 +36,7 @@ def _safe_part(value: str | None, fallback: str) -> str:
 def artifact_dir(thread_id: str | None, commit_id: str) -> Path:
     """Return the directory for one thread/commit artifact bundle."""
     return (
-        Path("data")
+        DATA_ROOT
         / "threads"
         / _safe_part(thread_id, "unknown_thread")
         / "commit_artifacts"

@@ -17,7 +17,7 @@ from src.agents.manager.classifier import _classify_scene_only, _try_rule_based
 from src.agents.manager.models import ManagerBootstrap, SceneTimePlan
 from src.agents.manager.queries import fetch_global_state
 from src.agents.manager.world_loader import load_world_instance
-from src.assets.worlds.base import World
+from src.worlds.base import World
 from src.simulation.systems.scheduling.schedules import SCHEDULE_TIME_PARSE_WINDOW_MIN, fetch_schedule_context
 from src.simulation.systems.scheduling.time_rules import fetch_time_rule_context
 

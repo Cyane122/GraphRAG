@@ -26,7 +26,7 @@ from src.agents.manager.queries import (
     fetch_relationship_data,
     get_location_name_from_id,
 )
-from src.assets.worlds.base import World
+from src.worlds.base import World
 from src.core.database import async_driver
 from src.core.embedding.encoder import embed_async
 from src.simulation.systems.personal_facts import fetch_active_personal_facts, merge_prompt_facts

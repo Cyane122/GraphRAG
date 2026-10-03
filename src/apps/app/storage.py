@@ -23,7 +23,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
-from src.config import WORLD_ID
+from src.config import DATA_ROOT, WORLD_ID
 from src.apps.app.models import (
     ChatMessage,
     ConversationState,
@@ -31,7 +31,7 @@ from src.apps.app.models import (
 )
 from src.apps.app.runtime import sync_conversation_perspective
 
-_INDEX_FILE = Path("data") / "index.json"
+_INDEX_FILE = DATA_ROOT / "index.json"
 _UI_MARKERS = (
     "\u2060",
     "\u2061",
@@ -75,7 +75,7 @@ def _safe_scope_part(value: str) -> str:
 class ConversationStore:
     """JSON-backed standalone conversation store."""
 
-    def __init__(self, root: Path | str = Path("data") / "threads") -> None:
+    def __init__(self, root: Path | str = DATA_ROOT / "threads") -> None:
         """Create a store rooted at the given directory."""
         self.root = Path(root)
         self.world_root = self.root.parent / "worlds"

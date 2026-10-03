@@ -1,6 +1,28 @@
 # GraphRAG 기반 롤플레이 시뮬레이션 엔진
 
-## 파일 구조
+현재 채팅 클라이언트는 `graphrag-chat-site/`이고, Graph와 Wiki 모드는
+`src/apps/app/`의 JSON/NDJSON API를 공유한다. 백엔드는 저장소 루트에서
+`.venv\Scripts\python.exe -m src.apps.app`으로 실행한다.
+
+| 위치 | 역할 |
+| --- | --- |
+| `src/` | 엔진과 공용 코드; Graph 정의의 공용 클래스는 `src/worlds/` |
+| `assets/worlds/graph/` | Graph 정의와 해당 프롬프트 |
+| `assets/wiki_v2/` | Wiki 원본과 실제 thread 상태; `worlds/`와 `threads/` 유지 |
+| `assets/prompts/`, `assets/templates/` | 공유 프롬프트와 Wiki 템플릿 |
+| `data/`, `graph/`, `logs/` | 대화·pending 상태, Graph DB, 실행 기록 |
+| `.agent/` | 운영 정책, 현재 작업, 구현 계획과 공용 hook |
+| `docs/architecture/` | 개발 문서 vault와 단일 Wiki parity 보드 |
+
+현재 구조와 상태 반영 계약은 [아키텍처](docs/architecture.md), 실행·검증은
+[개발 절차](docs/dev_workflow.md), Wiki 문법은
+[문서 규격](docs/wiki_v2_format.md)을 따른다. 환경변수는
+[example.env](example.env)와 `src/config.py`가 기준이다.
+
+아래 Chainlit 구성과 3구간 프롬프트 설명은 이전 구현 기록이다. 현재 Actor는
+Fixed/Dynamic 두 구간을 사용하며, 새 구현의 근거로는 위 문서를 사용한다.
+
+## 이전 Chainlit 파일 구조
 
 ```
 project-root/
@@ -100,7 +122,7 @@ project-root/
 
 ---
 
-## 요청 파이프라인 (1턴)
+## 이전 Chainlit 요청 파이프라인 (1턴)
 
 ```
 유저 입력 (Chainlit)
@@ -126,7 +148,7 @@ project-root/
   → [DB 커밋은 다음 턴 시작 시 지연 확정]
 ```
 
-## 3-파트 프롬프트
+## 이전 3-파트 프롬프트
 
 | 파트          | 내용                                               | 특성                                    |
 |-------------|--------------------------------------------------|---------------------------------------|
@@ -150,11 +172,11 @@ project-root/
 
 ## 캐릭터 정의 방법
 
-캐릭터 1명 = 파일 1개 (`src/assets/worlds/<world_id>/characters/<char_id>.py`).
+캐릭터 1명 = 파일 1개 (`assets/worlds/graph/<world_id>/characters/<char_id>.py`).
 
 ```python
-from src.assets.worlds.base import insert_static_inline
-from src.assets.worlds.base_character import Character, _insert_rel, _merge_static_event
+from src.worlds.base import insert_static_inline
+from src.worlds.base_character import Character, _insert_rel, _merge_static_event
 
 class Alice(Character):
     id = "alice"
@@ -266,12 +288,12 @@ world_instance = MyWorld(
 
 ## 새 세계 추가
 
-1. `src/assets/worlds/<world_id>/` 디렉터리 생성
+1. `assets/worlds/graph/<world_id>/` 디렉터리 생성
 2. `characters/` 하위에 캐릭터 파일 1명 = 1파일로 작성, `__init__.py` 에 일괄 export
 3. `schema.py` 에 World 서브클래스 정의 (위 템플릿 참고)
 4. `prompt/` 하위에 `world.md`, `prose_1p.md`, `prose_3p.md`, `blacklist.md`, `few_shot/*.md` 작성
-5. `src/assets/worlds/__init__.py` 에 world_id → 클래스 매핑 추가
-6. `python -m src.core.database.schema_builder --world_id <world_id>` 실행
+5. `schema.py`의 `world_instance` 또는 `World` 구현을 로더가 발견할 수 있게 구성
+6. 필요할 때 `python -m src.core.database.schema_builder --world_id <world_id>` 실행. 이 명령은 대상 Graph DB를 삭제하고 다시 만든다.
 
 ## 환경변수 (`.env`)
 

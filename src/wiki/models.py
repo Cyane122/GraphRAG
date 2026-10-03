@@ -81,8 +81,11 @@ class WikiMetadata(BaseModel):
     schema_version: Annotated[int, Field(strict=True, gt=0)]
     visibility: list[WikiVisibility] = Field(min_length=1)
     created_at: datetime
-    world_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
-    thread_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+    # 128 characters to match `src/wiki/paths.py` and the scaffold validator;
+    # every thread document carries `thread_id` in its frontmatter, so a shorter
+    # budget here would reject documents the scaffold already accepted.
+    world_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+    thread_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
     profile_id: str | None = None
     owner: str | None = None
     participants: list[str] | None = None
@@ -630,6 +633,7 @@ class WikiConversationSetup(BaseModel):
     world_id: str
     scenario_id: str
     thread_id: str
+    preset_id: str | None = None
     pc_id: str
     pc_name: str
     npc_id: str

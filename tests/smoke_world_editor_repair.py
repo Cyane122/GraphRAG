@@ -1,10 +1,10 @@
 ﻿# ================================
 # tests/smoke_world_editor_repair.py
 #
-# World Editor repair and schedule-template API smoke checks.
+# World Editor repair and schedule-template smoke checks.
 #
 # Functions
-#   - main() -> None : 임시 fixture world로 repair preview/apply와 schedule API를 검증합니다.
+#   - main() -> None : 임시 fixture world로 repair preview/apply와 schedule template 읽기/쓰기를 검증합니다.
 # ================================
 
 from __future__ import annotations
@@ -14,14 +14,11 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-from fastapi.testclient import TestClient
-
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.apps.world_editor import repair, schedules, source_edit
-from src.apps.world_editor.app import create_app
 
 
 def _write_fixture(root: Path) -> None:
@@ -217,31 +214,28 @@ def _smoke_repairs() -> None:
             restore()
 
 
-def _smoke_schedule_api() -> None:
-    """FastAPI TestClient로 /api/worlds와 schedule_templates GET/PUT을 확인합니다."""
+def _smoke_schedule_templates() -> None:
+    """schedule template 빈 기본값, 저장/재조회, 검증 실패를 임시 world 루트에서 확인합니다."""
     with tempfile.TemporaryDirectory(prefix="we_schedule_") as tmp:
         root = Path(tmp)
-        root.mkdir(parents=True, exist_ok=True)
         restore = _with_fake_world(root)
         try:
-            client = TestClient(create_app())
-            worlds_res = client.get("/api/worlds")
-            assert worlds_res.status_code == 200
-            get_res = client.get("/api/worlds/fixture/schedule_templates")
-            assert get_res.status_code == 200
-            assert get_res.json()["data"]["world"] == []
-            payload = {
-                "data": {
-                    "world": [{"id": "global_morning", "name": "Morning", "summary": "Global", "tags": ["daily"]}],
-                    "scenarios": {"default": [{"id": "scene_lunch", "name": "Lunch", "summary": "", "tags": []}]},
-                    "note": "smoke",
-                }
+            assert schedules.read_schedule_templates("fixture")["world"] == []
+            data = {
+                "world": [{"id": "global_morning", "name": "Morning", "summary": "Global", "tags": ["daily"]}],
+                "scenarios": {"default": [{"id": "scene_lunch", "name": "Lunch", "summary": "", "tags": []}]},
+                "note": "smoke",
             }
-            put_res = client.put("/api/worlds/fixture/schedule_templates", json=payload)
-            assert put_res.status_code == 200
-            assert put_res.json()["ok"] is True
-            get_res = client.get("/api/worlds/fixture/schedule_templates")
-            assert get_res.json()["data"]["scenarios"]["default"][0]["id"] == "scene_lunch"
+            _assert_ok(schedules.write_schedule_templates("fixture", data), "schedule write")
+            assert (root / "schedule_templates.json").is_file()
+            saved = schedules.read_schedule_templates("fixture")
+            assert saved["scenarios"]["default"][0]["id"] == "scene_lunch"
+            try:
+                schedules.write_schedule_templates("fixture", {"world": [{"name": "no id"}]})
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("schedule entry without id must be rejected")
         finally:
             restore()
 
@@ -249,7 +243,7 @@ def _smoke_schedule_api() -> None:
 def main() -> None:
     """임시 fixture 기반 World Editor smoke checks를 실행합니다."""
     _smoke_repairs()
-    _smoke_schedule_api()
+    _smoke_schedule_templates()
     print("world_editor repair smoke ok")
 
 

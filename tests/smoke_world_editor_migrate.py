@@ -20,8 +20,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.assets.worlds.base import World
-from src.assets.worlds.base_character import Character
+from src.worlds.base import World
+from src.worlds.base_character import Character
 from src.apps.world_editor import migrate
 from src.apps.world_editor import source_edit
 
@@ -76,8 +76,8 @@ _FIXTURE_SOURCE = '''from __future__ import annotations
 
 import kuzu
 
-from src.assets.worlds.base import insert_static_inline
-from src.assets.worlds.base_character import Character
+from src.worlds.base import insert_static_inline
+from src.worlds.base_character import Character
 
 
 class FixtureChar(Character):

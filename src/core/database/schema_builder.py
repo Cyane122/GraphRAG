@@ -10,11 +10,10 @@
 
 import argparse
 import shutil
-from pathlib import Path
 
 import kuzu
 
-from src.config import WORLD_ID
+from src.config import GRAPH_DB_ROOT, WORLD_ID
 
 if __name__ == "__main__":
     # core → agents 는 상향 의존이므로 CLI 실행 시점에만 늦게 import 한다(모듈 import 시 위반 회피).
@@ -30,7 +29,7 @@ if __name__ == "__main__":
     world = load_world_instance(world_id, scenario_id)
 
     # Kuzu DB 삭제 (파일 단독 형식 또는 디렉토리 형식 모두 처리)
-    db_path = Path("graph") / world_id
+    db_path = GRAPH_DB_ROOT / world_id
     for p in [db_path, db_path.with_suffix(".kuzu"), db_path.with_suffix(".wal")]:
         if p.is_dir():
             shutil.rmtree(p)
@@ -47,7 +46,7 @@ if __name__ == "__main__":
     try:
         world.build_schema(conn, scenario_id)
         # world_editor 의 전역/시나리오 schedule 템플릿을 Schedule 노드로 반영.
-        from src.assets.worlds.base import apply_schedule_templates
+        from src.worlds.base import apply_schedule_templates
         apply_schedule_templates(conn, world_id, scenario_id)
     finally:
         # Kuzu는 명시적 close 불필요

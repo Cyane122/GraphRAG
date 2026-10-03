@@ -17,6 +17,7 @@ from pathlib import Path
 import shutil
 from tempfile import TemporaryDirectory
 
+from src.config import WIKI_VAULT_ROOT
 from src.apps.app.app import create_app
 from src.apps.app.models import ChatMessage, ConversationState
 from src.apps.app.storage import ConversationStore
@@ -125,7 +126,7 @@ def main() -> None:
         branch_workspace = Path(temporary) / "branch_case"
         vault_root = branch_workspace / "wiki_v2"
         shutil.copytree(
-            Path("wiki_v2/worlds/babe_university"),
+            WIKI_VAULT_ROOT / "worlds" / "babe_university",
             vault_root / "worlds" / "babe_university",
         )
         branch_store = ConversationStore(branch_workspace / "data" / "threads")

@@ -14,9 +14,9 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 import re
 
+from src.config import WIKI_PROMPTS_ROOT
 from src.core.llm import extract_json_from_llm, get_model, get_response_text
 from src.wiki.document_creation import prepare_created_document
 from src.wiki.evidence import document_body, first_nonempty_line
@@ -32,7 +32,7 @@ from src.wiki.patches import build_actor_response_section_patch
 
 logger = logging.getLogger(__name__)
 
-_PROMPT_DIR = Path(__file__).parent / "prompts"
+_PROMPT_DIR = WIKI_PROMPTS_ROOT
 _H1_RE = re.compile(r"(?m)^#\s+(.+?)\s*$")
 _SLUG_RE = re.compile(r"[^A-Za-z0-9_-]+")
 

@@ -5,6 +5,7 @@
 #
 # Functions
 #   - _check_accepted_header_sync(scene: WikiDocument) -> None : Validate accepted-header time and location synchronization guards.
+#   - _check_accepted_header_sync_with_existing_patch(scene: WikiDocument) -> None : Validate that header sync preserves an Updater patch's already-moved location.
 #   - _generate_goal_creation(character: WikiDocument) -> PendingWikiCommit : Plan a validated actor-owned goal creation.
 #   - _check_goal_authority_and_progress(character: WikiDocument) -> tuple[PendingWikiCommit, WikiDocument] : Validate goal authority and mutable progress sections.
 #   - _check_item_and_secret_visibility(character: WikiDocument) -> WikiDocument : Validate item creation, secret visibility, and leak detection.
@@ -19,6 +20,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 import json
 from pathlib import Path
 import sys
@@ -35,7 +37,13 @@ from src.wiki import (  # noqa: E402
     document_revision,
     parse_frontmatter,
 )
-from src.wiki.commit_header_sync import synchronize_accepted_header  # noqa: E402
+from src.wiki.commit_header_sync import (  # noqa: E402
+    _replace_scene_time_place,
+    _scene_time_place_line,
+    synchronize_accepted_header,
+)
+from src.wiki.markdown import parse_markdown_sections  # noqa: E402
+from src.wiki.patches import build_actor_response_section_patch  # noqa: E402
 from tests.wiki_smoke_fixtures import (  # noqa: E402
     _expect_update_rejected,
     _generate_event_creation,
@@ -93,6 +101,51 @@ def _check_accepted_header_sync(scene: WikiDocument) -> None:
         "**2026년 7월 24일 금요일 09시 00분, 대학 도서관**\n\n아침이었다.",
     )
     assert "July 24, 2026" in explicit_jump.patches[0].replacement_markdown
+
+def _check_accepted_header_sync_with_existing_patch(scene: WikiDocument) -> None:
+    """Updater가 이번 턴에 이미 장소를 옮긴 patch가 있을 때 헤더 동기화 우선순위를 검증합니다."""
+    section_path = ("시작 기준",)
+    base_markdown = parse_markdown_sections(scene.content)[section_path].markdown
+
+    def moved_location_patch():
+        updater_markdown = _replace_scene_time_place(
+            base_markdown,
+            _scene_time_place_line(datetime(2026, 7, 23, 13, 0), "학생회관 앞마당"),
+        )
+        patch = build_actor_response_section_patch(
+            scene,
+            section_path,
+            updater_markdown,
+            "캐릭터 A는 학생회관 앞마당으로 자리를 옮겼다.",
+        )
+        assert patch is not None
+        return patch
+
+    # 비-grounded Actor 헤더 장소는 Updater가 이번 턴에 이미 옮긴 장소를 되돌리지 못한다.
+    keep_updater_move = WikiUpdaterResult(summary="", patches=[moved_location_patch()])
+    synchronize_accepted_header(
+        keep_updater_move,
+        [scene],
+        "계속 이야기한다.",
+        "**2026년 7월 23일 목요일 13시 10분, 정문**\n\n대화가 이어졌다.",
+    )
+    assert len(keep_updater_move.patches) == 1
+    synced_markdown = keep_updater_move.patches[0].replacement_markdown
+    assert "13:10" in synced_markdown
+    assert "학생회관 앞마당" in synced_markdown
+    assert "정문" not in synced_markdown
+
+    # user_input에서 grounding된 Actor 헤더 장소는 여전히 Updater의 patch 장소를 이긴다.
+    grounded_over_patch = WikiUpdaterResult(summary="", patches=[moved_location_patch()])
+    synchronize_accepted_header(
+        grounded_over_patch,
+        [scene],
+        "정문으로 이동한다.",
+        "**2026년 7월 23일 목요일 13시 10분, 정문**\n\n대화가 이어졌다.",
+    )
+    grounded_markdown = grounded_over_patch.patches[0].replacement_markdown
+    assert "정문" in grounded_markdown
+    assert "학생회관 앞마당" not in grounded_markdown
 
 async def _generate_goal_creation(character: WikiDocument) -> PendingWikiCommit:
     """owner=Actor인 durable goal 신규 문서 생성 commit을 계획합니다."""
@@ -531,6 +584,7 @@ async def run_creation_suite(
 ) -> tuple[PendingWikiCommit, PendingWikiCommit]:
     """Run the full creation smoke suite and return the event and goal pending commits."""
     _check_accepted_header_sync(scene)
+    _check_accepted_header_sync_with_existing_patch(scene)
     event_pending = await _generate_event_creation(character, scene)
     goal_pending = await _check_goal_item_secret(character)
     return event_pending, goal_pending

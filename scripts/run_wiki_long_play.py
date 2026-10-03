@@ -576,8 +576,10 @@ async def _run_one_scenario(
 ) -> dict[str, object]:
     """Run one scenario in an isolated vault and persist its evidence artifacts."""
     app_service, wiki_controls, conversation_store_cls = _runtime_modules()
+    from src.config import LOGS_ROOT, WIKI_VAULT_ROOT
+
     scenario_root.mkdir(parents=True, exist_ok=False)
-    log_path = Path("logs") / "llm_latency.jsonl"
+    log_path = LOGS_ROOT / "llm_latency.jsonl"
     llm_rows_all: list[dict[str, object]] = []
     turn_records: list[dict[str, object]] = []
     attempted_turns = 0
@@ -595,7 +597,7 @@ async def _run_one_scenario(
     with tempfile.TemporaryDirectory(prefix=f"wiki_long_play_{scenario_id}_") as temporary:
         temporary_root = Path(temporary)
         vault_root = temporary_root / "wiki_v2"
-        source_world = Path("wiki_v2/worlds/babe_university")
+        source_world = WIKI_VAULT_ROOT / "worlds" / "babe_university"
         shutil.copytree(source_world, vault_root / "worlds" / "babe_university")
         patch_vault_root(vault_root)
         store = conversation_store_cls(temporary_root / "data" / "threads")

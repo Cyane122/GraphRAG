@@ -19,9 +19,10 @@ import re
 import shutil
 from pathlib import Path
 
+from src.config import ACTOR_PROMPTS_ROOT
 from src.apps.world_editor.worlds import load_world, prompt_dir
 
-_GLOBAL_PROMPT_DIR = Path(__file__).resolve().parents[2] / "agents" / "prompt_factory" / "prompts"
+_GLOBAL_PROMPT_DIR = ACTOR_PROMPTS_ROOT
 
 
 def _scene_keys(world_id: str, scenario_id: str | None) -> list[str]:

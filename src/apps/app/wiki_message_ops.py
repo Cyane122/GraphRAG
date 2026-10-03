@@ -5,14 +5,15 @@
 #
 # Functions
 #   - rebuild_wiki_derived_state(state: ConversationState) -> None : 현재 메시지에서 Actor history, recent story와 preview를 다시 만듭니다.
-#   - reroll_wiki_assistant(state: ConversationState, assistant_id: str, store: ConversationStore, actor_model: str | None = None, prose_profile: ProseProfile | None = None, engine_modules: dict[str, str] | None = None) -> dict : 최신 Wiki 응답을 다시 생성합니다.
-#   - edit_wiki_message(state: ConversationState, message_id: str, content: str, store: ConversationStore, actor_model: str | None = None, prose_profile: ProseProfile | None = None, engine_modules: dict[str, str] | None = None) -> dict : 최신 Wiki 메시지를 수정하고 변경안을 다시 생성합니다.
-#   - activate_wiki_variant(state: ConversationState, message_id: str, version_index: int, store: ConversationStore) -> dict : 최신 Wiki 응답의 저장 버전을 활성화합니다.
-#   - delete_wiki_message(state: ConversationState, message_id: str, store: ConversationStore) -> dict : 최신 Wiki 메시지와 연결된 변경 상태를 삭제합니다.
+#   - reroll_wiki_assistant(state: ConversationState, assistant_id: str, store: ConversationStore, actor_model: str | None = None, prose_profile: ProseProfile | None = None, engine_modules: dict[str, str] | None = None) -> dict : 최신 Wiki 응답을 다시 생성합니다. 응답 없는 고아 user 메시지 상태면 ValueError로 명확히 거부합니다.
+#   - edit_wiki_message(state: ConversationState, message_id: str, content: str, store: ConversationStore, actor_model: str | None = None, prose_profile: ProseProfile | None = None, engine_modules: dict[str, str] | None = None) -> dict : 최신 Wiki 메시지를 수정하고 변경안을 다시 생성합니다. 응답 없는 고아 user 메시지 상태면 ValueError로 명확히 거부합니다.
+#   - activate_wiki_variant(state: ConversationState, message_id: str, version_index: int, store: ConversationStore) -> dict : 최신 Wiki 응답의 저장 버전을 활성화합니다. 응답 없는 고아 user 메시지 상태면 ValueError로 명확히 거부합니다.
+#   - delete_wiki_message(state: ConversationState, message_id: str, store: ConversationStore) -> dict : 최신 Wiki 메시지와 연결된 변경 상태를 삭제합니다. 삭제 대상이 응답 없는 고아 user 메시지면 commit 조작 없이 그 메시지만 제거합니다.
 # ================================
 
 from __future__ import annotations
 
+import asyncio
 from copy import deepcopy
 from pathlib import Path
 
@@ -26,7 +27,7 @@ from src.apps.app.models import (
     resolve_wiki_systems,
 )
 from src.apps.app.storage import ConversationStore
-from src.apps.app.wiki_controls import skip_wiki_commit
+from src.apps.app.wiki_controls import recover_unlogged_wiki_acceptance, skip_wiki_commit
 from src.apps.app.settings import load_settings, wiki_updater_model_name
 from src.apps.app.wiki_service import (
     _preview_text,
@@ -42,7 +43,14 @@ from src.wiki.paths import wiki_thread_root_for_vault
 
 _MAX_HISTORY_TURNS = 10
 _RECENT_STORY_TURNS = 3
-_MUTABLE_WIKI_STATUSES = {"queued", "failed", "skipped"}
+# "idle"이 여기 포함된 이유: 대화 초기 상태는 opening assistant 메시지만 있고
+# user/assistant 쌍이 없으므로, "idle" 상태로 실제 쌍이 존재한다는 것은 Wiki 업데이트
+# 호출(update_accepted_turn) 도중 스트림이 중단되어 이번 턴의 상태가 한 번도
+# 기록되지 못했다는 뜻이다(wiki_service.stream_wiki_turn의 중단 처리가 이제 이런
+# 경우를 "failed"로 명시 기록하지만, 이 수정 이전에 이미 "idle"로 잠긴 기존 thread를
+# 복구하려면 여기서도 허용해야 한다). 아무것도 Wiki 정본에 반영되지 않았으므로
+# 삭제/수정/reroll을 막을 이유가 없다.
+_MUTABLE_WIKI_STATUSES = {"queued", "failed", "skipped", "idle"}
 
 
 def _restore_state(state: ConversationState, snapshot: ConversationState) -> None:
@@ -74,6 +82,21 @@ def rebuild_wiki_derived_state(state: ConversationState) -> None:
     state.preview = _preview_text(latest.content) if latest is not None else "새 대화"
 
 
+_ORPHAN_USER_MESSAGE = (
+    "응답 생성이 실패한 입력입니다. 해당 메시지를 삭제한 뒤 다시 보내세요."
+)
+
+
+def _is_latest_orphan_user(state: ConversationState) -> bool:
+    """마지막 메시지가 응답을 받지 못한 user 입력(고아 메시지)인지 판별합니다.
+
+    Actor 스트리밍이 429 재시도 소진 등으로 실패하면 user 메시지만 append된 채
+    턴이 끝날 수 있다(엔진 쪽 롤백이 실패하기 전 세션이거나, 과거 데이터). 이 상태에서는
+    reroll/edit/activate가 가정하는 "최신 user·assistant 쌍"이 존재하지 않는다.
+    """
+    return bool(state.messages) and state.messages[-1].role == "user"
+
+
 def _latest_pair(
     state: ConversationState,
     *,
@@ -81,6 +104,8 @@ def _latest_pair(
     user_id: str | None = None,
 ) -> tuple[ChatMessage, ChatMessage]:
     """최신 사용자·응답 쌍을 반환하고 후속 턴이 있는 과거 변경을 거부합니다."""
+    if _is_latest_orphan_user(state):
+        raise ValueError(_ORPHAN_USER_MESSAGE)
     if state.wiki_update_status not in _MUTABLE_WIKI_STATUSES | {"applied"}:
         raise ValueError("이미 Wiki 정본에 반영된 응답은 수정할 수 없습니다.")
     if len(state.messages) < 2:
@@ -112,7 +137,14 @@ def _inverse_latest_applied_pair(
     user_message: ChatMessage,
     assistant_message: ChatMessage,
 ) -> str | None:
-    """최신 applied pair를 되돌리고 생성한 inverse commit ID를 반환합니다."""
+    """최신 applied pair를 되돌리고 생성한 inverse commit ID를 반환합니다.
+
+    reroll·수정·variant·삭제가 메시지를 바꾸기 전에 거치는 공통 경계다. 적용됐지만 확정 턴
+    기록에 실패한 commit이 남아 있으면 원래 본문으로 먼저 기록해 상태를 applied로 바꾸고,
+    그 뒤 기존 inverse 경로를 그대로 탄다. 기록이 실패하면 아무것도 바꾸지 않고 예외를 올린다.
+    디스크 작업을 하므로 async 호출자는 asyncio.to_thread로 부른다.
+    """
+    recover_unlogged_wiki_acceptance(state)
     if state.wiki_update_status != "applied":
         return None
     queue = _wiki_commit_queue(state)
@@ -303,7 +335,8 @@ async def reroll_wiki_assistant(
         state,
         assistant_id=assistant_id,
     )
-    inverse_commit_id = _inverse_latest_applied_pair(
+    inverse_commit_id = await asyncio.to_thread(
+        _inverse_latest_applied_pair,
         state,
         user_message,
         assistant_message,
@@ -345,7 +378,8 @@ async def edit_wiki_message(
         raise KeyError("message not found")
     if message.role == "user":
         user_message, assistant_message = _latest_pair(state, user_id=message_id)
-        inverse_commit_id = _inverse_latest_applied_pair(
+        inverse_commit_id = await asyncio.to_thread(
+            _inverse_latest_applied_pair,
             state,
             user_message,
             assistant_message,
@@ -370,7 +404,7 @@ async def edit_wiki_message(
         state,
         assistant_id=message_id,
     )
-    _inverse_latest_applied_pair(state, user_message, assistant_message)
+    await asyncio.to_thread(_inverse_latest_applied_pair, state, user_message, assistant_message)
     assistant_message.content = normalized
     assistant_message.edited = True
     rebuild_wiki_derived_state(state)
@@ -405,7 +439,7 @@ async def activate_wiki_variant(
     if version_index == total - 1:
         return {"message": _message_payload(message)}
 
-    _inverse_latest_applied_pair(state, user_message, message)
+    await asyncio.to_thread(_inverse_latest_applied_pair, state, user_message, message)
     selected = variants_oldest_first[version_index]
     old_current = MessageVariant(
         content=message.content,
@@ -446,13 +480,35 @@ def delete_wiki_message(
     message_id: str,
     store: ConversationStore,
 ) -> dict:
-    """최신 Wiki 메시지를 삭제하고 연결된 적용·미반영 변경을 정리합니다."""
+    """최신 Wiki 메시지를 삭제하고 연결된 적용·미반영 변경을 정리합니다.
+
+    삭제 대상이 응답 없는 고아 user 메시지(Actor 생성 실패로 응답이 붙지 못한 최신
+    입력)이면 `_latest_pair`를 거치지 않고 그 메시지만 제거한다. 그 입력은 commit을
+    만든 적이 없으므로 commit inverse/skip 조작을 하지 않고, `wiki_update_status`와
+    보류 commit은 직전 정상 턴의 것이므로 건드리지 않는다.
+    """
     message = next(
         (candidate for candidate in state.messages if candidate.id == message_id),
         None,
     )
     if message is None:
         raise KeyError("message not found")
+    if (
+        message.role == "user"
+        and state.messages
+        and state.messages[-1].id == message_id
+        and _is_latest_orphan_user(state)
+    ):
+        state.messages = [
+            candidate for candidate in state.messages if candidate.id != message_id
+        ]
+        rebuild_wiki_derived_state(state)
+        store.save(state)
+        return {
+            "messages": [_message_payload(candidate) for candidate in state.messages],
+            "preview": state.preview,
+            "wiki_update_status": state.wiki_update_status,
+        }
     if message.role == "assistant":
         user, assistant = _latest_pair(state, assistant_id=message_id)
         removed_ids = {assistant.id}

@@ -35,7 +35,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-_LOG = Path("logs") / "llm_latency.jsonl"
+_LOG = Path(__file__).resolve().parents[1] / "logs" / "llm_latency.jsonl"
 _TOKEN_FIELDS: tuple[str, ...] = (
     "prompt_tokens",
     "output_tokens",

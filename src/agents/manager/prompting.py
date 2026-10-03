@@ -5,7 +5,7 @@
 #
 # Functions
 #   - resolve_prompt_world_config(world: World, world_config: dict, npc_id: str, pc_id: str, perspective: int) -> dict : Resolve prompt world config
-#   - build_prompt_parts(user_input: str, perspective: int, world_config: dict, scene_plan: SceneTimePlan, context: CoreContext, world_context: dict, scene_need_hints: dict[str, str] | None, turn_ooc_directives: str = "", prose_profile: ProseProfile | None = None, engine_modules: dict[str, str] | None = None) -> PromptParts : Render manager prompt parts
+#   - build_prompt_parts(user_input: str, perspective: int, world_config: dict, scene_plan: SceneTimePlan, context: CoreContext, world_context: dict, scene_need_hints: dict[str, str] | None, turn_ooc_directives: str = "", prose_profile: ProseProfile | None = None, engine_modules: dict[str, str] | None = None, usernotes_block: str = "") -> PromptParts : Render manager prompt parts
 # ================================
 
 from src.agents.context.renderer import build_rendered_dynamic_context
@@ -13,7 +13,7 @@ from src.agents.manager.models import CoreContext, PromptParts, SceneTimePlan
 from src.agents.manager.pov import build_current_pov_context
 from src.agents.prompt_factory.builder import PromptBuilder
 from src.agents.prompt_factory.profiles import ProseProfile
-from src.assets.worlds.base import World
+from src.worlds.base import World
 from src.core.database import async_driver
 
 
@@ -41,6 +41,7 @@ def build_prompt_parts(
     turn_ooc_directives: str = "",
     prose_profile: ProseProfile | None = None,
     engine_modules: dict[str, str] | None = None,
+    usernotes_block: str = "",
 ) -> PromptParts:
     """Render the Fixed and Dynamic prompt segments from prepared context."""
     recall_events = _format_recall_events_for_prompt(context)
@@ -79,6 +80,7 @@ def build_prompt_parts(
             dynamic_state=context.char_data.get("dynamic_state", {}),
         ),
         turn_ooc_directives=turn_ooc_directives,
+        usernotes_block=usernotes_block,
     )
     return PromptParts(fixed=fixed_prompt, dynamic=dynamic_prompt)
 

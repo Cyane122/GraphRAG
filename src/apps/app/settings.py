@@ -17,14 +17,13 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from pydantic import BaseModel
 
-from src.config import MODEL_PRO_UPDATER
+from src.config import DATA_ROOT, MODEL_PRO_UPDATER
 from src.apps.app.models import normalize_actor_model
 
-_SETTINGS_FILE = Path("data") / "app_settings.json"
+_SETTINGS_FILE = DATA_ROOT / "app_settings.json"
 _THINKING_LEVELS = {"LOW", "MEDIUM", "HIGH"}
 _DEFAULT_ACTOR_THINKING_LEVEL = "HIGH"
 _DEFAULT_WIKI_UPDATER_THINKING_LEVEL = "MEDIUM"

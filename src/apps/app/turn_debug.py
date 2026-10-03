@@ -5,7 +5,7 @@
 #
 # Functions
 #   - write_actor_raw_snapshot(full_response: str, raw_thinking: str, visible_text: str, logs_dir: Path, debug_dir: str | None = None) -> None : Save latest Actor raw outputs
-#   - write_turn_debug_snapshot(user_input: str, fixed_prompt: str, dynamic_prompt: str, scene_types: list[str], manager_effects: dict, history: list[dict], world_id: str, pc_id: str, npc_id: str, npc_name: str, logs_dir: Path, turn_debug_dir: Path, actor_model: str | None = None) -> str | None : Save a turn debug snapshot
+#   - write_turn_debug_snapshot(user_input: str, fixed_prompt: str, dynamic_prompt: str, scene_types: list[str], manager_effects: dict, history: list[dict], world_id: str, pc_id: str, npc_id: str, npc_name: str, logs_dir: Path, turn_debug_dir: Path, actor_model: str | None = None, world_mode: str | None = None, thread_id: str | None = None, scenario_id: str | None = None, user_message_id: str | None = None, commit_id: str | None = None) -> str | None : Save a pre-accept turn debug snapshot with conversation identity
 # ================================
 import json
 from datetime import datetime
@@ -59,19 +59,38 @@ def write_turn_debug_snapshot(
     logs_dir: Path,
     turn_debug_dir: Path,
     actor_model: str | None = None,
+    world_mode: str | None = None,
+    thread_id: str | None = None,
+    scenario_id: str | None = None,
+    user_message_id: str | None = None,
+    commit_id: str | None = None,
 ) -> str | None:
-    """Actor 호출 직전의 프롬프트와 manager 산출물을 디버그 파일로 저장합니다."""
+    """Actor 호출 직전의 프롬프트와 manager 산출물을 디버그 파일로 저장합니다.
+
+    metadata와 fingerprint 레코드에는 대화 식별자(mode·thread·scenario·사용자 메시지·commit)를
+    최상위로 남긴다. 이 스냅샷은 출력 repair·확정 이전의 진단 기록(record_kind)이며 확정 턴
+    로그가 아니다. 식별자는 Actor 프롬프트나 fingerprint 해시에 섞이지 않는다.
+    """
     try:
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         turn_dir = turn_debug_dir / stamp
         turn_dir.mkdir(parents=True, exist_ok=True)
 
+        identity = {
+            "record_kind": "pre_accept_turn_debug",
+            "world_mode": world_mode,
+            "thread_id": thread_id,
+            "scenario_id": scenario_id,
+            "user_message_id": user_message_id,
+            "commit_id": commit_id,
+        }
         prompt_fingerprint = build_prompt_fingerprint(
             fixed_prompt=fixed_prompt,
             dynamic_prompt=dynamic_prompt,
             history=history,
         )
         prompt_fingerprint.update({
+            **identity,
             "world_id": world_id,
             "pc_id": pc_id,
             "npc_id": npc_id,
@@ -96,6 +115,7 @@ def write_turn_debug_snapshot(
             "history.json": json.dumps(history, ensure_ascii=False, indent=2),
             "metadata.json": json.dumps({
                 "timestamp": stamp,
+                **identity,
                 "world_id": world_id,
                 "pc_id": pc_id,
                 "npc_id": npc_id,
@@ -118,6 +138,8 @@ def write_turn_debug_snapshot(
         summary = [
             f"# Turn Debug {stamp}",
             "",
+            f"- mode: `{world_mode or ''}`",
+            f"- thread: `{thread_id or ''}`",
             f"- world: `{world_id}`",
             f"- pc: `{pc_id}`",
             f"- npc: `{npc_name}` (`{npc_id}`)",

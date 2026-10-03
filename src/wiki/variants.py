@@ -7,11 +7,12 @@
 #   - WikiVariantError : 인물 설정 분기 구조가 모호하거나 불완전할 때의 예외
 #
 # Functions
-#   - resolve_profile_variants(body: str, active_variant: str, known_variants: set[str]) -> str : common과 활성 분기만 남기고 선택기 제목을 제거합니다.
+#   - resolve_profile_variants(body: str, active_variants: Sequence[str], known_variants: set[str]) -> str : common과 우선순위상 처음 일치하는 활성 분기만 남기고 선택기 제목을 제거합니다.
 # ================================
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 import re
 
 
@@ -58,10 +59,15 @@ def _trim_blank_lines(lines: list[str]) -> list[str]:
 
 def _resolve_h2_block(
     lines: list[str],
-    active_variant: str,
+    active_variants: Sequence[str],
     selector_names: set[str],
 ) -> list[str]:
-    """하나의 H2 안에 있는 작성용 H3 선택기를 해석해 평탄한 블록을 반환합니다."""
+    """하나의 H2 안에 있는 작성용 H3 선택기를 해석해 평탄한 블록을 반환합니다.
+
+    `active_variants`는 우선순위 순서를 가진 후보 목록이다(예: [preset_id,
+    scenario_id]) — common은 항상 포함하고, 목록을 순서대로 훑어 처음 일치하는
+    분기 하나만 추가로 선택한다. 아무것도 일치하지 않으면 default로 폴백한다.
+    """
     selector_starts: list[tuple[int, str]] = []
     direct_h3_titles: list[str] = []
     for index, line in enumerate(lines[1:], start=1):
@@ -94,13 +100,17 @@ def _resolve_h2_block(
     selected_names: list[str] = []
     if _COMMON_VARIANT in sections:
         selected_names.append(_COMMON_VARIANT)
-    if active_variant in sections:
-        selected_names.append(active_variant)
+    matched_variant = next(
+        (variant for variant in active_variants if variant in sections),
+        None,
+    )
+    if matched_variant is not None:
+        selected_names.append(matched_variant)
     elif _DEFAULT_VARIANT in sections:
         selected_names.append(_DEFAULT_VARIANT)
     elif _COMMON_VARIANT not in sections:
         raise WikiVariantError(
-            f"활성 분기와 default가 모두 없습니다: {lines[0]} > {active_variant}"
+            f"활성 분기와 default가 모두 없습니다: {lines[0]} > {list(active_variants)}"
         )
 
     result = [lines[0]]
@@ -113,10 +123,16 @@ def _resolve_h2_block(
 
 def resolve_profile_variants(
     body: str,
-    active_variant: str,
+    active_variants: Sequence[str],
     known_variants: set[str],
 ) -> str:
-    """작성용 H3 분기 중 common과 활성 분기만 선택하고 선택기 이름은 제거합니다."""
+    """작성용 H3 분기 중 common과 우선순위상 처음 일치하는 활성 분기만 선택하고
+    선택기 이름은 제거합니다.
+
+    `active_variants`는 우선순위 순서를 가진다 — 호출자는 보통 preset이
+    scenario보다 우선하도록 `[preset_id, scenario_id]`를 전달하고, preset이
+    없으면 `[scenario_id]` 하나만 전달한다.
+    """
     selector_names = set(known_variants) | {_COMMON_VARIANT, _DEFAULT_VARIANT}
     lines = body.splitlines()
     result: list[str] = []
@@ -133,6 +149,6 @@ def resolve_profile_variants(
             if next_heading is not None and next_heading[0] <= 2:
                 break
             end += 1
-        result.extend(_resolve_h2_block(lines[index:end], active_variant, selector_names))
+        result.extend(_resolve_h2_block(lines[index:end], active_variants, selector_names))
         index = end
     return "\n".join(result).strip()

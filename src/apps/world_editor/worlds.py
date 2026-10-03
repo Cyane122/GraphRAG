@@ -6,7 +6,7 @@
 # (이 도구는 graph/ 의 라이브 DB를 절대 건드리지 않고 temp DB만 씁니다.)
 #
 # Functions
-#   - worlds_root() -> Path : src/assets/worlds 디렉터리 경로
+#   - worlds_root() -> Path : assets/worlds/graph 디렉터리 경로
 #   - list_world_ids() -> list[str] : schema.py 를 가진 월드 id 목록
 #   - load_world(world_id: str, scenario_id: str | None) -> tuple[World, list] : World 인스턴스와 Scenario 목록
 #   - scenario_infos(world_id: str) -> list[dict] : 시나리오별 메타(이름/씬타입/시점/기본위치/기본시각)
@@ -21,8 +21,8 @@ from datetime import datetime
 import importlib
 from pathlib import Path
 
-import src.assets.worlds as _worlds_pkg
-from src.assets.worlds.base import World, apply_scenario_overrides
+from src.config import GRAPH_WORLDS_PACKAGE, GRAPH_WORLDS_ROOT
+from src.worlds.base import World, apply_scenario_overrides
 from src.apps.world_editor.module_cache import purge_world_modules
 
 # 월드가 아닌 패키지 멤버 (탐색에서 제외)
@@ -30,14 +30,14 @@ _NON_WORLD = {"__pycache__", "base", "base_character", "utils"}
 
 
 def worlds_root() -> Path:
-    """src/assets/worlds 디렉터리 경로를 반환합니다."""
-    return Path(_worlds_pkg.__path__[0])
+    """assets/worlds/graph 디렉터리 경로를 반환합니다."""
+    return GRAPH_WORLDS_ROOT
 
 
 def _imports_ok(world_id: str) -> bool:
     """월드 schema 모듈이 import 되는지(=열 수 있는지) 가볍게 확인합니다."""
     try:
-        importlib.import_module(f"src.assets.worlds.{world_id}.schema")
+        importlib.import_module(f"{GRAPH_WORLDS_PACKAGE}.{world_id}.schema")
         return True
     except Exception:
         # 자체 소스 import 버그(babe_univ/ts 등)는 여기서 False 로 분류된다.
@@ -81,7 +81,7 @@ def load_world(world_id: str, scenario_id: str | None = None) -> tuple[World, li
     3) 최후 수단으로 World 서브클래스 직접 인스턴스화
     """
     purge_world_modules(world_id)
-    module = importlib.import_module(f"src.assets.worlds.{world_id}.schema")
+    module = importlib.import_module(f"{GRAPH_WORLDS_PACKAGE}.{world_id}.schema")
     scenarios = getattr(module, "SCENARIOS", None)
     scenario_list = scenarios if isinstance(scenarios, list) else []
 
@@ -113,7 +113,7 @@ def load_world(world_id: str, scenario_id: str | None = None) -> tuple[World, li
 def default_scene_types(world_id: str) -> dict[str, str]:
     """기본 World 인스턴스에 정의된 SCENE_TYPES dict를 반환합니다."""
     purge_world_modules(world_id)
-    module = importlib.import_module(f"src.assets.worlds.{world_id}.schema")
+    module = importlib.import_module(f"{GRAPH_WORLDS_PACKAGE}.{world_id}.schema")
     scenarios = getattr(module, "SCENARIOS", None)
     if isinstance(scenarios, list) and scenarios:
         world = getattr(scenarios[0], "world", None)

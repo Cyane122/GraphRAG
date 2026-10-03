@@ -30,14 +30,15 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from src.config import WIKI_PROMPTS_ROOT, WIKI_VAULT_ROOT
 from src.wiki.context import initialize_wiki_thread
 from src.wiki.models import WikiConversationSetup, WikiPromptBundle
 from src.wiki.prompt_contract import validate_wiki_prompt_bundle
 from src.wiki.runtime import build_wiki_prompt_bundle
 
 
-_SCENE_TYPES_PATH = ROOT / "src" / "wiki" / "prompts" / "scene_types.json"
-_WORLDS_ROOT = ROOT / "wiki_v2" / "worlds"
+_SCENE_TYPES_PATH = WIKI_PROMPTS_ROOT / "scene_types.json"
+_WORLDS_ROOT = WIKI_VAULT_ROOT / "worlds"
 _PLACEHOLDER_TEXTS = (
     "아직 정해지지",
     "플레이 중 확정",

@@ -21,6 +21,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
+from src.config import WIKI_PROMPTS_ROOT
 from src.core.llm import extract_json_from_llm, get_model, get_response_text
 from src.core.llm.errors import LLMJsonError
 from src.wiki.commit_errors import WikiCommitPlanningError
@@ -47,7 +48,7 @@ from src.wiki.updater_debug import (
     write_updater_attempt_severed,
 )
 
-_SYSTEM_PROMPT_PATH = Path(__file__).parent / "prompts" / "updater_system.md"
+_SYSTEM_PROMPT_PATH = WIKI_PROMPTS_ROOT / "updater_system.md"
 
 
 def _text_hash(text: str) -> str:

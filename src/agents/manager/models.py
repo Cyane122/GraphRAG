@@ -12,7 +12,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 
-from src.assets.worlds.base import World
+from src.worlds.base import World
 
 @dataclass
 class ManagerBootstrap:

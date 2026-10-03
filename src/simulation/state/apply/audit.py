@@ -20,8 +20,8 @@ import json
 import logging
 import re
 from datetime import datetime
-from pathlib import Path
 
+from src.config import LOGS_ROOT
 from src.core.state_normalization import normalize_stress_level
 
 logger = logging.getLogger(__name__)
@@ -50,7 +50,7 @@ _PC_CONTROL_EN_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _COMMIT_CONFIDENCE = 0.60
-_STATE_AUDIT_DIR = Path("logs/state_audit")
+_STATE_AUDIT_DIR = LOGS_ROOT / "state_audit"
 _RELATIONSHIP_ROUTINE_DELTA_CAP = 2
 _RELATIONSHIP_MEANINGFUL_DELTA_CAP = 4
 _EVIDENCE_MAX_CHARS = 160

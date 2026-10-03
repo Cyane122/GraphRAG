@@ -181,7 +181,7 @@ def compile_world_graph(world_id: str, scenario_id: str | None, use_cache: bool 
         with contextlib.redirect_stdout(io.StringIO()):
             world.build_schema(conn, world.scenario_id)
             # 런타임과 동일하게 전역/시나리오 schedule 템플릿도 반영 (편집기 WYSIWYG).
-            from src.assets.worlds.base import apply_schedule_templates
+            from src.worlds.base import apply_schedule_templates
             apply_schedule_templates(conn, world_id, world.scenario_id)
         extra_slots = list(getattr(world, "EXTRA_SLOTS", None) or [])
         graph = _extract(conn, world_id, scenario_id, extra_slots)

@@ -1,7 +1,10 @@
 # ================================
 # tests/smoke_wiki_runtime_branching.py
 #
-# Wiki runtime branching smoke checks cover post-apply edits, safe branching, archive export, updater failure recovery, and delete behavior.
+# Wiki runtime branching smoke checks cover post-apply edits, safe branching, archive export,
+# updater failure recovery, delete behavior, Actor-failure orphan-message rollback, orphan
+# message deletion, and deleting a user/assistant pair left at wiki_update_status="idle" by
+# an interrupted updater call.
 #
 # Functions
 #   - run_runtime_branching_suite(vault_root: Path, handles: RuntimeConversationHandles) -> None : Run the branching, lifecycle, and recovery smoke suite.
@@ -21,19 +24,22 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.apps.app.models import ConversationState  # noqa: E402
+from src.apps.app.models import ChatMessage, ConversationState  # noqa: E402
 import src.apps.app.service as app_service  # noqa: E402
 import src.apps.app.conversation_lifecycle as conversation_lifecycle  # noqa: E402
 import src.apps.app.wiki_branching as wiki_branching  # noqa: E402
 import src.apps.app.wiki_controls as wiki_controls  # noqa: E402
 import src.apps.app.wiki_message_ops as wiki_message_ops  # noqa: E402
+import src.apps.app.wiki_service as wiki_service  # noqa: E402
 import src.wiki as wiki_package  # noqa: E402
 from src.wiki import parse_frontmatter  # noqa: E402
 from src.wiki.markdown import parse_markdown_sections  # noqa: E402
 from tests.smoke_wiki_runtime_flow import run_runtime_flow_suite  # noqa: E402
 from tests.wiki_runtime_smoke_fixtures import (  # noqa: E402
     RuntimeConversationHandles,
+    _fake_actor_events,
     _fake_pending_commit,
+    _failing_actor_events,
     _failing_pending_commit,
     configure_runtime_environment,
     copy_runtime_world,
@@ -164,6 +170,50 @@ async def run_runtime_branching_suite(
     assert not store.exists(renamed_branch.thread_id)
     assert not branch_root.exists()
 
+    # 회귀 1: Actor 스트리밍이 429 재시도 소진 등으로 예외를 던지면, 응답 없는 고아
+    # user 메시지가 state.messages에 남지 않아야 한다(근본 원인 수정 검증).
+    messages_before_actor_failure = len(state.messages)
+    orphan_probe_content = "이 입력은 Actor 실패로 고아가 되면 안 된다."
+    wiki_service.stream_actor_events = _failing_actor_events
+    try:
+        try:
+            async for _event in app_service.append_user_and_stream(
+                state,
+                orphan_probe_content,
+                store,
+            ):
+                pass
+        except RuntimeError as exc:
+            assert "mock actor exhausted" in str(exc)
+        else:
+            raise AssertionError("Actor 스트리밍 실패가 삼켜졌습니다")
+    finally:
+        wiki_service.stream_actor_events = _fake_actor_events
+    assert len(state.messages) == messages_before_actor_failure
+    assert not any(
+        message.content == orphan_probe_content for message in state.messages
+    )
+    saved_after_actor_failure = store.load(state.thread_id)
+    assert len(saved_after_actor_failure.messages) == messages_before_actor_failure
+
+    # 회귀 2: 이미 저장된 고아 user 메시지(응답 없는 최신 입력)는 reroll/edit/activate에서
+    # 명확히 거부되고, delete_wiki_message는 commit 조작 없이 그 메시지만 제거해야 한다.
+    orphan_message = ChatMessage(role="user", content="응답을 받지 못한 입력")
+    state.messages.append(orphan_message)
+    assert wiki_message_ops._is_latest_orphan_user(state)
+    try:
+        await wiki_message_ops.reroll_wiki_assistant(state, orphan_message.id, store)
+    except ValueError as exc:
+        assert "응답 생성이 실패한 입력" in str(exc)
+    else:
+        raise AssertionError("고아 user 상태에서 reroll이 거부되지 않았습니다")
+    pre_orphan_commit_status = state.wiki_update_status
+    deleted_orphan = wiki_message_ops.delete_wiki_message(state, orphan_message.id, store)
+    assert all(message["id"] != orphan_message.id for message in deleted_orphan["messages"])
+    assert not wiki_message_ops._is_latest_orphan_user(state)
+    # 고아 입력은 commit을 만든 적이 없으므로 직전 정상 턴의 update 상태를 건드리지 않는다.
+    assert state.wiki_update_status == pre_orphan_commit_status
+
     wiki_package.plan_pending_commit = _failing_pending_commit
     failed_events = [
         event
@@ -222,6 +272,33 @@ async def run_runtime_branching_suite(
     assert [message["id"] for message in no_commit_deleted["messages"]] == [
         "user_without_commit"
     ]
+
+    # 회귀 3: Wiki 업데이트 호출 도중 스트림이 중단되어 wiki_update_status가 "idle"로
+    # 남은 채 저장된(fix 이전 데이터를 흉내낸) user/assistant 쌍도 삭제할 수 있어야
+    # 한다("이미 Wiki 정본에 반영된 응답" ValueError로 막히면 안 된다).
+    idle_thread_id = "delete_with_idle_status"
+    (vault_root / "threads" / idle_thread_id / "commits").mkdir(parents=True)
+    idle_state = ConversationState(
+        thread_id=idle_thread_id,
+        world_mode="wiki",
+        world_id="babe_university",
+        wiki_update_status="idle",
+        messages=[
+            {"id": "user_idle", "role": "user", "content": "중단된 턴의 입력"},
+            {
+                "id": "assistant_idle",
+                "role": "assistant",
+                "content": "중단된 턴의 응답",
+                "parent_user_id": "user_idle",
+            },
+        ],
+    )
+    idle_deleted = wiki_message_ops.delete_wiki_message(
+        idle_state,
+        "assistant_idle",
+        store,
+    )
+    assert [message["id"] for message in idle_deleted["messages"]] == ["user_idle"]
 
 def main() -> None:
     """Run the standalone runtime branching smoke suite."""

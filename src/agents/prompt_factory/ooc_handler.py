@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from src.config import ACTOR_PROMPTS_ROOT
 from src.config import MODEL_STATE_UPDATER as OOC_MODEL
 from src.core.llm.client import extract_json_from_llm, get_model, get_response_text
 from src.simulation.state.apply.ooc import _DATE_KOR_RE, _NEXT_MORNING_RE, _THREE_HOURS_LATER_RE, _coerce_delta_minutes, build_ooc_parse_context
@@ -25,7 +26,7 @@ def _compact_prompt_text(text: object, limit: int) -> str:
         return value
     return value[:limit].rstrip() + "\n...[truncated]"
 
-_SYSTEM_PROMPT = (Path(__file__).resolve().parent / "prompts" / "ooc" / "system.md").read_text(encoding="utf-8")
+_SYSTEM_PROMPT = (ACTOR_PROMPTS_ROOT / "ooc" / "system.md").read_text(encoding="utf-8")
 
 async def _render_ooc_world_context(world_config: dict | None, rule_hints: list[str]) -> str:
     """월드/시나리오 프롬프트와 Rule 힌트를 OOC 파서용 컨텍스트로 렌더링합니다."""

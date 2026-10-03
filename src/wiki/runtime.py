@@ -4,9 +4,9 @@
 # Wiki Markdown을 기존 PromptBuilder와 지연 커밋 흐름에 연결합니다.
 #
 # Functions
-#   - initialize_wiki_conversation(vault_root: Path, world_id: str, scenario_id: str, thread_id: str) -> WikiConversationSetup : Wiki thread를 초기화합니다.
-#   - resolve_wiki_opening_scene(vault_root: Path, world_id: str, scenario_id: str) -> str : 선택 시나리오의 첫 장면 원문을 반환합니다.
-#   - build_wiki_prompt_bundle(vault_root: Path, setup: WikiConversationSetup, user_input: str, recent_story: str = "", turn_ooc_directives: str = "", scene_types: list[str] | None = None, prose_profile: ProseProfile | None = None, engine_modules: dict[str, str] | None = None) -> WikiPromptBundle : 기존 PromptBuilder로 Actor prompt를 조립합니다.
+#   - initialize_wiki_conversation(vault_root: Path, world_id: str, scenario_id: str, thread_id: str, preset_id: str | None = None) -> WikiConversationSetup : Wiki thread를 초기화합니다.
+#   - resolve_wiki_opening_scene(vault_root: Path, world_id: str, scenario_id: str, preset_id: str | None = None) -> str : 선택 시나리오와 pc_preset의 첫 장면 원문을 반환합니다.
+#   - build_wiki_prompt_bundle(vault_root: Path, setup: WikiConversationSetup, user_input: str, recent_story: str = "", turn_ooc_directives: str = "", scene_types: list[str] | None = None, prose_profile: ProseProfile | None = None, engine_modules: dict[str, str] | None = None, usernotes_block: str = "") -> WikiPromptBundle : 기존 PromptBuilder로 Actor prompt를 조립합니다.
 #   - apply_pending_wiki_commit(vault_root: Path, thread_id: str) -> PendingWikiCommit | None : 다음 입력 직전 commit.md를 적용합니다.
 # ================================
 
@@ -21,6 +21,7 @@ from src.agents.prompt_factory.profiles import ProseProfile
 from src.config import (
     WIKI_ACTOR_RECALL_BUDGET,
     WIKI_ACTOR_RECALL_TOKEN_BUDGET,
+    WIKI_PROMPTS_ROOT,
 )
 from src.simulation.systems.world_dynamics.organic_models import (
     normalize_contraception_value,
@@ -59,8 +60,9 @@ _ACTOR_FILE_REFERENCE_RE = re.compile(r"(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+\.md
 _CURRENT_STATE_H3_RE = re.compile(r"^###\s+(.+?)\s*$")
 _CURRENT_STATE_FIELD_RE = re.compile(r"^-\s*([^:\n]+):\s*(.*?)\s*$")
 _REPRODUCTIVE_STATE_SECTION_PATH = ("현재 상태", "Reproductive State")
-_PROMPT_DIR = Path(__file__).parent / "prompts"
+_PROMPT_DIR = WIKI_PROMPTS_ROOT
 _PROTECTION_OOC_PROMPT_PATH = _PROMPT_DIR / "protection_ooc.md"
+_SCENE_TIME_PROMPT_PATH = _PROMPT_DIR / "scene_time.md"
 
 
 def initialize_wiki_conversation(
@@ -68,23 +70,26 @@ def initialize_wiki_conversation(
     world_id: str,
     scenario_id: str,
     thread_id: str,
+    preset_id: str | None = None,
 ) -> WikiConversationSetup:
     """Wiki thread와 초기 Markdown 상태를 만들고 앱용 설정을 반환합니다."""
-    return initialize_wiki_thread(vault_root, world_id, scenario_id, thread_id)
+    return initialize_wiki_thread(vault_root, world_id, scenario_id, thread_id, preset_id)
 
 
 def resolve_wiki_opening_scene(
     vault_root: Path,
     world_id: str,
     scenario_id: str,
+    preset_id: str | None = None,
 ) -> str:
-    """thread 생성 없이 선택한 시나리오의 첫 장면 원문을 반환합니다."""
+    """thread 생성 없이 선택한 시나리오와 pc_preset의 첫 장면 원문을 반환합니다."""
     preview_thread_id = "opening_preview"
     return load_wiki_setup(
         vault_root,
         world_id,
         scenario_id,
         preview_thread_id,
+        preset_id,
     ).opening_scene
 
 
@@ -121,11 +126,14 @@ def _remove_actor_metadata(body: str) -> str:
 
 
 def _situation_rules_body(document: WikiDocument) -> str:
-    """작성용 scenario 포장 제목을 제거하고 현재 상황의 사실과 규칙만 반환합니다."""
+    """작성용 scenario/preset 포장 제목을 제거하고 현재 상황의 사실과 규칙만 반환합니다."""
     omitted_titles = {
         "시나리오 특징과 묘사 규정",
         "시나리오 특징",
         "시나리오 한정 묘사 규정",
+        "프리셋 특징과 묘사 규정",
+        "프리셋 특징",
+        "프리셋 한정 묘사 규정",
     }
     rendered: list[str] = []
     for line in document_body(document.content).splitlines():
@@ -292,6 +300,16 @@ def _world_config(
     scenario_document = next(
         document for document in assets if document.path.endswith("/scenario.md")
     )
+    preset_document = next(
+        (
+            document
+            for document in assets
+            if document is not scenario_document
+            and document.metadata is not None
+            and document.metadata.type == "scenario"
+        ),
+        None,
+    )
     prose_document = next(
         document
         for document in assets
@@ -301,6 +319,7 @@ def _world_config(
         _render_document_block(_static_block_label(document), document)
         for document in assets
         if document is not scenario_document
+        and document is not preset_document
         and document is not prose_document
         and document.metadata is not None
         and "actor" in document.metadata.visibility
@@ -317,6 +336,14 @@ def _world_config(
             _situation_rules_body(scenario_document),
         )
     )
+    if preset_document is not None:
+        world_parts.append(
+            _render_document_block(
+                "situation_information",
+                preset_document,
+                _situation_rules_body(preset_document),
+            )
+        )
     return {
         "rating": setup.rating,
         "pov_mode": setup.pov_mode,
@@ -443,9 +470,15 @@ def build_wiki_prompt_bundle(
     scene_types: list[str] | None = None,
     prose_profile: ProseProfile | None = None,
     engine_modules: dict[str, str] | None = None,
+    usernotes_block: str = "",
 ) -> WikiPromptBundle:
     """최신 Markdown을 읽어 기존 PromptBuilder의 Fixed/Dynamic을 조립합니다."""
-    assets = read_wiki_actor_assets(vault_root, setup.world_id, setup.scenario_id)
+    assets = read_wiki_actor_assets(
+        vault_root,
+        setup.world_id,
+        setup.scenario_id,
+        setup.preset_id,
+    )
     thread_documents = read_wiki_thread_documents(vault_root, setup.thread_id)
     scene_document = next(
         document
@@ -490,6 +523,8 @@ def build_wiki_prompt_bundle(
             }
         },
         turn_ooc_directives=_wiki_turn_ooc_directives(turn_ooc_directives),
+        usernotes_block=usernotes_block,
+        scene_time_directive=_SCENE_TIME_PROMPT_PATH.read_text(encoding="utf-8").strip(),
     )
     bundle = WikiPromptBundle(
         fixed_prompt=fixed,

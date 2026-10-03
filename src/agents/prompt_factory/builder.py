@@ -11,7 +11,6 @@
 #
 # Functions
 #   - _render_scene_need_hints(hints: dict[str, str]) -> str : 욕구 오버플로우 힌트 블록 렌더링
-#   - _read_default_scene_blacklist(scene_type: str) -> str : 기본 씬 블랙리스트 로드
 #   - _label_mixed_input(user_input: str, user_name: str) -> str : *...* 상황설명과 PC 대사를 원문 순서대로 레이블링
 # ================================
 
@@ -28,7 +27,7 @@ from src.agents.prompt_factory.fixed import (
 )
 from src.agents.prompt_factory.profiles import ProseProfile, normalize_prose_profile
 from src.agents.prompt_factory.renderers import (
-    _read_optional_prompt,
+    load_prompt,
     _render_prompt_block,
     format_prompt_vars,
     is_unified_blacklist,
@@ -56,10 +55,13 @@ Guard: the single constraint most at risk this turn
 
 Close </analyze>. If an enabled engine module defines a block that goes before the prose, write those blocks next, in engine-module order; otherwise go straight to the prose. Then IMMEDIATELY write the Korean prose scene.
 Begin the prose with a Korean date/time/location header in bold.
-KEEP the date and location IDENTICAL to the current header above unless the Player Input
-(or an OOC directive) explicitly moves time or place; do not invent date jumps or location
-changes on your own. Within the same scene you may advance only minutes/hours on the SAME
-calendar day, and never move time backward.
+KEEP the date IDENTICAL to the current header above unless the Player Input (or an OOC
+directive) explicitly moves time; do not invent date jumps on your own. Within the same
+scene you may advance only minutes/hours on the SAME calendar day, and never move time
+backward. KEEP the location the current header above supplies unless the Player Input, an
+OOC directive, or an explicit engine directive in this prompt moves the scene to a different
+place; do not invent location changes on your own. Write that place in natural Korean prose,
+in your own words, rather than repeating any given wording verbatim.
 The scene is mandatory; do not stop after </analyze>.
 Engine-module blocks defined to follow the prose go after the scene, in engine-module order. Never place an engine block inside the prose.
 
@@ -73,14 +75,6 @@ def _render_scene_need_hints(hints: dict[str, str]) -> str:
         return ""
     lines = "\n".join(hints.values())
     return _render_prompt_block("scene_need_hints", lines)
-
-
-def _read_default_scene_blacklist(scene_type: str) -> str:
-    """Read default scene blacklist. World scene blacklist overrides this later."""
-    return (
-        _read_optional_prompt(f"genre_specific/scenes/{scene_type}.cot_append.md")
-        or _read_optional_prompt(f"genre_specific/{scene_type}.cot_append.md")
-    )
 
 
 class PromptBuilder:
@@ -126,7 +120,7 @@ class PromptBuilder:
         return format_prompt_vars(
             render_current_pov(
                 self.pov_mode,
-                user_impersonation_allowed(self.pov_mode, self.world_config),
+                user_impersonation_allowed(self.pov_mode, self.world_config, self.engine_modules),
                 current_pov,
             ),
             char_name=self.char_name,
@@ -184,14 +178,13 @@ class PromptBuilder:
             or self.world_config.get("prompt", {}).get("scenes", {}).get("blacklist", {})
         )
         for scene_type in scene_types:
-            # World scene blacklist overrides default scene blacklist.
-            ban = world_scene_blacklists.get(scene_type) or _read_default_scene_blacklist(scene_type)
+            ban = world_scene_blacklists.get(scene_type)
             if ban:
                 scene_parts.append(f"### {scene_type}\n{ban.strip()}")
         if scene_parts:
             additions.append("## Scene-Specific Ban\n" + "\n\n".join(scene_parts))
 
-        blacklist_tpl = _read_optional_prompt("blacklist/BLACKLIST.md")
+        blacklist_tpl = load_prompt("blacklist/BLACKLIST.md")
         if blacklist_tpl:
             body = format_prompt_vars(
                 blacklist_tpl,
@@ -224,8 +217,24 @@ class PromptBuilder:
         location_nodes: Optional[list[dict]] = None,
         scene_need_hints: Optional[dict[str, str]] = None,
         turn_ooc_directives: str = "",
+        usernotes_block: str = "",
+        scene_time_directive: str = "",
     ) -> tuple[str, str]:
-        """Return the fixed and dynamic prompt sections for the current turn."""
+        """Return the fixed and dynamic prompt sections for the current turn.
+
+        `usernotes_block` already carries its own `<usernote name="...">...</usernote>`
+        tag(s) (see `usernote.build_usernotes_block`) and is inserted verbatim as its own
+        segment, after the turn OOC directives and before `<user_input>`. It is never
+        passed through `_label_mixed_input`, so it cannot be mislabeled as player dialogue
+        or scene description.
+
+        `scene_time_directive`, when non-empty, is wrapped in a `<scene_time_directive>`
+        block and placed after the turn OOC directives (and the usernote segment, when
+        present) and before `<user_input>`. It is visible-prose guidance (unlike
+        `turn_ooc_directives`, which is engine-facing bookkeeping), so it is rendered as
+        its own segment rather than folded into that block. An empty string contributes
+        nothing. Graph callers leave this unset, so Graph dynamic prompts are unaffected.
+        """
         scene_types = normalize_prompt_scene_types(scene_types)
         fixed_prompt = self.build_fixed_section()
         context_block = join_rendered_context(rendered_context or {})
@@ -245,6 +254,8 @@ class PromptBuilder:
                 self.build_reproductive_state(char_data, npcs or []),
                 self.build_world_turn_constraints(),
                 self.build_turn_ooc_directives(turn_ooc_directives),
+                str(usernotes_block or "").strip(),
+                _render_prompt_block("scene_time_directive", scene_time_directive),
                 _render_prompt_block("user_input", _label_mixed_input(user_input, self.user_name)),
                 _SYSTEM_LOG_CONTRACT,
             ]

@@ -4,6 +4,10 @@
 # Synchronizes safe accepted Actor header time and location into the current-scene patch.
 #
 # Functions
+#   - _header_location_is_grounded(header_location: str, current_location: str, user_input: str) -> bool : Return whether a header location is current or named in player input.
+#   - _scene_time_place_line(scene_time: datetime, location: str) -> str : Return the canonical English Time and Place bullet.
+#   - _replace_scene_time_place(scene_markdown: str, replacement_line: str) -> str : Replace or add the Time and Place subsection in a complete scene H2.
+#   - _time_place_section_location(section_markdown: str) -> str | None : Read the location out of a scene section's own Time and Place line, if parseable.
 #   - synchronize_accepted_header(result: WikiUpdaterResult, documents: list[WikiDocument], user_input: str, actor_response: str) -> None : Merge accepted Actor header time and location into the canonical scene patch.
 # ================================
 
@@ -19,7 +23,7 @@ from src.simulation.prose_headers import (
 )
 from src.wiki.commit_errors import WikiCommitPlanningError
 from src.wiki.commit_policy import SCENE_SECTION_ALIASES
-from src.wiki.context import scene_datetime_and_location
+from src.wiki.context import WikiContextError, scene_datetime_and_location
 from src.wiki.markdown import apply_section_patches, parse_markdown_sections
 from src.wiki.models import WikiDocument, WikiUpdaterResult
 from src.wiki.patches import build_actor_response_section_patch
@@ -93,6 +97,21 @@ def _replace_scene_time_place(scene_markdown: str, replacement_line: str) -> str
     ).rstrip()
 
 
+def _time_place_section_location(section_markdown: str) -> str | None:
+    """Read the location out of a scene section's own Time and Place line, if parseable."""
+    subsection = re.search(
+        rf"(?ms)^### {_TIME_PLACE_HEADING_PATTERN}\s*$\n+(.+?)(?=^###\s+|\Z)",
+        section_markdown,
+    )
+    if subsection is None:
+        return None
+    try:
+        _, location = scene_datetime_and_location(subsection.group(1))
+    except WikiContextError:
+        return None
+    return location
+
+
 def synchronize_accepted_header(
     result: WikiUpdaterResult,
     documents: list[WikiDocument],
@@ -120,11 +139,6 @@ def synchronize_accepted_header(
         header_time.date() == current_time.date() or _EXPLICIT_DATE_JUMP_RE.search(user_input)
     ):
         safe_time = header_time
-    safe_location = current_location
-    if header_location and _header_location_is_grounded(header_location, current_location, user_input):
-        safe_location = header_location
-    if safe_time == current_time and safe_location.strip().casefold() == current_location.strip().casefold():
-        return
 
     sections = parse_markdown_sections(scene_document.content)
     aliases = [alias for alias in SCENE_SECTION_ALIASES if (alias,) in sections]
@@ -137,6 +151,21 @@ def synchronize_accepted_header(
     )
     base_section = sections[section_path]
     target_markdown = existing_patch.replacement_markdown if existing_patch is not None else base_section.markdown
+
+    # The location baseline is this turn's already-decided location, not the pre-turn
+    # scene document: when an Updater patch is present it may have moved the location,
+    # and that patch is the target_markdown this sync rewrites. Falling back to
+    # current_location only when target_markdown itself has no parseable line keeps
+    # parity with the pre-fix behavior for the no-patch case.
+    baseline_location = _time_place_section_location(target_markdown)
+    if baseline_location is None:
+        baseline_location = current_location
+    safe_location = baseline_location
+    if header_location and _header_location_is_grounded(header_location, baseline_location, user_input):
+        safe_location = header_location
+    if safe_time == current_time and safe_location.strip().casefold() == baseline_location.strip().casefold():
+        return
+
     replacement = _replace_scene_time_place(
         target_markdown,
         _scene_time_place_line(safe_time, safe_location),

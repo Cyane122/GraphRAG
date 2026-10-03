@@ -50,7 +50,7 @@ def create_router(context: RouterContext) -> APIRouter:
 
     @router.get("/api/conversations/{thread_id}/schema")
     async def api_conversation_schema(thread_id: str) -> dict:
-        """Return schema from the graph viewer server when possible."""
+        """Return the live thread schema, or the world-definition schema as fallback."""
         state = _load_or_404(store, thread_id)
         _require_graph_mode(state)
         return await load_conversation_schema(state)

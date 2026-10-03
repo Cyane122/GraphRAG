@@ -6,6 +6,7 @@
 # Functions
 #   - fetch_current_schema(world_id: str | None = None, scenario_id: str | None = None) -> list[dict[str, Any]] : Return active Kuzu table schema metadata.
 #   - fetch_world_definition_schema(world_id: str, scenario_id: str | None) -> list[dict[str, Any]] : Return schema rebuilt from world definitions.
+#   - fetch_thread_schema_readonly(db_path: str) -> list[dict[str, Any]] : Return an existing thread DB schema through a read-only open.
 #   - fetch_location_board() -> dict[str, Any] : Return locations and current character placements.
 #   - move_character_location(character_id: str, location_id: str) -> dict[str, Any] : Move a character and return refreshed placements.
 # ================================
@@ -19,7 +20,7 @@ from typing import Any
 import kuzu
 
 from src.agents.manager.world_loader import load_world_instance
-from src.assets.worlds.base import apply_schedule_templates
+from src.worlds.base import apply_schedule_templates
 from src.core.database import async_driver, move_location
 
 
@@ -101,6 +102,27 @@ def fetch_world_definition_schema(world_id: str, scenario_id: str | None) -> lis
                 db.close()
             except Exception:
                 pass
+
+
+def fetch_thread_schema_readonly(db_path: str) -> list[dict[str, Any]]:
+    """Return an existing thread DB schema without the driver's bootstrap or migrations.
+
+    Raises the Kuzu RuntimeError ("Could not set lock ...") when another holder
+    keeps the file locked; callers choose the fallback.
+    """
+    db = kuzu.Database(db_path, read_only=True)
+    conn = kuzu.Connection(db)
+    try:
+        return _schema_from_sync_connection(conn)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        try:
+            db.close()
+        except Exception:
+            pass
 
 
 async def fetch_current_schema(world_id: str | None = None, scenario_id: str | None = None) -> list[dict[str, Any]]:

@@ -17,6 +17,7 @@
 #   - is_retryable_provider_limit(exc: BaseException) -> bool : 예외가 재시도 가능한 403/429 provider 한도 오류인지 판별(provider 공용, Actor 스트리밍도 공유)
 #   - _run_generate_with_retries(generate_once: Callable[[], Awaitable[tuple[object, str]]], log_source: str, model_name: str, mime: str | None) -> object : 1회 생성 코루틴을 provider-무관하게 재시도/계측
 #   - get_client() -> genai.Client : 스트리밍 직접 호출 시 사용하는 클라이언트 반환
+#   - get_regional_client(location: str) -> genai.Client : 지정 리전의 Vertex GenAI 클라이언트를 지연 생성해 반환(한도 초과 시 리전 전환용)
 #   - get_model(model_name: str, system_prompt: str | None) -> _GeminiModel : Gemini 래퍼 반환
 #   - get_response_text(response) -> str : response.text가 None인 경우 parts에서 텍스트 추출
 #   - log_empty_response_diagnostics(response: object, source: str) -> None : 빈 LLM 응답의 메타데이터를 출력
@@ -29,7 +30,6 @@ import random
 import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
-from pathlib import Path
 from time import perf_counter
 from types import SimpleNamespace
 
@@ -47,6 +47,7 @@ from src.config import (
     GOOGLE_PROJECT_ID as PROJECT_ID,
     LLM_MAX_CONCURRENCY,
     LLM_MAX_RETRIES_429,
+    LOGS_ROOT,
 )
 from src.core.llm.errors import LLMJsonError, TransientLLMError
 
@@ -161,7 +162,7 @@ def is_retryable_provider_limit(exc: BaseException) -> bool:
     return "RESOURCE_EXHAUSTED" in str(exc).upper()
 
 # 측정용: 모든 비동기 LLM 호출 1건의 지연을 한 줄씩 누적한다(Phase 2 병목 분석).
-_LLM_LATENCY_LOG = Path("logs") / "llm_latency.jsonl"
+_LLM_LATENCY_LOG = LOGS_ROOT / "llm_latency.jsonl"
 
 
 def usage_token_counts(usage: object) -> dict[str, int | None]:
@@ -230,6 +231,23 @@ _client = genai.Client(
 def get_client() -> genai.Client:
     """app.py 등에서 스트리밍 직접 호출 시 사용."""
     return _client
+
+
+_regional_clients: dict[str, genai.Client] = {}
+
+
+def get_regional_client(location: str) -> genai.Client:
+    """Return a Vertex GenAI client bound to ``location``, creating it on first use.
+
+    기본 리전이 403/429로 막혔을 때 같은 모델을 다른 리전으로 옮겨 호출하는 데 쓴다.
+    """
+    if location == GOOGLE_CLOUD_LOCATION:
+        return _client
+    client = _regional_clients.get(location)
+    if client is None:
+        client = genai.Client(vertexai=True, project=PROJECT_ID, location=location)
+        _regional_clients[location] = client
+    return client
 
 
 class _SafeResponse:

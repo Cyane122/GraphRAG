@@ -309,7 +309,7 @@ def add_subnode(world_id: str, char_id: str, kind: str, fields: dict) -> dict:
 
 
 def _ensure_base_import(text: str, name: str) -> str:
-    """src.assets.worlds.base 에서 name 을 import 하지 않으면 import 줄을 추가합니다."""
+    """src.worlds.base 에서 name 을 import 하지 않으면 import 줄을 추가합니다."""
     tree = ast.parse(text)
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and any(a.name == name for a in node.names):
@@ -319,7 +319,7 @@ def _ensure_base_import(text: str, name: str) -> str:
         if isinstance(stmt, (ast.Import, ast.ImportFrom)):
             last_import_line = stmt.end_lineno or last_import_line
     lines = text.splitlines(keepends=True)
-    import_line = f"from src.assets.worlds.base import {name}\n"
+    import_line = f"from src.worlds.base import {name}\n"
     return "".join(lines[:last_import_line] + [import_line] + lines[last_import_line:])
 
 

@@ -20,12 +20,17 @@
 #   - _format_schedule_for_classifier(schedule: dict, detailed: bool) -> str : Format one schedule constraint line
 #   - _format_time_rule_for_classifier(rule: dict) -> str : Format one time rule constraint line
 # ================================
+
+# DEPRECATED for Wiki mode (2026-09-21).
+# Wiki uses wiki/runtime._scene_types() regex fallback instead of LLM classification.
+# This module remains active for Graph mode only (called from planning.py).
+
 import asyncio
 import re
 from datetime import datetime
 from typing import Any
 
-from src.assets.worlds.base import World
+from src.worlds.base import World
 from src.config import MODEL_CLASSIFIER as CLASSIFIER_MODEL
 from src.core.llm.client import (
     extract_json_from_llm,
@@ -243,7 +248,10 @@ async def classify_scene_types(
     recent_story: str,
     scene_descriptions: dict[str, str] | None = None,
 ) -> list[str]:
-    """공용 rule shortcut과 scene-only LLM fallback으로 raw 장면 라벨을 반환합니다."""
+    """Graph 전용: rule shortcut과 scene-only LLM fallback으로 raw 장면 라벨을 반환합니다.
+
+    .. deprecated:: Wiki mode no longer calls this function.
+    """
     rule_result = _try_rule_based(user_input, recent_story)
     if rule_result:
         rule_scene_types = rule_result.get("scene_types") or ["daily"]

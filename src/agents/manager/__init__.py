@@ -5,7 +5,7 @@
 #
 # Functions
 #   - load_world_instance(world_id: str) -> World : Load the World instance for a world id
-#   - run_manager(user_input: str, pc_id: str, npc_id: str, recent_story: str, world_id: str | None, scenario_id: str | None, perspective: int, suppress_time_plan: bool = False, scene_need_hints: dict[str, str] | None = None, pending_kakao_messages: list[dict] | None = None, enable_kakao_preprocessing: bool = True, social_media_features: dict | None = None, thread_id: str | None = None, commit_id: str | None = None, turn_ooc_directives: str = "", prose_profile: ProseProfile | None = None, engine_modules: dict[str, str] | None = None) -> tuple[PromptParts, list[str], dict] : Run one manager turn pipeline
+#   - run_manager(user_input: str, pc_id: str, npc_id: str, recent_story: str, world_id: str | None, scenario_id: str | None, perspective: int, suppress_time_plan: bool = False, scene_need_hints: dict[str, str] | None = None, pending_kakao_messages: list[dict] | None = None, enable_kakao_preprocessing: bool = True, social_media_features: dict | None = None, thread_id: str | None = None, commit_id: str | None = None, turn_ooc_directives: str = "", prose_profile: ProseProfile | None = None, engine_modules: dict[str, str] | None = None, usernotes_block: str = "") -> tuple[PromptParts, list[str], dict] : Run one manager turn pipeline
 #   - commit_manager_effects(effects: dict | None, pc_id: str, npc_id: str) -> None : Commit pending manager side effects
 # ================================
 import asyncio
@@ -34,6 +34,7 @@ async def run_manager(
     turn_ooc_directives: str = "",
     prose_profile: ProseProfile | None = None,
     engine_modules: dict[str, str] | None = None,
+    usernotes_block: str = "",
 ) -> tuple[PromptParts, list[str], dict]:
     """Orchestrate turn preparation while leaving each stage testable in isolation."""
     prompts, scene_types, manager_effects = await run_manager_pipeline(
@@ -54,6 +55,7 @@ async def run_manager(
         turn_ooc_directives=turn_ooc_directives,
         prose_profile=prose_profile,
         engine_modules=engine_modules,
+        usernotes_block=usernotes_block,
     )
 
     return prompts, scene_types, manager_effects

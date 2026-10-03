@@ -24,8 +24,8 @@ import json
 import logging
 import re
 from datetime import datetime
-from pathlib import Path
 
+from src.config import LOGS_ROOT
 from src.core.database import (
     async_driver,
     get_dynamic_state_field_types,
@@ -181,7 +181,7 @@ def _render_recent_event_context(
     return "\n\n".join(lines)
 
 
-_LOGS_DIR = Path("logs")
+_LOGS_DIR = LOGS_ROOT
 
 
 def _write_updater_diff_snapshot(

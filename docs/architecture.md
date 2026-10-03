@@ -1,11 +1,10 @@
 # GraphRAG / WikiRAG Architecture
 
 This is the canonical runtime architecture reference. Repository-wide operating
-rules live in `AGENTS.md`; current priorities live in `.ai/active.md`; the detailed
-Wiki execution board lives in `architecture_wiki/TODO.md` and
-`docs/wiki_v2_todo.md`.
+rules live in `AGENTS.md`; current priorities live in `.agent/active.md`; the Wiki
+execution board lives in `docs/architecture/TODO.md`.
 
-`architecture_wiki/` is a developer-facing Obsidian vault. It is never loaded as
+`docs/architecture/` is a developer-facing Obsidian vault. It is never loaded as
 WikiRAG runtime state.
 
 ## 1. System Boundaries
@@ -18,10 +17,10 @@ application:
   depend on Kuzu.
 - **Shared runtime** provides conversation storage, input routing, provider-agnostic
   Actor streaming, output guards, and the accepted-turn Updater contract.
-- **Hosted UI** lives in `hosted-ui/` and calls the local engine through JSON and
-  NDJSON endpoints. It is the active user interface and owns new user-facing work.
-- **Local UI** is served from `frontend/app/`. It is the legacy client, kept
-  working against the current engine API but no longer receiving new features.
+- **Chat UI** lives in `graphrag-chat-site/` and calls the local engine through
+  JSON and NDJSON endpoints. It owns user-facing screens and controls.
+- The backend serves only the engine API. Its root URL returns 404, and startup
+  does not open a browser or start legacy Graph Viewer/World Editor servers.
 
 The main backend entry point is `python -m src.apps.app`.
 
@@ -43,9 +42,9 @@ The main backend entry point is `python -m src.apps.app`.
 
 ### Wiki mode
 
-- Authored source documents live under `wiki_v2/worlds/`.
+- Authored source documents live under `assets/wiki_v2/worlds/`.
 - Each conversation receives an isolated materialized vault under
-  `wiki_v2/threads/<thread_id>/`.
+  `assets/wiki_v2/threads/<thread_id>/`.
 - Canonical Markdown is reread on every normal turn so external edits are visible
   without restarting the server.
 - Revisions are content-derived. Pending patches must validate the expected
@@ -214,7 +213,7 @@ Never put current time, current location, recent events, relationship state, nee
 schedules, memories, or user input into Fixed.
 
 Prompt prose belongs in Markdown assets under
-`src/agents/prompt_factory/prompts/` or the relevant world prompt directory, not in
+`assets/prompts/actor/` or the relevant world prompt directory, not in
 large Python constants.
 
 ### Wiki metadata boundary
@@ -250,9 +249,9 @@ Updater inputs retain paths and revisions because validated patching requires th
 | Graph persistence | `src/simulation/state/graph_apply.py`, `src/core/database/` |
 | Long-running systems | `src/simulation/systems/` |
 | Wiki runtime and commit planning | `src/wiki/` |
-| Chat client (active) | `hosted-ui/` |
-| Chat client (legacy) | `frontend/app/` |
-| Authoring and graph tools | `src/apps/world_editor/`, `src/apps/graph_viewer/` |
+| Chat client (active) | `graphrag-chat-site/` |
+| Authoring helpers (no server) | `src/apps/world_editor/` |
+| Graph schema API | `src/apps/app/schema.py`, `src/apps/app/world_state.py` |
 
 ## 8. Design Invariants
 

@@ -2,7 +2,7 @@
 # src/agents/prompt_factory/engines.py
 #
 # Per-conversation "engine module" slot catalog and Fixed-section rendering.
-# Loads src/agents/prompt_factory/prompts/usernotes/chinese_restaurant/catalog.json
+# Loads assets/prompts/actor/engines/catalog.json
 # (slots authored there; this module does not rewrite or reformat that file) and the
 # Markdown bodies that live beside it. Mirrors the prose-profile pattern in
 # src/agents/prompt_factory/profiles.py: a per-conversation selection that is
@@ -13,6 +13,7 @@
 #   - _is_valid_option(option: object) -> bool : Return whether a raw catalog option has correctly typed value/label/file/recommended_for fields.
 #   - normalize_engine_modules(value: dict | None) -> dict[str, str] : Validate a slot selection, defaulting every unknown or invalid slot to "off", then sync shared policy_group slots.
 #   - adult_engine_enabled(engine_modules: dict[str, str]) -> bool : Return whether the "adult" slot is selected to anything other than "off".
+#   - impersonation_engine_enabled(engine_modules: dict[str, str]) -> bool : Return whether the main or memory slot selects the impersonation option.
 #   - build_engine_modules_section(engine_modules: dict[str, str], *, char_name: str = "", user_name: str = "") -> str : Render enabled slot bodies as <engine_module> blocks.
 #   - engine_module_catalog() -> dict : Return the engine-module slot catalog payload for the hosted UI.
 # ================================
@@ -22,10 +23,11 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from src.config import ACTOR_PROMPTS_ROOT
 
 logger = logging.getLogger(__name__)
 
-_CATALOG_DIR = Path(__file__).resolve().parent / "prompts" / "usernotes" / "chinese_restaurant"
+_CATALOG_DIR = ACTOR_PROMPTS_ROOT / "engines"
 _CATALOG_PATH = _CATALOG_DIR / "catalog.json"
 
 
@@ -149,6 +151,11 @@ def normalize_engine_modules(value: dict | None) -> dict[str, str]:
 def adult_engine_enabled(engine_modules: dict[str, str]) -> bool:
     """Return whether the "adult" slot is selected to anything other than "off"."""
     return engine_modules.get("adult", "off") != "off"
+
+
+def impersonation_engine_enabled(engine_modules: dict[str, str]) -> bool:
+    """Return whether the main or memory slot selects the impersonation option."""
+    return "impersonation" in (engine_modules.get("main"), engine_modules.get("memory"))
 
 
 def build_engine_modules_section(

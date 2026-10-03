@@ -7,7 +7,7 @@
 #   - recover_missing_analyze_prose(raw: str) -> tuple[str, bool] : Recover prose when Actor omits closing analyze tag.
 #   - _build_generation_config(model_name: str, system_text: str, max_token: int) -> types.GenerateContentConfig : Build a model-compatible generation config.
 #   - _stream_actor_text_chunks(fixed_prompt: str, dynamic_prompt: str, history: list[dict], genai_client: object, model_name: str, max_token: int, usage_sink: dict[str, int | None] | None = None) -> AsyncIterator[str] : Yield provider text chunks.
-#   - _stream_actor_text_chunks_resilient(fixed_prompt: str, dynamic_prompt: str, history: list[dict], genai_client: object, model_name: str, max_token: int, usage_sink: dict[str, int | None] | None = None) -> AsyncIterator[str] : Yield provider text chunks, retrying the whole stream on pre-first-token network blips.
+#   - _stream_actor_text_chunks_resilient(fixed_prompt: str, dynamic_prompt: str, history: list[dict], genai_client: object, model_name: str, max_token: int, usage_sink: dict[str, int | None] | None = None) -> AsyncIterator[str] : Yield provider text chunks, retrying pre-first-token blips and moving Gemini to ACTOR_FALLBACK_LOCATIONS on persistent 403/429.
 #   - stream_actor_events(fixed_prompt: str, dynamic_prompt: str, history: list[dict], genai_client: object, model_name: str, max_token: int, scene_chars: list[str] | None = None) -> AsyncIterator[dict] : Yield token events and a final event.
 # ================================
 
@@ -26,6 +26,8 @@ from google.genai import types
 
 from src.apps.app.settings import load_settings
 from src.config import (
+    ACTOR_FALLBACK_AFTER_429,
+    ACTOR_FALLBACK_LOCATIONS,
     ANTHROPIC_CLAUDE_OPUS_4_6_MODEL,
     ANTHROPIC_CLAUDE_OPUS_4_7_MODEL,
     ANTHROPIC_CLAUDE_OPUS_4_8_MODEL,
@@ -40,6 +42,7 @@ from src.core.llm.client import (
     get_anthropic_client,
     get_anthropic_vertex_client,
     get_deepseek_client,
+    get_regional_client,
     is_retryable_provider_limit,
     record_llm_latency,
     stream_anthropic_text_chunks,
@@ -53,6 +56,7 @@ _HEADER_SPLIT_RE = re.compile(r"(?=\*\*\d{4}년)")
 _PREFILL = "<analyze>\n"
 _PROVIDER_PREFILL = _PREFILL.rstrip()
 _ANALYZE_TAG_RE = re.compile(r"</?analyze>", re.IGNORECASE)
+_ANALYZE_OPEN = "<analyze>"
 
 # 스트리밍 중 끊길 수 있는 일시적 네트워크 오류(재시도/우아한 종료 대상).
 # httpx.TransportError는 ReadError/ReadTimeout/RemoteProtocolError/ConnectError 등의 베이스.
@@ -117,10 +121,46 @@ def recover_missing_analyze_prose(raw: str) -> tuple[str, bool]:
     return recovered, bool(recovered)
 
 
+def _collapse_leading_analyze_tags(text: str) -> str:
+    """Collapse a leading run of repeated ``<analyze>`` openings into one.
+
+    ``text`` seeds with the literal ``_PREFILL`` opening; if the model also
+    obeys the provider's plain-text "begin with <analyze>" instruction, a
+    second (or later, a third) opening tag follows right after, separated by
+    at most whitespace. Only that leading run is collapsed — an
+    ``<analyze>``-like token appearing after the run (e.g. past the block's
+    ``</analyze>``) is left untouched, and a response with a single opening
+    is returned unchanged.
+
+    Plain substring peeling reads more clearly here than a regex: the pattern
+    is one fixed literal token repeated with whitespace in between, not a
+    general shape worth a pattern language.
+    """
+    if not text.startswith(_ANALYZE_OPEN):
+        return text
+    remaining = text[len(_ANALYZE_OPEN):]
+    collapsed = False
+    while True:
+        trimmed = remaining.lstrip()
+        if not trimmed.startswith(_ANALYZE_OPEN):
+            break
+        remaining = trimmed[len(_ANALYZE_OPEN):]
+        collapsed = True
+    if not collapsed:
+        return text
+    return f"{_ANALYZE_OPEN}\n{remaining.lstrip()}"
+
+
 def _compose_full_response(raw: str, raw_thinking: str, prose: str, recovered_missing_analyze: bool) -> str:
-    """Return a frontend-ready response preserving the analyze block."""
+    """Return a frontend-ready response preserving the analyze block.
+
+    Guarantees the result carries exactly one leading ``<analyze>`` opening
+    before its ``</analyze>`` close, collapsing any duplicate opening left by
+    the seeded prefill plus the model's own obeyed "begin with <analyze>"
+    instruction stacking up.
+    """
     if "</analyze>" in raw and not recovered_missing_analyze:
-        return raw.strip()
+        return _collapse_leading_analyze_tags(raw.strip())
     return f"<analyze>\n{raw_thinking}\n</analyze>\n{prose}".strip()
 
 
@@ -423,6 +463,9 @@ async def _stream_actor_text_chunks_resilient(
     재시도 대상(모두 첫 토큰 방출 전에만):
     - 네트워크 블립(_STREAM_TRANSIENT_ERRORS): 시도 순번에 비례한 짧은 백오프.
     - 403/429 provider 한도(주로 Gemini Actor): exponential backoff + jitter.
+      Gemini는 ACTOR_FALLBACK_AFTER_429회 재시도해도 막히면 같은 모델을
+      ACTOR_FALLBACK_LOCATIONS의 다음 리전으로 옮기고, 마지막 리전은
+      LLM_MAX_RETRIES_429회까지 재시도한다. 모델은 바꾸지 않는다(비용 차이 방지).
     아직 사용자에게 어떤 토큰도 방출하지 않은 상태에서만 재시도한다(재시도가 이미 보낸
     출력을 중복시키지 않도록). 한 번이라도 방출한 뒤 끊기면 그대로 전파해 호출자가
     부분 응답으로 마무리하거나 오류를 드러내게 한다.
@@ -430,6 +473,8 @@ async def _stream_actor_text_chunks_resilient(
     last_error: BaseException | None = None
     network_attempts = 0
     rate_limit_attempts = 0
+    fallback_threshold = min(ACTOR_FALLBACK_AFTER_429, LLM_MAX_RETRIES_429)
+    fallback_locations = list(ACTOR_FALLBACK_LOCATIONS) if _is_gemini_model(model_name) else []
     while True:
         yielded_any = False
         retry_delay: float | None = None
@@ -467,7 +512,17 @@ async def _stream_actor_text_chunks_resilient(
                 raise
             last_error = exc
             rate_limit_attempts += 1
-            if rate_limit_attempts <= LLM_MAX_RETRIES_429:
+            if fallback_locations and rate_limit_attempts > fallback_threshold:
+                location = fallback_locations.pop(0)
+                print(
+                    f"[ActorStream limit:{model_name}] provider 403/429 persisted after "
+                    f"{fallback_threshold} retries → switching region to {location}"
+                )
+                genai_client = get_regional_client(location)
+                rate_limit_attempts = 0
+                network_attempts = 0
+                retry_delay = 0.0
+            elif rate_limit_attempts <= LLM_MAX_RETRIES_429:
                 retry_delay = min(
                     2 ** rate_limit_attempts, _ACTOR_STREAM_RATE_LIMIT_CAP_SEC
                 ) + random.uniform(0, 1)

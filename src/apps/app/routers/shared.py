@@ -19,15 +19,11 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from pathlib import Path
 
 from fastapi import HTTPException
 
 from src.apps.app.models import ConversationState, _message_payload
 from src.apps.app.storage import ConversationStore
-
-
-_APP_DIR = Path(__file__).resolve().parents[4] / "frontend" / "app"
 
 
 @dataclass(frozen=True)
@@ -64,6 +60,7 @@ def _conversation_summary(state: ConversationState) -> dict[str, object]:
         "world_mode": state.world_mode,
         "world_id": state.world_id,
         "scenario_id": state.scenario_id,
+        "preset_id": state.preset_id,
         "title": state.title,
         "preview": state.preview,
         "updated_at": state.updated_at.isoformat(),

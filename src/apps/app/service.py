@@ -6,19 +6,19 @@
 #
 # Functions
 #   - preview_text(value: str) -> str : Build a compact sidebar preview from assistant output.
-#   - create_conversation(world_id: str, scenario_id: str | None, store: ConversationStore, actor_model: str | None = None, prose_profile: ProseProfile | None = None, engine_modules: dict[str, str] | None = None, ooc_config: str = "", world_mode: WorldMode = "graph") -> ConversationState : Create a persisted conversation in one engine mode.
+#   - create_conversation(world_id: str, scenario_id: str | None, store: ConversationStore, actor_model: str | None = None, prose_profile: ProseProfile | None = None, engine_modules: dict[str, str] | None = None, ooc_config: str = "", world_mode: WorldMode = "graph", preset_id: str | None = None) -> ConversationState : Create a persisted conversation in one engine mode.
 #   - _should_parse_ooc(content: str) -> bool : Decide whether input contains actionable OOC spans.
-#   - _prepare_generation_input(state: ConversationState, content: str, include_pending_ooc: bool = True) -> tuple[str, dict | None] : Split OOC parsing from Actor scene input.
+#   - _prepare_generation_input(state: ConversationState, content: str, include_pending_ooc: bool = True) -> tuple[str, str, dict | None] : Split OOC parsing and the usernote block from the Actor scene input.
 #   - _append_ooc_display_block(content: str, ooc_result: dict | None) -> str : Append OOC display metadata to assistant content.
 #   - _format_ooc_change_details(ooc_result: dict) -> str : Render OOC parser changes as compact character-scoped lines.
 #   - _display_change_value(value: object) -> str : Return a readable OOC change value.
-#   - refresh_graph_snapshot_best_effort(state: ConversationState) -> None : Refresh graph viewer cache for the current web conversation.
-#   - append_user_and_stream(state: ConversationState, content: str, store: ConversationStore, client_message_id: str | None = None, actor_model: str | None = None, prose_profile: ProseProfile | None = None, engine_modules: dict[str, str] | None = None) -> AsyncIterator[dict] : Commit previous pending, append user input, and stream Actor output.
+#   - _run_generation_events(state: ConversationState, user_input: str, user_msg_id: str | None, *, actor_model: str | None = None, prose_profile: ProseProfile | None = None, engine_modules: dict[str, str] | None = None, ooc_result: dict | None = None, turn_ooc_directives: str = "", usernotes_block: str = "") -> AsyncIterator[dict] : Run Manager and Actor, yielding frontend stream events.
+#   - append_user_and_stream(state: ConversationState, content: str, store: ConversationStore, client_message_id: str | None = None, actor_model: str | None = None, prose_profile: ProseProfile | None = None, engine_modules: dict[str, str] | None = None) -> AsyncIterator[dict] : Commit previous pending, append user input, and stream Actor output. Rolls back the appended user message if generation fails/aborts before an assistant reply is appended (Graph branch).
 #   - run_database_tool(state: ConversationState, tool_name: str, store: ConversationStore) -> dict : Run a read-only database tool and persist its message.
 #   - _persist_pregnancy_result(state: ConversationState, store: ConversationStore, ooc: str) -> dict : Persist a pregnancy OOC message and queue it for the actor.
 #   - force_pregnancy(state: ConversationState, mother_id: str, father_id: str | None, store: ConversationStore) -> dict : Force a pregnancy and persist the result.
 #   - simulate_pregnancy(state: ConversationState, mother_id: str, father_id: str | None, shots: int, store: ConversationStore) -> dict : Simulate N internal ejaculations and persist the result.
-#   - _collect_generation(state, content, user_msg_id, store, *, actor_model, prose_profile, engine_modules, ooc_result, turn_ooc_directives, persist) -> dict : Run generation to completion and return the final event.
+#   - _collect_generation(state, content, user_msg_id, store, *, actor_model, prose_profile, engine_modules, ooc_result, turn_ooc_directives, usernotes_block, persist) -> dict : Run generation to completion and return the final event.
 #
 # _message_payload moved to models.py (single definition; see models.py header).
 # ================================
@@ -30,9 +30,9 @@ import random
 import re
 from collections.abc import AsyncIterator
 from datetime import datetime
-from pathlib import Path
 from uuid import uuid4
 
+from src.config import LOGS_ROOT
 from src.agents.manager import run_manager
 from src.agents.prompt_factory.ooc_handler import is_ooc
 from src.simulation.state.apply.ooc import handle_ooc
@@ -51,7 +51,6 @@ from src.apps.app.pending_store import save_pending_commit
 from src.apps.app.settings import load_settings
 from src.apps.app.session_models import PendingCommit
 from src.apps.app.social_media_settings import resolve_social_media_features
-from src.apps.graph_viewer.debug import build_debug_graph
 from src.apps.app.turn_debug import write_actor_raw_snapshot, write_turn_debug_snapshot
 from src.apps.app.actor import stream_actor_events
 from src.apps.app.analysis_tools import render_database_tool
@@ -71,14 +70,17 @@ from src.apps.app.runtime import (
 )
 from src.apps.app.storage import ConversationStore
 from src.apps.app.wiki_service import stream_wiki_turn
-from src.apps.graph_viewer.server import ensure_graph_server, update_graph_snapshot
 from src.wiki import WikiContextError, initialize_wiki_conversation
 
 logger = logging.getLogger(__name__)
 
 MAX_HISTORY_TURNS = 10
 RECENT_STORY_TURNS = 3
-_LOGS_DIR = Path("logs")
+# Mirrors the identifier budget the Wiki thread scaffold and metadata model
+# enforce (`src/wiki/scaffold.py`, `src/wiki/models.py`, `src/wiki/paths.py`);
+# a longer thread id is rejected at materialization.
+_MAX_THREAD_ID_LENGTH = 128
+_LOGS_DIR = LOGS_ROOT
 _TURN_DEBUG_DIR = _LOGS_DIR / "turn_debug"
 _GENAI_CLIENT = get_client()
 _STATUS_TEXTS = [
@@ -109,19 +111,41 @@ def _social_media_features(state: ConversationState) -> dict:
     return resolve_social_media_features(state.world_config, {})
 
 
-def _build_thread_id(world_id: str, scenario_id: str, store: ConversationStore) -> str:
+def _build_thread_id(
+    world_id: str,
+    scenario_id: str,
+    store: ConversationStore,
+    preset_id: str | None = None,
+) -> str:
     """Build a human-readable, filesystem-safe thread id from world/scenario/first-chat time.
 
-    Format: ``{world_id}__{scenario_id}__{YYYYMMDD_HHMMSS}``. Used as both the JSON
-    filename (``data/threads/<id>.json``) and the per-thread Kuzu directory name, so it
-    must contain no path separators. A numeric suffix is appended on collision.
+    Format: ``{world_id}__{scenario_id}__{YYYYMMDD_HHMMSS}``, with ``__{preset_id}``
+    inserted before the timestamp when a Wiki pc_preset is selected. Used as both the
+    JSON filename (``data/threads/<id>.json``) and the per-thread Kuzu directory name,
+    so it must contain no path separators. A numeric suffix is appended on collision.
+
+    The Wiki thread scaffold rejects identifiers longer than
+    ``_MAX_THREAD_ID_LENGTH``, so the preset segment is dropped when adding it
+    would exceed that budget, and the collision suffix trims the base rather than
+    growing past it. The selected preset stays recorded in the conversation state
+    and in the thread's runtime marker either way, so only the display name of the
+    directory is affected.
     """
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    base = f"{world_id}__{scenario_id}__{stamp}"
+    candidates = []
+    if preset_id:
+        candidates.append(f"{world_id}__{scenario_id}__{preset_id}__{stamp}")
+    candidates.append(f"{world_id}__{scenario_id}__{stamp}")
+    base = next(
+        (candidate for candidate in candidates if len(candidate) <= _MAX_THREAD_ID_LENGTH),
+        candidates[-1],
+    )
     thread_id = base
     suffix = 1
     while store.exists(thread_id):
-        thread_id = f"{base}_{suffix}"
+        marker = f"_{suffix}"
+        trimmed = base[: max(1, _MAX_THREAD_ID_LENGTH - len(marker))]
+        thread_id = f"{trimmed}{marker}"
         suffix += 1
     return thread_id
 
@@ -135,10 +159,12 @@ def create_conversation(
     engine_modules: dict[str, str] | None = None,
     ooc_config: str = "",
     world_mode: WorldMode = "graph",
+    preset_id: str | None = None,
 ) -> ConversationState:
     """Create and persist a conversation without crossing engine modes."""
     resolved_scenario_id = scenario_id or "default"
-    thread_id = _build_thread_id(world_id, resolved_scenario_id, store)
+    resolved_preset_id = preset_id if world_mode == "wiki" else None
+    thread_id = _build_thread_id(world_id, resolved_scenario_id, store, resolved_preset_id)
     if world_mode == "wiki":
         try:
             setup = initialize_wiki_conversation(
@@ -146,6 +172,7 @@ def create_conversation(
                 world_id,
                 resolved_scenario_id,
                 thread_id,
+                resolved_preset_id,
             )
         except WikiContextError as exc:
             raise ValueError(str(exc)) from exc
@@ -154,6 +181,7 @@ def create_conversation(
             world_mode=world_mode,
             world_id=setup.world_id,
             scenario_id=setup.scenario_id,
+            preset_id=setup.preset_id,
             title=f"{setup.world_id}/{setup.scenario_id}",
             pc_id=setup.pc_id,
             npc_id=setup.npc_id,
@@ -227,19 +255,22 @@ async def _prepare_generation_input(
     state: ConversationState,
     content: str,
     include_pending_ooc: bool = True,
-) -> tuple[str, dict | None]:
-    """Parse OOC mutations separately from the Actor scene input."""
+) -> tuple[str, str, dict | None]:
+    """Parse OOC mutations and split the usernote block from the Actor scene input.
+
+    Returns the pure player scene input, the raw usernote block (already carrying its
+    own `<usernote>` tags, or an empty string), and the OOC parse result. The scene
+    input is never glued to the usernote block; callers pass the usernote block on to
+    the prompt builder as its own `usernotes_block` segment.
+    """
     consumed_ooc = state.pending_ooc if include_pending_ooc else ""
     ooc_parse_input = f"{consumed_ooc}\n{content}" if consumed_ooc else content
     ooc_result = await _parse_ooc_if_needed(ooc_parse_input, state)
     if consumed_ooc:
         state.pending_ooc = ""
 
-    scene_input = content
     note_block = build_usernotes_block(state.usernotes)
-    if note_block:
-        scene_input = f"{note_block}\n\n{scene_input}"
-    return scene_input, ooc_result
+    return content, note_block, ooc_result
 
 
 def _should_parse_ooc(content: str) -> bool:
@@ -333,21 +364,6 @@ def _display_change_value(value: object) -> str:
     return str(value)
 
 
-async def refresh_graph_snapshot_best_effort(state: ConversationState) -> None:
-    """Refresh graph viewer cache for the current web conversation."""
-    try:
-        graph = await build_debug_graph(
-            pc_id=state.pc_id,
-            npc_id=state.npc_id,
-            world_id=state.world_id,
-            thread_id=state.thread_id,
-        )
-        ensure_graph_server()
-        update_graph_snapshot(graph)
-    except Exception as exc:
-        print(f"[app] graph snapshot refresh skipped: {exc}")
-
-
 async def _repair_if_needed(full_response: str, visible_text: str, state: ConversationState) -> str:
     """Repair output guard violations in the visible prose before persistence.
 
@@ -391,6 +407,7 @@ async def _run_generation_events(
     engine_modules: dict[str, str] | None = None,
     ooc_result: dict | None = None,
     turn_ooc_directives: str = "",
+    usernotes_block: str = "",
 ) -> AsyncIterator[dict]:
     """Run Manager and Actor, yielding frontend stream events."""
     sync_conversation_perspective(state)
@@ -427,6 +444,7 @@ async def _run_generation_events(
         turn_ooc_directives=turn_ooc_directives,
         prose_profile=selected_prose_profile,
         engine_modules=selected_engine_modules,
+        usernotes_block=usernotes_block,
     )
     manager_effects = _apply_ooc_effects(manager_effects, ooc_result, state.pc_id)
 
@@ -444,6 +462,11 @@ async def _run_generation_events(
         logs_dir=_LOGS_DIR,
         turn_debug_dir=_TURN_DEBUG_DIR,
         actor_model=selected_actor_model,
+        world_mode=state.world_mode,
+        thread_id=state.thread_id,
+        scenario_id=state.scenario_id,
+        user_message_id=user_msg_id,
+        commit_id=commit_id,
     )
 
     history_snapshot = list(state.history)
@@ -546,7 +569,6 @@ async def _run_generation_events(
         f"commit_id={commit_id} actor_model={selected_actor_model} "
         f"thread_id={state.thread_id}"
     )
-    await refresh_graph_snapshot_best_effort(state)
     yield {
         "type": "complete",
         "message": _message_payload(assistant_msg),
@@ -564,7 +586,13 @@ async def append_user_and_stream(
     prose_profile: ProseProfile | None = None,
     engine_modules: dict[str, str] | None = None,
 ) -> AsyncIterator[dict]:
-    """Commit previous pending, append user input, and stream Actor output."""
+    """Commit previous pending, append user input, and stream Actor output.
+
+    Graph 분기에서 사용자 입력을 append한 뒤 assistant 응답이 아직 붙기 전에 생성이
+    실패하거나 스트림이 중단되면(예: Actor 429 재시도 소진), 방금 append한 user
+    메시지를 되돌리고 예외를 재전파한다. 응답 없는 고아 user 메시지가 디스크에
+    영속화되어 이후 대화가 복구 불가 상태로 잠기는 것을 막기 위함이다.
+    """
     if state.world_mode == "wiki":
         try:
             async for event in stream_wiki_turn(
@@ -590,7 +618,7 @@ async def append_user_and_stream(
             await _commit_previous_pending(state)
             # OOC는 DB mutation으로 먼저 소비하고, Actor에는 사용자가 입력한 scene 텍스트만 보낸다.
             # pending_ooc는 parse 성공 뒤에만 비워 다음 턴 이중 반영을 막는다.
-            effective_input, ooc_result = await _prepare_generation_input(state, content)
+            effective_input, note_block, ooc_result = await _prepare_generation_input(state, content)
 
             user_msg = ChatMessage(
                 id=client_message_id or f"user_{uuid4().hex}",
@@ -600,19 +628,32 @@ async def append_user_and_stream(
             )
             state.messages.append(user_msg)
             yield {"type": "user", "message": _message_payload(user_msg)}
-            # *...* 만으로 된 입력도 OOC 효과(시간/상태 등)를 적용한 뒤 항상 Actor 응답을
-            # 생성한다. OOC 전용 단락(응답 없이 요약만)은 출력이 안 나오는 것처럼 보여 제거했다.
-            async for event in _run_generation_events(
-                state,
-                effective_input,
-                user_msg.id,
-                actor_model=actor_model,
-                prose_profile=prose_profile,
-                engine_modules=engine_modules,
-                ooc_result=ooc_result,
-                turn_ooc_directives=state.ooc_config,
-            ):
-                yield event
+            try:
+                # *...* 만으로 된 입력도 OOC 효과(시간/상태 등)를 적용한 뒤 항상 Actor 응답을
+                # 생성한다. OOC 전용 단락(응답 없이 요약만)은 출력이 안 나오는 것처럼 보여 제거했다.
+                async for event in _run_generation_events(
+                    state,
+                    effective_input,
+                    user_msg.id,
+                    actor_model=actor_model,
+                    prose_profile=prose_profile,
+                    engine_modules=engine_modules,
+                    ooc_result=ooc_result,
+                    turn_ooc_directives=state.ooc_config,
+                    usernotes_block=note_block,
+                ):
+                    yield event
+            except BaseException:
+                # Actor 생성이 429 재시도 소진 등으로 실패하거나 스트림이 중단되면
+                # (GeneratorExit/asyncio.CancelledError 포함), assistant 응답이 아직
+                # 붙지 않은 이 user 입력을 되돌려 "응답 없는 고아 user 메시지"가
+                # 영속화되지 않게 한다. 이미 assistant가 붙었으면(_run_generation_events가
+                # 성공적으로 append한 뒤 그 이후 단계에서 실패한 경우) 손대지 않는다.
+                if not any(message.parent_user_id == user_msg.id for message in state.messages):
+                    state.messages = [
+                        message for message in state.messages if message.id != user_msg.id
+                    ]
+                raise
         finally:
             # 스트리밍 중 사용자가 편집한 유저노트/OOC 설정을 디스크에서 다시 읽어와,
             # 턴 시작 시점의 오래된 스냅샷 저장이 그 편집을 덮어쓰지 않도록 한다.
@@ -693,6 +734,7 @@ async def _collect_generation(
     engine_modules: dict[str, str] | None = None,
     ooc_result: dict | None = None,
     turn_ooc_directives: str = "",
+    usernotes_block: str = "",
     persist: bool = True,
 ) -> dict:
     """Run generation to completion and return the final event.
@@ -710,6 +752,7 @@ async def _collect_generation(
         engine_modules=engine_modules,
         ooc_result=ooc_result,
         turn_ooc_directives=turn_ooc_directives,
+        usernotes_block=usernotes_block,
     ):
         if event["type"] == "complete":
             final = event

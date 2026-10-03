@@ -24,6 +24,7 @@ import json
 import re
 from pathlib import Path
 
+from src.config import DATA_ROOT
 from src.config import MODEL_STATE_UPDATER as TRAITS_MODEL, WORLD_ID
 from src.core.database import async_driver
 from src.core.llm.client import get_model, extract_json_from_llm
@@ -324,7 +325,7 @@ def _safe_cache_name(value: str | None) -> str:
 def _trait_cache_path() -> Path:
     """현재 world/scenario에 해당하는 로컬 trait 캐시 파일 경로를 반환합니다."""
     world_id, scenario_id = _trait_cache_context()
-    return Path("data") / "trait_cache" / world_id / f"{scenario_id}.json"
+    return DATA_ROOT / "trait_cache" / world_id / f"{scenario_id}.json"
 
 
 def _legacy_trait_cache_path() -> Path | None:
@@ -332,7 +333,7 @@ def _legacy_trait_cache_path() -> Path | None:
     world_id, scenario_id = _trait_cache_context()
     if scenario_id != _DEFAULT_SCENARIO_ID:
         return None
-    return Path("data") / "trait_cache" / f"{world_id}.json"
+    return DATA_ROOT / "trait_cache" / f"{world_id}.json"
 
 
 async def _read_trait_cache() -> dict:

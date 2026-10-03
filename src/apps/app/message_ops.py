@@ -37,12 +37,13 @@ async def _generate(state, content, user_msg_id, store, **kwargs) -> dict:
     """Delegate to service._collect_generation (lazy import avoids load-time circularity)."""
     from src.apps.app.service import _collect_generation, _prepare_generation_input
 
-    effective_input, ooc_result = await _prepare_generation_input(
+    effective_input, note_block, ooc_result = await _prepare_generation_input(
         state,
         content,
         include_pending_ooc=False,
     )
     kwargs["ooc_result"] = ooc_result
+    kwargs["usernotes_block"] = note_block
     return await _collect_generation(state, effective_input, user_msg_id, store, **kwargs)
 
 

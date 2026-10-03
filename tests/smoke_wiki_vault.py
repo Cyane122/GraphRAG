@@ -1203,12 +1203,240 @@ def _check_scene_active_relationship_materialization(root: Path) -> None:
     assert rematerialized == [], "an existing relationship document must not be recreated"
 
 
+def _preset_document(preset_id: str, extra_lines: str = "") -> str:
+    """pc_preset 정의 문서 하나의 Markdown 전문을 만듭니다."""
+    frontmatter = [
+        "---",
+        f"id: scenario:demo_world:demo:pc_preset:{preset_id}",
+        "type: scenario",
+        "schema_version: 1",
+        "world_id: demo_world",
+        "visibility: [actor, updater, player]",
+        "created_at: 2026-07-21T00:00:00+00:00",
+    ]
+    if extra_lines:
+        frontmatter.extend(extra_lines.splitlines())
+    frontmatter.append("---")
+    body = "# Preset\n\n## 프리셋 특징\n\n- Preset feature line.\n"
+    return "\n".join(frontmatter) + "\n" + body
+
+
+def _write_preset(
+    vault_root: Path,
+    preset_id: str,
+    extra_lines: str = "",
+    start_state: str | None = None,
+    opening_scene: str | None = None,
+) -> None:
+    """한 demo 시나리오에 pc_preset 정의 파일과 선택적 부속 자산을 씁니다."""
+    scenario_root = vault_root / "worlds" / "demo_world" / "scenarios" / "demo"
+    preset_dir = scenario_root / "pc_preset"
+    preset_dir.mkdir(parents=True, exist_ok=True)
+    (preset_dir / f"{preset_id}.md").write_text(
+        _preset_document(preset_id, extra_lines),
+        encoding="utf-8",
+    )
+    if start_state is None and opening_scene is None:
+        return
+    asset_root = preset_dir / preset_id
+    asset_root.mkdir(parents=True, exist_ok=True)
+    if start_state is not None:
+        (asset_root / "start_state.md").write_text(start_state, encoding="utf-8")
+    if opening_scene is not None:
+        (asset_root / "opening_scene.md").write_text(opening_scene, encoding="utf-8")
+
+
+def _branching_profile(profile_id: str, title: str) -> str:
+    """common/demo/promoted 세 분기를 가진 인물 프로필 전문을 만듭니다."""
+    return (
+        "---\n"
+        f"id: {profile_id}\n"
+        "type: character_profile\n"
+        "schema_version: 1\n"
+        "world_id: demo_world\n"
+        "visibility: [actor, updater, player]\n"
+        "created_at: 2026-07-21T00:00:00+00:00\n"
+        "---\n"
+        f"# {title}\n"
+        "\n"
+        "## Basic Identity\n"
+        "\n"
+        "### common\n"
+        "\n"
+        "- Shared identity line.\n"
+        "\n"
+        "### demo\n"
+        "\n"
+        "- Scenario branch line.\n"
+        "\n"
+        "### promoted\n"
+        "\n"
+        "- Preset branch line.\n"
+    )
+
+
+_PRESET_START_STATE = (
+    "---\n"
+    "id: scenario:demo_world:demo:pc_preset:relocated:start_state\n"
+    "type: scenario\n"
+    "schema_version: 1\n"
+    "world_id: demo_world\n"
+    "visibility: [actor, updater, player]\n"
+    "created_at: 2026-07-21T00:00:00+00:00\n"
+    "---\n"
+    "# Initial State\n"
+    "\n"
+    "## 시작 기준\n"
+    "\n"
+    "### Initial Time and Place\n"
+    "\n"
+    "- Time: 2026년 7월 21일 18시\n"
+    "- Place: 프리셋 전용 옥상\n"
+)
+
+
+_PRESET_OPENING_SCENE = (
+    "---\n"
+    "id: scenario:demo_world:demo:pc_preset:relocated:opening\n"
+    "type: scenario\n"
+    "schema_version: 1\n"
+    "world_id: demo_world\n"
+    "visibility: [actor, player]\n"
+    "created_at: 2026-07-21T00:00:00+00:00\n"
+    "---\n"
+    "# 첫 장면\n"
+    "\n"
+    "## 장면 원문\n"
+    "\n"
+    "프리셋 전용 첫 장면이다.\n"
+)
+
+
+def _check_wiki_context_pc_presets(root: Path) -> None:
+    """pc_preset 축의 override, 자산 교체, 분기 우선순위와 충돌 거부를 검증합니다."""
+    # 1. pc_preset 디렉터리가 없는 시나리오는 동작이 그대로여야 한다 (회귀 가드).
+    baseline_root = _build_case(root, "preset_baseline")
+    baseline_setup = load_wiki_setup(baseline_root, "demo_world", "demo", "thread_baseline")
+    assert baseline_setup.preset_id is None
+    assert baseline_setup.pc_id == "character_profile:pc"
+    baseline_thread = initialize_wiki_thread(
+        baseline_root,
+        "demo_world",
+        "demo",
+        "thread_baseline_init",
+    )
+    assert baseline_thread.preset_id is None
+
+    # 2. preset이 pc_profile_id를 교체하면 setup이 함께 바뀐다.
+    pc_root = _build_case(root, "preset_pc_override")
+    _write_preset(pc_root, "outsider", "pc_profile_id: character_profile:bystander\n")
+    pc_setup = load_wiki_setup(pc_root, "demo_world", "demo", "thread_pc", "outsider")
+    assert pc_setup.preset_id == "outsider"
+    assert pc_setup.pc_id == "character_profile:bystander"
+    assert pc_setup.pc_name == "Bystander"
+    unpreset_setup = load_wiki_setup(pc_root, "demo_world", "demo", "thread_pc_plain")
+    assert unpreset_setup.pc_id == "character_profile:pc"
+
+    # 3~4. preset 부속 자산이 scenario의 start_state / opening_scene을 교체한다.
+    asset_case = _build_case(root, "preset_assets")
+    _write_preset(
+        asset_case,
+        "relocated",
+        start_state=_PRESET_START_STATE,
+        opening_scene=_PRESET_OPENING_SCENE,
+    )
+    asset_setup = initialize_wiki_thread(
+        asset_case, "demo_world", "demo", "thread_assets", "relocated"
+    )
+    assert "프리셋 전용 첫 장면이다." in asset_setup.opening_scene
+    assert "라운지에 처음 모인" not in asset_setup.opening_scene
+    scene_text = (
+        asset_case / "threads" / "thread_assets" / "scene" / "current.md"
+    ).read_text(encoding="utf-8")
+    assert "프리셋 전용 옥상" in scene_text
+    assert "학생회관 라운지" not in scene_text
+
+    # 5. preset 분기가 같은 H2의 scenario 분기를 이긴다.
+    variant_root = _build_case(root, "preset_variants")
+    (variant_root / "worlds" / "demo_world" / "characters" / "pc.md").write_text(
+        _branching_profile("character_profile:pc", "Player Character"),
+        encoding="utf-8",
+    )
+    _write_preset(variant_root, "promoted")
+    initialize_wiki_thread(
+        variant_root, "demo_world", "demo", "thread_variant_preset", "promoted"
+    )
+    preset_profile = (
+        variant_root / "threads" / "thread_variant_preset" / "characters" / "pc.md"
+    ).read_text(encoding="utf-8")
+    assert "Preset branch line." in preset_profile
+    assert "Scenario branch line." not in preset_profile
+    assert "Shared identity line." in preset_profile
+    initialize_wiki_thread(variant_root, "demo_world", "demo", "thread_variant_plain")
+    plain_profile = (
+        variant_root / "threads" / "thread_variant_plain" / "characters" / "pc.md"
+    ).read_text(encoding="utf-8")
+    assert "Scenario branch line." in plain_profile
+    assert "Preset branch line." not in plain_profile
+
+    # 6. preset_id가 같은 world의 scenario_id와 겹치면 거부한다.
+    collision_root = _build_case(root, "preset_collision")
+    _write_preset(collision_root, "demo")
+    try:
+        load_wiki_setup(collision_root, "demo_world", "demo", "thread_collision", "demo")
+    except WikiContextError as exc:
+        assert "collides" in str(exc)
+    else:
+        raise AssertionError("preset_id colliding with a scenario_id must be rejected")
+
+    # 7. preset의 characters allowlist가 scenario allowlist를 교체한다 (병합 아님).
+    allowlist_root = _build_case(
+        root,
+        "preset_allowlist",
+        scenario_extra=(
+            "characters:\n"
+            "- character_profile:pc\n"
+            "- character_profile:world_npc\n"
+        ),
+        include_scenario_character=False,
+    )
+    _write_preset(
+        allowlist_root,
+        "widened",
+        (
+            "characters:\n"
+            "- character_profile:pc\n"
+            "- character_profile:world_npc\n"
+            "- character_profile:bystander\n"
+        ),
+    )
+    scenario_only = {
+        document.metadata.id
+        for document in _profile_documents(allowlist_root, "demo_world", "demo")
+        if document.metadata is not None
+    }
+    assert scenario_only == {"character_profile:pc", "character_profile:world_npc"}
+    with_preset = {
+        document.metadata.id
+        for document in _profile_documents(
+            allowlist_root, "demo_world", "demo", "widened"
+        )
+        if document.metadata is not None
+    }
+    assert with_preset == {
+        "character_profile:pc",
+        "character_profile:world_npc",
+        "character_profile:bystander",
+    }
+
+
 def run_vault_suite(root: Path) -> None:
     """Run the full vault smoke suite."""
     _check_scaffolds(root)
     _check_commit_transaction_undo_journal(root)
     _check_commit_transaction_rollback_failure(root)
     _check_wiki_context_scenario_overrides(root)
+    _check_wiki_context_pc_presets(root)
     _check_scene_active_relationship_materialization(root)
     _check_recall()
     _check_migrations()

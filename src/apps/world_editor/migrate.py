@@ -18,7 +18,7 @@ from __future__ import annotations
 import ast
 import difflib
 
-from src.assets.worlds.base import _DYNAMIC_STATE_COLUMNS
+from src.worlds.base import _DYNAMIC_STATE_COLUMNS
 from src.apps.world_editor import compiler
 from src.apps.world_editor import source_edit as se
 from src.apps.world_editor.worlds import scenario_infos

@@ -8,13 +8,14 @@
 # ================================
 from importlib import import_module
 
-from src.assets.worlds.base import World, apply_scenario_overrides
+from src.config import GRAPH_WORLDS_PACKAGE
+from src.worlds.base import World, apply_scenario_overrides
 
 
 def load_world_instance(world_id: str, scenario_id: str | None = None) -> World:
     """Load a World instance, applying scenario-level overrides when present."""
     try:
-        module = import_module(f"src.assets.worlds.{world_id}.schema")
+        module = import_module(f"{GRAPH_WORLDS_PACKAGE}.{world_id}.schema")
 
         # 신규 스타일: 모듈 레벨 SCENARIOS: list[Scenario]
         scenarios = getattr(module, "SCENARIOS", None)

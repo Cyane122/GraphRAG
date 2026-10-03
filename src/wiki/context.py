@@ -1,22 +1,25 @@
 # ================================
 # src/wiki/context.py
 #
-# Wiki world/scenario 문서를 검증하고 thread Markdown 상태로 물질화합니다.
+# Wiki world/scenario/preset 문서를 검증하고 thread Markdown 상태로 물질화합니다.
 #
 # Classes
 #   - WikiContextError : Wiki 런타임 문서나 식별자 계약 오류
 #
 # Functions
 #   - _document_title(document: WikiDocument) -> str : Markdown H1 표시 제목을 반환합니다.
-#   - _scenario_character_allowlist(document: WikiDocument) -> list[str] | None : scenario.md의 world-level character allowlist를 검증해 반환합니다.
-#   - _validate_character_profile_id(value: str, field: str) -> str : scenario frontmatter의 character_profile ID 형식을 검증합니다.
+#   - _scenario_character_allowlist(document: WikiDocument) -> list[str] | None : scenario.md 또는 preset.md의 character allowlist를 검증해 반환합니다.
+#   - _validate_character_profile_id(value: str, field: str) -> str : frontmatter의 character_profile ID 형식을 검증합니다.
+#   - _preset_paths(vault_root: Path, world_id: str, scenario_id: str, preset_id: str) -> tuple[Path, Path | None] : pc_preset 정의 파일과 선택적 부속 자산 폴더(start_state.md/opening_scene.md/scenario.md/characters/를 교체할 수 있음)를 반환합니다.
+#   - _known_preset_ids(vault_root: Path, world_id: str) -> set[str] : 한 world의 모든 시나리오에 걸친 preset ID 집합을 반환합니다.
+#   - _known_variant_ids(vault_root: Path, world_id: str) -> set[str] : scenario ID와 preset ID를 합친 작성용 분기 선택기 이름공간을 검증해 반환합니다.
 #   - _materialize_relationship_document(store: WikiStore, thread_id: str, owner_profile_id: str, other_profile_id: str, created_at: str) -> WikiDocument | None : 한 owner→other 관계 원장 문서를 없을 때만 생성합니다.
 #   - _materialize_primary_relationship(store: WikiStore, setup: WikiConversationSetup, created_at: str) -> None : 활성 Actor 관점 관계 변화 문서를 생성합니다.
 #   - materialize_scene_active_relationships(store: WikiStore, documents: list[WikiDocument], thread_id: str, player_profile_id: str, created_at: str) -> list[WikiDocument] : 장면 활성 NPC 각각의 플레이어 관점 관계 원장을 지연 생성합니다.
-#   - initialize_wiki_thread(vault_root: Path, world_id: str, scenario_id: str, thread_id: str) -> WikiConversationSetup : 새 Wiki thread와 초기 문서를 생성합니다.
+#   - initialize_wiki_thread(vault_root: Path, world_id: str, scenario_id: str, thread_id: str, preset_id: str | None = None) -> WikiConversationSetup : 새 Wiki thread와 초기 문서를 생성합니다.
 #   - get_wiki_thread_runtime_status(vault_root: Path, thread_id: str) -> WikiThreadRuntimeStatus : 현재 런타임 생성 thread와 이전 형식 thread를 구분합니다.
-#   - load_wiki_setup(vault_root: Path, world_id: str, scenario_id: str, thread_id: str) -> WikiConversationSetup : 런타임 메타데이터와 첫 장면을 읽습니다.
-#   - read_wiki_actor_assets(vault_root: Path, world_id: str, scenario_id: str) -> list[WikiDocument] : Fixed prompt용 world 문서와 선택 prompt 추가문을 읽습니다.
+#   - load_wiki_setup(vault_root: Path, world_id: str, scenario_id: str, thread_id: str, preset_id: str | None = None) -> WikiConversationSetup : 런타임 메타데이터와 첫 장면을 읽습니다(world < scenario < preset override).
+#   - read_wiki_actor_assets(vault_root: Path, world_id: str, scenario_id: str, preset_id: str | None = None) -> list[WikiDocument] : Fixed prompt용 world 문서와 선택 prompt 추가문을 읽습니다(프리셋이 scenario.md를 교체할 수 있음).
 #   - read_wiki_scene_prompt_assets(vault_root: Path, world_id: str, scenario_id: str, scene_types: list[str] | None = None) -> list[WikiScenePromptAsset] : 월드 씬 프롬프트에 시나리오 override를 적용해 읽습니다.
 #   - read_wiki_scene_descriptions(vault_root: Path, world_id: str, scenario_id: str) -> dict[str, str] : 공용 분류 설명에 Wiki 전용 scene key를 합칩니다.
 #   - read_wiki_thread_documents(vault_root: Path, thread_id: str) -> list[WikiDocument] : Actor와 Updater가 사용할 thread 문서를 읽습니다.
@@ -33,6 +36,7 @@ import json
 from pathlib import Path
 import re
 
+from src.config import WIKI_PROMPTS_ROOT
 from src.wiki.evidence import document_body, scene_active_profile_ids
 from src.wiki.manual_audit import ensure_audit_baseline
 from src.wiki.models import (
@@ -55,9 +59,10 @@ _FRONTMATTER_RE = re.compile(r"\A---\r?\n.*?\r?\n---\r?\n?", re.DOTALL)
 _H1_RE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
 _VALID_POV_MODES = {"1p_user", "1p_char", "3p_user", "3p_char"}
 _CHARACTER_PROFILE_PREFIX = "character_profile:"
+_PRESET_DIRNAME = "pc_preset"
 _THREAD_RUNTIME_MARKER = ".wikirag-runtime.json"
 _THREAD_RUNTIME_FORMAT_VERSION = 1
-_SCENE_TYPE_CATALOG_PATH = Path(__file__).with_name("prompts") / "scene_types.json"
+_SCENE_TYPE_CATALOG_PATH = WIKI_PROMPTS_ROOT / "scene_types.json"
 _KOREAN_DATETIME_RE = re.compile(
     r"(?P<year>\d{4})년\s*(?P<month>\d{1,2})월\s*(?P<day>\d{1,2})일"
     r"(?:\s+[^,\n]*요일)?\s*,?\s*(?P<period>오전|오후|저녁|밤|새벽)?\s*"
@@ -82,6 +87,7 @@ def _write_thread_runtime_marker(
         "format_version": _THREAD_RUNTIME_FORMAT_VERSION,
         "world_id": setup.world_id,
         "scenario_id": setup.scenario_id,
+        "preset_id": setup.preset_id,
         "thread_id": setup.thread_id,
     }
     temporary_path.write_text(
@@ -163,6 +169,34 @@ def _scenario_root(vault_root: Path, world_id: str, scenario_id: str) -> Path:
     return path
 
 
+def _preset_paths(
+    vault_root: Path,
+    world_id: str,
+    scenario_id: str,
+    preset_id: str,
+) -> tuple[Path, Path | None]:
+    """검증된 pc_preset 정의 파일과 선택적 부속 자산 폴더를 반환합니다.
+
+    프리셋 정의는 `pc_preset/<preset_id>.md` 파일 하나다. `start_state.md`,
+    `opening_scene.md`, `scenario.md`, `characters/`가 필요한 프리셋만 같은
+    이름의 폴더 `pc_preset/<preset_id>/`를 추가로 둔다. 폴더가 없으면 두 번째
+    값은 None이며 해당 자산은 모두 scenario 것을 그대로 쓴다. 폴더에
+    `scenario.md`가 있으면 호출자(`read_wiki_actor_assets`)가 시나리오의
+    `scenario.md`를 완전히 교체하는 데 사용한다 - 이 함수 자체는 존재 여부만
+    노출하고 교체 판단은 하지 않는다.
+    """
+    safe_preset_id = _validate_identifier(preset_id, "preset_id")
+    scenario_root = _scenario_root(vault_root, world_id, scenario_id)
+    preset_root = (scenario_root / _PRESET_DIRNAME).resolve()
+    document_path = (preset_root / f"{safe_preset_id}.md").resolve()
+    if not document_path.is_relative_to(preset_root) or not document_path.is_file():
+        raise WikiContextError(f"Wiki pc_preset does not exist: {safe_preset_id}")
+    asset_root = (preset_root / safe_preset_id).resolve()
+    if not asset_root.is_relative_to(preset_root) or not asset_root.is_dir():
+        return document_path, None
+    return document_path, asset_root
+
+
 def _document_title(document: WikiDocument) -> str:
     """문서의 첫 H1 제목을 반환합니다."""
     match = _H1_RE.search(document_body(document.content))
@@ -203,8 +237,18 @@ def _scenario_character_allowlist(document: WikiDocument) -> list[str] | None:
     return allowlist
 
 
-def _profile_documents(vault_root: Path, world_id: str, scenario_id: str) -> list[WikiDocument]:
-    """공통 profile에 scenario allowlist를 적용하고 전용 profile을 함께 읽습니다."""
+def _profile_documents(
+    vault_root: Path,
+    world_id: str,
+    scenario_id: str,
+    preset_id: str | None = None,
+) -> list[WikiDocument]:
+    """공통 profile에 scenario(및 preset) allowlist를 적용하고 전용 profile을 함께 읽습니다.
+
+    preset이 자체 `characters` allowlist를 선언하면 scenario의 allowlist를
+    완전히 교체한다(병합이 아님). preset이 allowlist를 선언하지 않으면
+    scenario의 allowlist가 그대로 적용된다.
+    """
     world_root = _world_root(vault_root, world_id)
     scenario_root = _scenario_root(vault_root, world_id, scenario_id)
     store = WikiStore(world_root)
@@ -212,9 +256,24 @@ def _profile_documents(vault_root: Path, world_id: str, scenario_id: str) -> lis
         (scenario_root / "scenario.md").relative_to(world_root).as_posix()
     )
     allowlist = _scenario_character_allowlist(scenario)
+    preset_asset_root: Path | None = None
+    if preset_id is not None:
+        preset_path, preset_asset_root = _preset_paths(
+            vault_root,
+            world_id,
+            scenario_id,
+            preset_id,
+        )
+        preset_document = store.read_document(
+            preset_path.relative_to(world_root).as_posix()
+        )
+        preset_allowlist = _scenario_character_allowlist(preset_document)
+        if preset_allowlist is not None:
+            allowlist = preset_allowlist
     allowed_ids = set(allowlist) if allowlist is not None else None
     world_documents: list[WikiDocument] = []
     scenario_documents: list[WikiDocument] = []
+    preset_documents: list[WikiDocument] = []
     available_ids: set[str] = set()
     for path in sorted((world_root / "characters").glob("*.md")):
         document = store.read_document(path.relative_to(world_root).as_posix())
@@ -229,6 +288,15 @@ def _profile_documents(vault_root: Path, world_id: str, scenario_id: str) -> lis
             raise WikiContextError(f"Expected character_profile document: {path}")
         available_ids.add(document.metadata.id)
         scenario_documents.append(document)
+    if preset_asset_root is not None:
+        preset_characters_dir = preset_asset_root / "characters"
+        if preset_characters_dir.is_dir():
+            for path in sorted(preset_characters_dir.glob("*.md")):
+                document = store.read_document(path.relative_to(world_root).as_posix())
+                if document.metadata is None or document.metadata.type != "character_profile":
+                    raise WikiContextError(f"Expected character_profile document: {path}")
+                available_ids.add(document.metadata.id)
+                preset_documents.append(document)
     if allowlist is not None:
         missing_ids = [profile_id for profile_id in allowlist if profile_id not in available_ids]
         if missing_ids:
@@ -236,13 +304,51 @@ def _profile_documents(vault_root: Path, world_id: str, scenario_id: str) -> lis
                 "scenario characters references unknown profile IDs: "
                 + ", ".join(missing_ids)
             )
-    return world_documents + scenario_documents
+    return world_documents + scenario_documents + preset_documents
 
 
 def _known_scenario_ids(vault_root: Path, world_id: str) -> set[str]:
     """한 world에서 작성용 프로필 선택기로 사용할 수 있는 scenario ID를 반환합니다."""
     scenarios_root = _world_root(vault_root, world_id) / "scenarios"
     return {path.name for path in scenarios_root.iterdir() if path.is_dir()}
+
+
+def _known_preset_ids(vault_root: Path, world_id: str) -> set[str]:
+    """한 world의 모든 시나리오에 걸친 preset ID 집합을 반환합니다.
+
+    선택기 이름공간은 world 전역이다 - 서로 다른 시나리오의 preset이 같은 ID를
+    쓰면 같은 작성용 분기를 가리키는 것으로 취급한다(허용). 프리셋 정의는
+    `pc_preset/<preset_id>.md` 파일이며, 부속 자산 폴더만 있고 정의 파일이 없는
+    이름은 프리셋으로 치지 않는다.
+    """
+    scenarios_root = _world_root(vault_root, world_id) / "scenarios"
+    preset_ids: set[str] = set()
+    for scenario_dir in scenarios_root.iterdir():
+        if not scenario_dir.is_dir():
+            continue
+        preset_dir = scenario_dir / _PRESET_DIRNAME
+        if not preset_dir.is_dir():
+            continue
+        preset_ids.update(path.stem for path in preset_dir.glob("*.md"))
+    return preset_ids
+
+
+def _known_variant_ids(vault_root: Path, world_id: str) -> set[str]:
+    """scenario ID와 preset ID를 합친 작성용 분기 선택기 이름공간을 검증해 반환합니다.
+
+    한 world 안에서 preset_id가 어떤 scenario_id와도 같으면 두 계층의 분기
+    선택기가 충돌하므로 즉시 거부한다. 서로 다른 시나리오의 preset_id끼리
+    같은 것은 (같은 분기를 가리키는 것으로) 허용한다.
+    """
+    scenario_ids = _known_scenario_ids(vault_root, world_id)
+    preset_ids = _known_preset_ids(vault_root, world_id)
+    collisions = scenario_ids & preset_ids
+    if collisions:
+        raise WikiContextError(
+            "Wiki preset_id collides with a scenario_id in the same world: "
+            + ", ".join(sorted(collisions))
+        )
+    return scenario_ids | preset_ids
 
 
 def _world_runtime_fields(
@@ -282,13 +388,32 @@ def load_wiki_setup(
     world_id: str,
     scenario_id: str,
     thread_id: str,
+    preset_id: str | None = None,
 ) -> WikiConversationSetup:
-    """Wiki 대화에 필요한 인물 식별자, 시점과 첫 장면을 읽습니다."""
+    """Wiki 대화에 필요한 인물 식별자, 시점과 첫 장면을 읽습니다.
+
+    Override 우선순위는 world < scenario < preset이다 - 값이 없는 단계는
+    상위 단계의 값을 그대로 물려받는다. `preset_id`가 None이면 기존 scenario
+    전용 동작과 완전히 동일하다(하위 호환).
+    """
     safe_world_id = _validate_identifier(world_id, "world_id")
     safe_scenario_id = _validate_identifier(scenario_id, "scenario_id")
     safe_thread_id = _validate_identifier(thread_id, "thread_id")
+    safe_preset_id = (
+        _validate_identifier(preset_id, "preset_id") if preset_id is not None else None
+    )
+    _known_variant_ids(vault_root, safe_world_id)
     scenario_root = _scenario_root(vault_root, safe_world_id, safe_scenario_id)
-    profiles = _profile_documents(vault_root, safe_world_id, safe_scenario_id)
+    preset_path: Path | None = None
+    preset_asset_root: Path | None = None
+    if safe_preset_id is not None:
+        preset_path, preset_asset_root = _preset_paths(
+            vault_root,
+            safe_world_id,
+            safe_scenario_id,
+            safe_preset_id,
+        )
+    profiles = _profile_documents(vault_root, safe_world_id, safe_scenario_id, safe_preset_id)
     by_id = {document.metadata.id: document for document in profiles if document.metadata}
     pc_profile_id, npc_profile_id, pov_mode, rating = _world_runtime_fields(
         vault_root,
@@ -311,16 +436,45 @@ def load_wiki_setup(
             scenario_npc_profile_id,
             "scenario npc_profile_id",
         )
+    if preset_path is not None:
+        preset = WikiStore(preset_path.parent).read_document(preset_path.name)
+        preset_extra = preset.metadata.model_extra or {} if preset.metadata is not None else {}
+        preset_pov_mode = str(preset_extra.get("pov_mode", "") or "").strip()
+        if preset_pov_mode:
+            if preset_pov_mode not in _VALID_POV_MODES:
+                raise WikiContextError(f"Unsupported preset pov_mode: {preset_pov_mode}")
+            pov_mode = preset_pov_mode
+        preset_rating = str(preset_extra.get("rating", "") or "").strip()
+        if preset_rating:
+            if preset_rating not in {"all_ages", "15", "r18"}:
+                raise WikiContextError(f"Unsupported preset rating: {preset_rating}")
+            rating = preset_rating
+        preset_npc_profile_id = str(preset_extra.get("npc_profile_id", "") or "").strip()
+        if preset_npc_profile_id:
+            npc_profile_id = _validate_character_profile_id(
+                preset_npc_profile_id,
+                "preset npc_profile_id",
+            )
+        preset_pc_profile_id = str(preset_extra.get("pc_profile_id", "") or "").strip()
+        if preset_pc_profile_id:
+            pc_profile_id = _validate_character_profile_id(
+                preset_pc_profile_id,
+                "preset pc_profile_id",
+            )
     try:
         pc_document = by_id[pc_profile_id]
         npc_document = by_id[npc_profile_id]
     except KeyError as exc:
         raise WikiContextError(f"Configured character profile is missing: {exc.args[0]}") from exc
-    opening = WikiStore(scenario_root).read_document("opening_scene.md")
+    opening_root = scenario_root
+    if preset_asset_root is not None and (preset_asset_root / "opening_scene.md").is_file():
+        opening_root = preset_asset_root
+    opening = WikiStore(opening_root).read_document("opening_scene.md")
     return WikiConversationSetup(
         world_id=safe_world_id,
         scenario_id=safe_scenario_id,
         thread_id=safe_thread_id,
+        preset_id=safe_preset_id,
         pc_id=pc_profile_id,
         pc_name=_document_title(pc_document),
         npc_id=npc_profile_id,
@@ -343,18 +497,25 @@ def _replace_body(content: str, body: str) -> str:
 def _thread_character_content(
     profile: WikiDocument,
     setup: WikiConversationSetup,
-    known_scenario_ids: set[str],
+    known_variant_ids: set[str],
 ) -> str:
-    """작성용 분기를 제거한 완전한 character 문서를 대화 상태로 물질화합니다."""
+    """작성용 분기를 제거한 완전한 character 문서를 대화 상태로 물질화합니다.
+
+    활성 분기 우선순위는 preset이 scenario보다 우선한다 - preset이 없으면
+    scenario_id 하나만 후보가 된다(기존 동작과 바이트 단위로 동일).
+    """
     if profile.metadata is None:
         raise WikiContextError(f"Profile requires frontmatter: {profile.path}")
     slug = profile.metadata.id.rsplit(":", 1)[-1]
     created_at = profile.metadata.created_at.isoformat()
+    active_variants = (
+        [setup.preset_id, setup.scenario_id] if setup.preset_id else [setup.scenario_id]
+    )
     try:
         body = resolve_profile_variants(
             document_body(profile.content),
-            setup.scenario_id,
-            known_scenario_ids,
+            active_variants,
+            known_variant_ids,
         )
     except WikiVariantError as exc:
         raise WikiContextError(f"Invalid profile variants in {profile.path}: {exc}") from exc
@@ -499,9 +660,15 @@ def initialize_wiki_thread(
     world_id: str,
     scenario_id: str,
     thread_id: str,
+    preset_id: str | None = None,
 ) -> WikiConversationSetup:
-    """새 Wiki thread를 만들고 선택한 시작 설정과 인물 문서를 물질화합니다."""
-    setup = load_wiki_setup(vault_root, world_id, scenario_id, thread_id)
+    """새 Wiki thread를 만들고 선택한 시작 설정과 인물 문서를 물질화합니다.
+
+    `preset_id`가 주어지면 해당 pc_preset의 `start_state.md`, `opening_scene.md`,
+    `characters/`가 scenario 것을 교체하고, 인물 분기도 preset을 우선 해석한다.
+    None이면 기존 scenario 전용 동작과 완전히 동일하다.
+    """
+    setup = load_wiki_setup(vault_root, world_id, scenario_id, thread_id, preset_id)
     thread_root = wiki_thread_root_for_vault(vault_root, setup.thread_id)
     manifest_path = thread_root / "thread.md"
     scene_path = thread_root / "scene" / "current.md"
@@ -519,13 +686,30 @@ def initialize_wiki_thread(
         )
     thread_store = WikiStore(thread_root)
 
+    preset_asset_root: Path | None = None
+    if setup.preset_id is not None:
+        _, preset_asset_root = _preset_paths(
+            vault_root,
+            setup.world_id,
+            setup.scenario_id,
+            setup.preset_id,
+        )
+    start_state_root = _scenario_root(vault_root, setup.world_id, setup.scenario_id)
+    start_state_source = f"scenarios/{setup.scenario_id}/start_state.md"
+    if preset_asset_root is not None and (preset_asset_root / "start_state.md").is_file():
+        start_state_root = preset_asset_root
+        start_state_source = (
+            f"scenarios/{setup.scenario_id}/{_PRESET_DIRNAME}/"
+            f"{setup.preset_id}/start_state.md"
+        )
+
     manifest = thread_store.read_document("thread.md")
     manifest_content = manifest.content
     manifest_values = {
         "활성 시나리오": setup.scenario_id,
         "플레이어 캐릭터": setup.pc_id,
         "기본 시점": setup.pov_mode,
-        "시작 조건": f"scenarios/{setup.scenario_id}/start_state.md",
+        "시작 조건": start_state_source,
         "현재 단계": "opening",
     }
     for label, value in manifest_values.items():
@@ -543,8 +727,7 @@ def initialize_wiki_thread(
 
     scene = thread_store.read_document("scene/current.md")
     if "## 시작 기준" not in scene.content:
-        scenario_root = _scenario_root(vault_root, setup.world_id, setup.scenario_id)
-        start_state = WikiStore(scenario_root).read_document("start_state.md")
+        start_state = WikiStore(start_state_root).read_document("start_state.md")
         start_body = re.sub(
             r"^#\s+.+?$",
             "# 현재 장면",
@@ -558,13 +741,21 @@ def initialize_wiki_thread(
             expected_revision=scene.revision,
         )
 
-    profiles = _profile_documents(vault_root, setup.world_id, setup.scenario_id)
+    profiles = _profile_documents(
+        vault_root,
+        setup.world_id,
+        setup.scenario_id,
+        setup.preset_id,
+    )
     profiles_by_id = {
         profile.metadata.id: profile
         for profile in profiles
         if profile.metadata is not None
     }
-    known_scenario_ids = _known_scenario_ids(vault_root, setup.world_id)
+    # 선택기 이름공간은 world의 속성이며 어떤 preset을 골랐는지와 무관하다.
+    # 선택 여부에 따라 좁히면, preset 분기를 가진 프로필이 preset 없이 시작할 때
+    # 그 분기를 일반 H3로 오인해 거부된다.
+    known_variant_ids = _known_variant_ids(vault_root, setup.world_id)
     for profile in profiles_by_id.values():
         if profile.metadata is None:
             continue
@@ -573,7 +764,7 @@ def initialize_wiki_thread(
         if not thread_store.resolve_path(relative_path).exists():
             thread_store.create_document(
                 relative_path,
-                _thread_character_content(profile, setup, known_scenario_ids),
+                _thread_character_content(profile, setup, known_variant_ids),
             )
     if manifest.metadata is None:
         raise WikiContextError("thread.md requires frontmatter metadata")
@@ -592,8 +783,19 @@ def read_wiki_actor_assets(
     vault_root: Path,
     world_id: str,
     scenario_id: str,
+    preset_id: str | None = None,
 ) -> list[WikiDocument]:
-    """Fixed prompt 자산과 Graph 방식의 선택 prompt 추가문을 읽습니다."""
+    """Fixed prompt 자산과 Graph 방식의 선택 prompt 추가문을 읽습니다.
+
+    `preset_id`가 주어지면 선택한 pc_preset 정의 문서를 scenario.md 바로 뒤에
+    덧붙인다. 프리셋 부속 자산 폴더에 `scenario.md`가 있으면 그 문서가 시나리오의
+    `scenario.md`를 완전히 교체하고(둘 다 넣지 않는다), 없으면 기존처럼 시나리오
+    것을 그대로 쓴다. 어느 쪽이든 assets 목록에는 `scenario.md`로 끝나는 경로가
+    정확히 하나만 남는다 - `src/wiki/runtime.py`의 `_world_config`가 이 경로 하나를
+    `next(...)`로 찾아 시나리오 문서를 판별하기 때문이다. preset 정의 문서는
+    scenario 본문을 교체하지 않고 추가하므로, preset 본문에는 그 프리셋에서만
+    달라지는 특징과 묘사 규정만 둔다.
+    """
     world_root = _world_root(vault_root, world_id)
     scenario_root = _scenario_root(vault_root, world_id, scenario_id)
     relative_paths = [Path("world.md"), Path("prose.md")]
@@ -602,9 +804,18 @@ def read_wiki_actor_assets(
             path.relative_to(world_root)
             for path in sorted((world_root / directory).glob("*.md"))
         )
-    relative_paths.append(
-        (scenario_root / "scenario.md").relative_to(world_root)
-    )
+    preset_path: Path | None = None
+    preset_asset_root: Path | None = None
+    if preset_id is not None:
+        preset_path, preset_asset_root = _preset_paths(
+            vault_root, world_id, scenario_id, preset_id
+        )
+    scenario_document_path = scenario_root / "scenario.md"
+    if preset_asset_root is not None and (preset_asset_root / "scenario.md").is_file():
+        scenario_document_path = preset_asset_root / "scenario.md"
+    relative_paths.append(scenario_document_path.relative_to(world_root))
+    if preset_path is not None:
+        relative_paths.append(preset_path.relative_to(world_root))
     cot_append_path = scenario_root / "cot_append.md"
     if not cot_append_path.is_file():
         cot_append_path = world_root / "cot_append.md"

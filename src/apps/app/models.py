@@ -241,6 +241,7 @@ class ConversationState(_LegacyProseVariantInput):
     world_mode: WorldMode = "graph"
     world_id: str
     scenario_id: str | None = None
+    preset_id: str | None = None
     title: str = "새 대화"
     preview: str = "새 대화"
     created_at: datetime = Field(default_factory=datetime.now)
@@ -345,6 +346,7 @@ class ConversationCreateRequest(_LegacyProseVariantInput):
     world_id: str
     world_mode: WorldMode = "graph"
     scenario_id: str | None = None
+    preset_id: str | None = None
     actor_model: str | None = None
     prose_profile: ProseProfile | None = None
     engine_modules: dict[str, str] | None = None

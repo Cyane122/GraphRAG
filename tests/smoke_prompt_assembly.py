@@ -15,12 +15,18 @@
 #   - _check_main_slot_restored() -> None : main 슬롯이 카탈로그 첫 자리에 복원되고 Fixed에 렌더되는지 검증.
 #   - _check_output_contract_owns_engine_block_order() -> None : Dynamic 출력 계약이 엔진 블록 배치와 확장된 침묵 검증을 소유하는지 검증.
 #   - _check_normalize_prose_profile_dedupes_saved_instance() -> None : 저장된 ProseProfile 인스턴스도 정규화 시 modifier 중복 제거가 적용되는지 검증.
+#   - _check_prose_profile_catalog_lists_default_primary() -> None : 카탈로그가 general_v1을 label 일반으로 나열하는지 검증.
+#   - _check_primary_auto_discovery_and_frontmatter_stripping() -> None : primary/*.md 신규 파일이 frontmatter label로 카탈로그에 나타나고, 렌더 시 frontmatter 없이 조립되는지 검증.
+#   - _check_normalize_prose_profile_guards_primary_and_base() -> None : 알 수 없거나 경로 조작을 노리는 primary/base가 기본값으로 대체되는지 검증.
+#   - _check_impersonation_engine_unlocks_user_narration() -> None : 1p_char에서 메인·기억 엔진의 사칭 선택이 유저 대필 허용 블록과 current_pov에 반영되는지 검증.
 #   - main() -> None : 전체 smoke 검사를 실행.
 # ================================
 
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -30,7 +36,13 @@ from src.apps.app.commit import _merge_need_hints  # noqa: E402
 from src.agents.context.renderer import build_rendered_dynamic_context  # noqa: E402
 from src.agents.prompt_factory.builder import PromptBuilder  # noqa: E402
 from src.agents.prompt_factory.engines import engine_module_catalog, normalize_engine_modules  # noqa: E402
-from src.agents.prompt_factory.profiles import ProseProfile, normalize_prose_profile  # noqa: E402
+import src.agents.prompt_factory.profiles as profiles_module  # noqa: E402
+from src.agents.prompt_factory.profiles import (  # noqa: E402
+    ProseProfile,
+    normalize_prose_profile,
+    prose_profile_catalog,
+    render_prose_profile,
+)
 
 
 def _check_merge_need_hints() -> None:
@@ -287,6 +299,95 @@ def _check_normalize_prose_profile_dedupes_saved_instance() -> None:
     print("[ok] normalize_prose_profile: saved ProseProfile instances are re-deduped, not returned unchanged")
 
 
+def _check_prose_profile_catalog_lists_default_primary() -> None:
+    """카탈로그가 기본 primary(general_v1)를 label '일반'으로 나열하는지 검증한다."""
+    catalog = prose_profile_catalog()
+    primaries = catalog["primaries"]
+    assert isinstance(primaries, list) and primaries, primaries
+    assert primaries[0] == {"id": "general_v1", "label": "일반"}, primaries
+    print("[ok] prose_profile_catalog: general_v1 listed first with label 일반")
+
+
+def _check_primary_auto_discovery_and_frontmatter_stripping() -> None:
+    """primary/*.md 신규 파일이 frontmatter label로 카탈로그에 나타나고,
+
+    렌더 시 frontmatter 없이 조립되는지 검증한다. 실제 에셋 폴더 대신
+    임시 복사본 디렉터리에 작성하여 에셋 폴더 오염을 방지한다.
+    """
+    original_dir = profiles_module._PROMPT_DIR
+    temp_id = "__smoke_temp_genre__"
+    with TemporaryDirectory(prefix="graphrag-prompt-smoke-") as tmpdir:
+        try:
+            tmp_profiles_dir = Path(tmpdir) / "profiles"
+            shutil.copytree(original_dir, tmp_profiles_dir)
+            profiles_module._PROMPT_DIR = tmp_profiles_dir
+
+            temp_path = tmp_profiles_dir / "primary" / f"{temp_id}.md"
+            temp_path.write_text(
+                "---\nlabel: 임시 장르\n---\n## Temp Genre Body\n\n- smoke-only sentinel line.\n",
+                encoding="utf-8",
+            )
+            catalog = prose_profile_catalog()
+            entry = next((item for item in catalog["primaries"] if item["id"] == temp_id), None)
+            assert entry == {"id": temp_id, "label": "임시 장르"}, catalog["primaries"]
+
+            rendered = render_prose_profile(ProseProfile(primary=temp_id))
+            assert "Temp Genre Body" in rendered, rendered
+            assert "smoke-only sentinel line" in rendered, rendered
+            assert "label:" not in rendered, rendered
+            assert "---" not in rendered, rendered
+        finally:
+            profiles_module._PROMPT_DIR = original_dir
+
+    assert not (original_dir / "primary" / f"{temp_id}.md").exists()
+    print("[ok] primary auto-discovery: new file appears via frontmatter label, renders without frontmatter")
+
+
+def _check_normalize_prose_profile_guards_primary_and_base() -> None:
+    """존재하지 않거나 경로 조작을 노리는 primary/base가 기본값으로 대체되는지 검증한다."""
+    unknown_primary = normalize_prose_profile({"primary": "no_such_genre"})
+    assert unknown_primary.primary == "general_v1", unknown_primary.primary
+
+    traversal_primary = normalize_prose_profile({"primary": "../x"})
+    assert traversal_primary.primary == "general_v1", traversal_primary.primary
+
+    traversal_base = normalize_prose_profile({"base": "../x"})
+    assert traversal_base.base == "ko_webnovel_v1", traversal_base.base
+
+    valid_primary = normalize_prose_profile({"primary": "general_v1"})
+    assert valid_primary.primary == "general_v1", valid_primary.primary
+
+    # normalize_prose_profile() with legacy_variant "b"/"c" must still add relaxed_v1.
+    legacy = normalize_prose_profile(None, "b")
+    assert legacy.modifiers == ["relaxed_v1"], legacy.modifiers
+    print("[ok] normalize_prose_profile: unknown/path-traversal primary and base fall back to defaults")
+
+
+def _check_impersonation_engine_unlocks_user_narration() -> None:
+    """1p_char에서 사칭 엔진을 고르면 Fixed의 유저 대필 블록과 Dynamic current_pov가 모두 허용으로 바뀌는지 검증한다."""
+    def build(engine_modules: dict[str, str] | None) -> tuple[str, str]:
+        builder = PromptBuilder(
+            world_config={"rating": "r18", "pov_mode": "1p_char"},
+            char_name="하음",
+            user_name="시안",
+            perspective=1,
+            engine_modules=engine_modules,
+        )
+        return builder.build_fixed_section(), builder.build_current_pov()
+
+    for selection in ({"main": "impersonation"}, {"memory": "impersonation"}):
+        fixed, pov = build(selection)
+        assert "시안 may be narrated as active scene subject" in fixed, (selection, fixed[:1200])
+        assert "Never generate for 시안" not in fixed, (selection, fixed[:1200])
+        assert "USER CONTROL: 시안 action may be narrated" in pov, (selection, pov)
+
+    for selection in (None, {"main": "base"}, {"main": "anti"}):
+        fixed, pov = build(selection)
+        assert "Never generate for 시안" in fixed, (selection, fixed[:1200])
+        assert "USER CONTROL: never narrate 시안" in pov, (selection, pov)
+    print("[ok] impersonation engine: 1p_char user-narration lock follows main/memory selection")
+
+
 def main() -> None:
     """전체 smoke 검사를 실행한다."""
     _check_merge_need_hints()
@@ -299,6 +400,10 @@ def main() -> None:
     _check_main_slot_restored()
     _check_output_contract_owns_engine_block_order()
     _check_normalize_prose_profile_dedupes_saved_instance()
+    _check_prose_profile_catalog_lists_default_primary()
+    _check_primary_auto_discovery_and_frontmatter_stripping()
+    _check_normalize_prose_profile_guards_primary_and_base()
+    _check_impersonation_engine_unlocks_user_narration()
     print("\nALL PASS: smoke_prompt_assembly")
 
 

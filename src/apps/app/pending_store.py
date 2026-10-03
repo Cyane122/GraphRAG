@@ -15,8 +15,9 @@ import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from src.config import DATA_ROOT
 
-PENDING_DIR = Path("data") / "pending_commits"
+PENDING_DIR = DATA_ROOT / "pending_commits"
 
 
 def _safe_part(value: str) -> str:

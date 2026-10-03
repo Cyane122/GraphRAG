@@ -11,11 +11,10 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 
 from src.apps.app.live_console import configure_live_console
 from src.apps.app.routers import catalog, conversations, graph, messages, settings, usernotes, wiki
-from src.apps.app.routers.shared import RouterContext, _APP_DIR
+from src.apps.app.routers.shared import RouterContext
 from src.apps.app.storage import ConversationStore
 from src.config import HOSTED_UI_ORIGINS
 
@@ -42,7 +41,6 @@ def create_app() -> FastAPI:
         usernotes.create_router(context),
     ):
         app.include_router(router)
-    app.mount("/", StaticFiles(directory=_APP_DIR), name="static")
     return app
 
 

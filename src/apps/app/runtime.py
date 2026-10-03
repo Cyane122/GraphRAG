@@ -8,9 +8,10 @@
 #
 # Functions
 #   - discover_world_profiles(world_mode: WorldMode = "graph") -> list[dict] : Discover selectable worlds and scenarios for one engine mode.
+#   - _wiki_scenario_presets(scenario_root: Path) -> list[dict] : List one Wiki scenario's selectable pc_preset entries.
 #   - initialize_conversation(state: ConversationState) -> ConversationState : Populate world config fields.
 #   - sync_conversation_perspective(state: ConversationState) -> ConversationState : Keep persisted POV fields aligned.
-#   - resolve_opening_scene(world_id: str, scenario_id: str | None, world_mode: WorldMode = "graph") -> str : Resolve a Graph or Wiki opening scene.
+#   - resolve_opening_scene(world_id: str, scenario_id: str | None, world_mode: WorldMode = "graph", preset_id: str | None = None) -> str : Resolve a Graph or Wiki opening scene.
 #   - conversation_db_path(thread_id: str) -> str : Resolve the per-conversation Kuzu path.
 #   - snapshot_game_time() -> str | None : Read current in-world time from active Kuzu.
 #   - restore_game_time(value: str | None) -> None : Restore current in-world time on active Kuzu.
@@ -25,11 +26,11 @@ from pathlib import Path
 from types import TracebackType
 
 from src.agents.manager import load_world_instance
-from src.config import WIKI_VAULT_ROOT
+from src.config import DATA_ROOT, GRAPH_WORLDS_PACKAGE, GRAPH_WORLDS_ROOT, WIKI_VAULT_ROOT
 from src.core.database import KuzuAsyncDriver
 from src.core.database.driver import reset_active_driver, set_active_driver
 from src.apps.app.models import ConversationState, WorldMode
-from src.wiki import WikiContextError, resolve_wiki_opening_scene
+from src.wiki import WikiContextError, parse_frontmatter, resolve_wiki_opening_scene
 
 _ACTIVE_DRIVERS: dict[str, KuzuAsyncDriver] = {}
 
@@ -43,7 +44,7 @@ def discover_world_profiles(world_mode: WorldMode = "graph") -> list[dict]:
 
 def _discover_graph_world_profiles() -> list[dict]:
     """Discover graph worlds from Python schema modules."""
-    worlds_dir = Path("src/assets/worlds")
+    worlds_dir = GRAPH_WORLDS_ROOT
     worlds: list[dict] = []
     for schema_path in sorted(worlds_dir.glob("*/schema.py")):
         world_id = schema_path.parent.name
@@ -52,7 +53,7 @@ def _discover_graph_world_profiles() -> list[dict]:
         world_label = world_id
         scenarios: list[dict] = []
         try:
-            module = import_module(f"src.assets.worlds.{world_id}.schema")
+            module = import_module(f"{GRAPH_WORLDS_PACKAGE}.{world_id}.schema")
             world = getattr(module, "world_instance", None)
             world_label = getattr(module, "DISPLAY_NAME", None) or getattr(world, "DISPLAY_NAME", None) or world_id
             scenario_defs = getattr(module, "SCENARIOS", None)
@@ -88,6 +89,32 @@ def _discover_graph_world_profiles() -> list[dict]:
     return worlds
 
 
+def _wiki_scenario_presets(scenario_root: Path) -> list[dict]:
+    """Return the selectable pc_preset entries of one Wiki scenario.
+
+    Each entry is one `pc_preset/<preset_id>.md` file. The label comes from the
+    document's optional `display_name` frontmatter key and falls back to the id.
+    A scenario without a `pc_preset/` directory returns an empty list, which the
+    client renders as "no preset selector".
+    """
+    preset_dir = scenario_root / "pc_preset"
+    if not preset_dir.is_dir():
+        return []
+    presets: list[dict] = []
+    for preset_file in sorted(preset_dir.glob("*.md")):
+        label = preset_file.stem
+        try:
+            metadata = parse_frontmatter(preset_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            metadata = None
+        if metadata is not None:
+            display_name = str((metadata.model_extra or {}).get("display_name") or "").strip()
+            if display_name:
+                label = display_name
+        presets.append({"id": preset_file.stem, "label": label})
+    return presets
+
+
 def _discover_wiki_world_profiles() -> list[dict]:
     """Discover Wiki V2 worlds without importing graph world modules."""
     worlds_dir = WIKI_VAULT_ROOT / "worlds"
@@ -96,7 +123,11 @@ def _discover_wiki_world_profiles() -> list[dict]:
         world_id = world_file.parent.name
         scenarios_dir = world_file.parent / "scenarios"
         scenarios = [
-            {"id": scenario_file.parent.name, "label": scenario_file.parent.name}
+            {
+                "id": scenario_file.parent.name,
+                "label": scenario_file.parent.name,
+                "presets": _wiki_scenario_presets(scenario_file.parent),
+            }
             for scenario_file in sorted(scenarios_dir.glob("*/scenario.md"))
         ]
         worlds.append(
@@ -163,6 +194,7 @@ def resolve_opening_scene(
     world_id: str,
     scenario_id: str | None,
     world_mode: WorldMode = "graph",
+    preset_id: str | None = None,
 ) -> str:
     """Resolve an opening scene from the selected engine namespace."""
     if world_mode == "wiki":
@@ -171,6 +203,7 @@ def resolve_opening_scene(
                 WIKI_VAULT_ROOT,
                 world_id,
                 scenario_id or "default",
+                preset_id,
             )
         except (FileNotFoundError, WikiContextError) as exc:
             print(f"[WebApp] Wiki opening scene unavailable for {world_id}/{scenario_id}: {exc}")
@@ -188,7 +221,7 @@ def resolve_opening_scene(
 
 def conversation_db_path(thread_id: str) -> str:
     """Return the Kuzu DB path for a standalone web conversation."""
-    return str(Path("data") / "threads" / thread_id / "schema")
+    return str(DATA_ROOT / "threads" / thread_id / "schema")
 
 
 class ActiveConversation:

@@ -15,14 +15,12 @@
 import re
 from dataclasses import dataclass
 from functools import lru_cache
-from pathlib import Path
+
+from src.config import ACTOR_PROMPTS_ROOT
 
 
 _FORBIDDEN_TERMS_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "agents"
-    / "prompt_factory"
-    / "prompts"
+    ACTOR_PROMPTS_ROOT
     / "blacklist"
     / "FORBIDDEN_TERMS.txt"
 )

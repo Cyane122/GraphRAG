@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"$CLAUDE_PROJECT_DIR/.ai/hooks/context_loader.py\"",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.agent/hooks/context_loader.py\"",
             "timeout": 30,
             "statusMessage": "Loading active repository context"
           }
@@ -15,22 +15,11 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "mcp__codex__codex",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python \"$CLAUDE_PROJECT_DIR/.ai/hooks/enforce_codex_call.py\"",
-            "timeout": 30,
-            "statusMessage": "Applying Codex repository defaults"
-          }
-        ]
-      },
-      {
         "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "python \"$CLAUDE_PROJECT_DIR/.ai/hooks/guard_commands.py\"",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.agent/hooks/guard_commands.py\"",
             "timeout": 30,
             "statusMessage": "Checking command safety"
           }
@@ -60,7 +49,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"$CLAUDE_PROJECT_DIR/.ai/hooks/validate_changelog.py\"",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.agent/hooks/validate_changelog.py\"",
             "timeout": 30,
             "statusMessage": "Checking changelog policy"
           }

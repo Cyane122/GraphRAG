@@ -4,6 +4,7 @@
 # Message streaming, reroll, mutation, and variant web routes.
 #
 # Functions
+#   - _user_facing_error_message(exc: BaseException) -> str : provider 429/403 한도 소진 예외를 사람이 읽을 수 있는 한국어 문구로 치환합니다(그 외는 원문 유지).
 #   - create_router(context: RouterContext) -> APIRouter : Register message routes
 # ================================
 
@@ -24,6 +25,22 @@ from src.apps.app.models import (
 )
 from src.apps.app.routers.shared import RouterContext, _json_line, _load_or_404
 from src.apps.app.service import append_user_and_stream
+from src.core.llm.client import is_retryable_provider_limit
+
+_PROVIDER_LIMIT_MESSAGE = "모델 사용량 한도(429)에 걸렸습니다. 잠시 후 다시 시도해 주세요."
+
+
+def _user_facing_error_message(exc: BaseException) -> str:
+    """예외를 사용자에게 보여줄 한국어 문구로 치환합니다.
+
+    provider 429/403 한도 소진(`is_retryable_provider_limit`)이면 Vertex/Gemini가
+    돌려주는 원문 오류 JSON 대신 간결한 한국어 안내를 반환한다. 그 외 예외는 원문
+    메시지를 그대로 반환한다. 서버 로그(`traceback.print_exc()`)에는 항상 원문이
+    그대로 남으므로 진단 정보는 손실되지 않는다.
+    """
+    if is_retryable_provider_limit(exc):
+        return _PROVIDER_LIMIT_MESSAGE
+    return str(exc)
 
 
 def create_router(context: RouterContext) -> APIRouter:
@@ -55,7 +72,7 @@ def create_router(context: RouterContext) -> APIRouter:
             except Exception as exc:
                 print("[WebStream] generation failed")
                 traceback.print_exc()
-                yield _json_line({"type": "error", "content": str(exc)})
+                yield _json_line({"type": "error", "content": _user_facing_error_message(exc)})
 
         return StreamingResponse(_events(), media_type="application/x-ndjson")
 
@@ -84,7 +101,7 @@ def create_router(context: RouterContext) -> APIRouter:
         except RuntimeError as exc:
             print("[WebReroll] generation failed")
             traceback.print_exc()
-            raise HTTPException(500, detail=str(exc)) from exc
+            raise HTTPException(500, detail=_user_facing_error_message(exc)) from exc
         return result
 
     @router.patch("/api/conversations/{thread_id}/messages/{message_id}/variants/activate")
@@ -119,7 +136,9 @@ def create_router(context: RouterContext) -> APIRouter:
         except ValueError as exc:
             raise HTTPException(400, detail=str(exc)) from exc
         except RuntimeError as exc:
-            raise HTTPException(500, detail=str(exc)) from exc
+            print("[WebEdit] generation failed")
+            traceback.print_exc()
+            raise HTTPException(500, detail=_user_facing_error_message(exc)) from exc
 
     @router.delete("/api/conversations/{thread_id}/messages/{message_id}")
     def api_delete_message(thread_id: str, message_id: str) -> dict:
@@ -130,5 +149,7 @@ def create_router(context: RouterContext) -> APIRouter:
             return ops.delete(state, message_id, store)
         except KeyError as exc:
             raise HTTPException(404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, detail=str(exc)) from exc
 
     return router

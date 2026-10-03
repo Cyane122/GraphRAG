@@ -43,7 +43,7 @@ if str(ROOT) not in sys.path:
 
 from tests.engine_hygiene_baseline import UNUSED_IMPORT_BASELINE  # noqa: E402
 
-# Engine-scope packages this suite covers. src/assets/worlds/ is world content and
+# Engine-scope packages this suite covers. assets/worlds/graph/ is world content and
 # excluded per this cycle's non-goals; src/apps/world_editor/ is included because it
 # is maintained engine tooling with its own header-block convention and smoke
 # coverage (tests/smoke_world_editor_migrate.py, tests/smoke_world_editor_repair.py),

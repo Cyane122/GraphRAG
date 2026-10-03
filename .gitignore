@@ -1,13 +1,13 @@
 .env
 
-src/assets/worlds/*/
-!src/assets/worlds/default/
 logs/
 graph/
 !public/graph/
 !public/graph/**
+!assets/worlds/graph/
+assets/worlds/graph/*/
+!assets/worlds/graph/default/
 data/
-scripts/
 chat/
 .junie/
 docs/codex_tmp/
@@ -31,12 +31,12 @@ tmp_*.log
 
 *.zip
 *.json
-!src/wiki/prompts/scene_types.json
+!assets/prompts/**/*.json
 !.claude/settings.json
 !.mcp.json
 !.codex/hooks.json
 
-wiki_v2/
+assets/wiki_v2/
 
 # Service-account credentials (including the active Vertex key).
 project-*.json

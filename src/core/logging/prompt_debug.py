@@ -15,6 +15,7 @@ import hashlib
 import json
 from datetime import datetime
 from pathlib import Path
+from src.config import LOGS_ROOT
 
 
 def build_prompt_fingerprint(
@@ -38,7 +39,7 @@ def build_prompt_fingerprint(
     }
 
 
-def append_prompt_fingerprint_log(record: dict, logs_dir: Path | str = "logs") -> None:
+def append_prompt_fingerprint_log(record: dict, logs_dir: Path | str = LOGS_ROOT) -> None:
     """fingerprint record를 logs/prompt_fingerprints.jsonl에 한 줄로 추가합니다."""
     try:
         path = Path(logs_dir)

@@ -14,17 +14,17 @@ import shutil
 import sys
 from pathlib import Path
 
-import src.assets.worlds as _worlds_pkg
+from src.config import GRAPH_WORLDS_PACKAGE, GRAPH_WORLDS_ROOT
 
 
 def _world_pkg_dir(world_id: str) -> Path:
     """월드 패키지 디렉터리 경로를 반환합니다."""
-    return Path(_worlds_pkg.__path__[0]) / world_id
+    return GRAPH_WORLDS_ROOT / world_id
 
 
 def purge_world_modules(world_id: str) -> None:
     """월드의 import 캐시와 bytecode 캐시를 비워 다음 import가 디스크 소스를 읽게 합니다."""
-    prefix = f"src.assets.worlds.{world_id}"
+    prefix = f"{GRAPH_WORLDS_PACKAGE}.{world_id}"
     for name in [m for m in sys.modules if m == prefix or m.startswith(prefix + ".")]:
         del sys.modules[name]
     importlib.invalidate_caches()

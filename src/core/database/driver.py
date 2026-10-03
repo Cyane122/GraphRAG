@@ -30,8 +30,8 @@ from pathlib import Path
 import kuzu
 from kuzu import QueryResult
 
-from src.assets.worlds.base import World
-from src.config import WORLD_ID
+from src.config import GRAPH_DB_ROOT, GRAPH_WORLDS_PACKAGE, WORLD_ID
+from src.worlds.base import World
 from src.core.database.migrations import _DATA_PATCHES, migration_ops
 from src.core.database.proxy import ProxyDriver
 from src.core.database.records import KuzuRecord, KuzuResult
@@ -114,7 +114,7 @@ class KuzuAsyncDriver:
             return
 
         try:
-            module = import_module(f"src.assets.worlds.{self._world_id}.schema")
+            module = import_module(f"{GRAPH_WORLDS_PACKAGE}.{self._world_id}.schema")
             scenarios = getattr(module, "SCENARIOS", None)
             world = None
             if isinstance(scenarios, list):
@@ -132,7 +132,7 @@ class KuzuAsyncDriver:
         print(f"[KuzuBootstrap] base schema missing for '{self._world_id}' ({', '.join(sorted(missing))}). Initializing schema.")
         world.build_schema(self._conn, self._scenario_id)
         # world_editor 의 전역/시나리오 schedule 템플릿을 Schedule 노드로 반영.
-        from src.assets.worlds.base import apply_schedule_templates
+        from src.worlds.base import apply_schedule_templates
         apply_schedule_templates(self._conn, self._world_id, self._scenario_id)
 
     def _run_migrations(self) -> None:
@@ -449,7 +449,7 @@ def reset_active_driver(token: object) -> None:
     _active_driver.reset(token)
 
 
-_db_path        = str(Path("graph") / WORLD_ID)
+_db_path        = str(GRAPH_DB_ROOT / WORLD_ID)
 _default_driver: KuzuAsyncDriver | None = None
 async_driver    = ProxyDriver(_resolve_driver)
 

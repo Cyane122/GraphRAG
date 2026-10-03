@@ -6,7 +6,7 @@
 # Functions
 #   - create_app() -> FastAPI : Create the standalone web UI app.
 #   - _ensure_utf8_stdio() -> None : Force redirected console logs to UTF-8.
-#   - run(host: str, port: int, open_browser: bool) -> None : Run the standalone web UI server.
+#   - run(host: str, port: int) -> None : Run the engine JSON API server.
 # ================================
 
 from __future__ import annotations
@@ -36,8 +36,8 @@ def create_app() -> "FastAPI":
     return _create_app()
 
 
-def run(host: str = "127.0.0.1", port: int = 8000, open_browser: bool = False) -> None:
-    """Run the standalone web UI with uvicorn."""
+def run(host: str = "127.0.0.1", port: int = 8000) -> None:
+    """Run the engine JSON API with uvicorn."""
     _ensure_utf8_stdio()
     from src.apps.app.live_console import configure_live_console
 
@@ -55,23 +55,11 @@ def run(host: str = "127.0.0.1", port: int = 8000, open_browser: bool = False) -
     for noisy in ("httpx", "httpcore", "sentence_transformers", "transformers",
                   "huggingface_hub", "anthropic", "urllib3", "filelock"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
-    import threading
-    import time
-    import webbrowser
-
     import uvicorn
 
     from src.apps.app.app import app
 
-    if open_browser:
-        def _open() -> None:
-            """Open the web UI after the server starts."""
-            time.sleep(0.8)
-            webbrowser.open(f"http://{host}:{port}")
-
-        threading.Thread(target=_open, daemon=True).start()
-
-    print(f"GraphRAG web UI: http://{host}:{port}")
+    print(f"GraphRAG API: http://{host}:{port}/api/docs")
     uvicorn.run(app, host=host, port=port, log_level="info")
 
 

@@ -10,12 +10,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from typing import Any
 
 from src.agents.context.scene_state import update_scene_state_after_response
 from src.agents.manager.effects import commit_manager_auxiliary_effects
-from src.core.logging.conversation_logger import append_turn
+from src.core.logging import AcceptedTurn, append_accepted_turn
 from src.simulation.state.apply.time_plan import commit_time_from_prose_header, reconcile_location_with_prose
 from src.simulation.state.models import GraphTurnUpdateRequest
 from src.simulation.state.updater import update_accepted_turn
@@ -49,19 +50,6 @@ def _merge_need_hints(
         existing = merged.get(npc_id)
         merged[npc_id] = f"{existing}\n{libido_hint}" if existing else libido_hint
     return merged
-
-
-def _timestamp_from_pending(pending: dict) -> datetime | None:
-    """Parse pending timestamp for conversation logging."""
-    timestamp = pending.get("timestamp")
-    if isinstance(timestamp, datetime):
-        return timestamp
-    if isinstance(timestamp, str):
-        try:
-            return datetime.fromisoformat(timestamp)
-        except ValueError:
-            return None
-    return None
 
 
 def _coerce_datetime(value: object) -> datetime | None:
@@ -264,10 +252,22 @@ async def commit_pending_web(
         print(f"[CommitPendingWeb] stage done: scene_state commit_id={commit_id}")
 
     if "conversation_log" not in completed:
-        append_turn(
-            user_input=pending["user_input"],
-            ai_response=pending["ai_response"],
-            timestamp=_timestamp_from_pending(pending),
+        # 기록 실패는 그대로 전파한다. stage가 완료로 표시되지 않으므로 pending과 이미 완료된
+        # 도메인 stage가 남고, 재시도는 도메인 단계를 건너뛴 채 로그만 다시 쓴다. 같은 확정
+        # 이벤트(event_id)가 이미 기록돼 있으면 append_accepted_turn이 중복 추가하지 않는다.
+        await asyncio.to_thread(
+            append_accepted_turn,
+            AcceptedTurn(
+                mode="graph",
+                world_id=state.world_id,
+                scenario_id=state.scenario_id,
+                thread_id=str(pending.get("thread_id") or state.thread_id),
+                commit_id=commit_id,
+                user_message_id=pending.get("user_msg_id"),
+                assistant_message_id=pending.get("response_msg_id"),
+                user_input=str(pending.get("user_input") or ""),
+                ai_response=pending["ai_response"],
+            ),
         )
         _mark_stage_done(pending, state, "conversation_log")
         completed = _completed_stages(pending)

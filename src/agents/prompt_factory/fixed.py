@@ -2,7 +2,7 @@
 # src/agents/prompt_factory/fixed.py
 #
 # Cacheable fixed Actor prompt section builder.
-# Loads modular Markdown prompt files from prompt_factory/prompts/.
+# Loads modular Markdown prompt files from assets/prompts/actor/.
 # Keeps the shared operator and token-budget policy fragments beside their sole consumer.
 # Style now comes from one axis only: the conversation's ProseProfile (profiles.py).
 # _render_prompt_block, _SafeFormatDict, format_prompt_vars_twice, is_unified_blacklist는
@@ -11,22 +11,25 @@
 # Functions
 #   - build_fixed_section(world_config: dict, char_name: str, user_name: str, pov_mode: str, prose_profile: ProseProfile, engine_modules: dict[str, str]) -> str : 고정 프롬프트 세그먼트 조립 (prose_profile/engine_modules/pov_mode는 이미 정규화·해석된 값을 받는다)
 #   - resolve_pov_mode(world_config: dict, perspective: int) -> str : 4-way POV 모드 판정
-#   - user_impersonation_allowed(pov_mode: str, world_config: dict | None = None) -> bool : 사칭 허용 여부 판단
+#   - user_impersonation_allowed(pov_mode: str, world_config: dict | None = None, engine_modules: dict[str, str] | None = None) -> bool : 사칭 허용 여부 판단 (메인·기억 엔진의 사칭 선택 포함)
 #   - char_focus_configured(world_config: dict) -> bool : 캐릭터 초점 프롬프트가 설정돼 fixed 세그먼트가 이를 소유하는지 판정
 #   - _resolve_char_focus(world_config: dict, char_name: str) -> str : 인물 초점 프롬프트 선택
 #   - _select_blacklist_section(world_config: dict, char_name: str, user_name: str, additional_blacklist: str) -> str : 블랙리스트 본문 선택
-#   - _select_user_impersonation_section(pov_mode: str, world_config: dict | None = None) -> str : 유저 대필 허용/금지 본문 선택
+#   - _select_user_impersonation_section(pov_mode: str, world_config: dict | None = None, engine_modules: dict[str, str] | None = None) -> str : 유저 대필 허용/금지 본문 선택
 #   - _select_operator(rating: str) -> str : 등급별 operator 정책 선택
-#   - _load_prompt(relative_path: str) -> str : prompts/ 하위 Markdown 로드
 # ================================
 
-from src.agents.prompt_factory.engines import adult_engine_enabled, build_engine_modules_section
+from src.agents.prompt_factory.engines import (
+    adult_engine_enabled,
+    build_engine_modules_section,
+    impersonation_engine_enabled,
+)
 from src.agents.prompt_factory.profiles import ProseProfile, effective_prose_profile, render_prose_profile
 from src.agents.prompt_factory.renderers import (
-    PROMPT_DIR,
     _render_prompt_block,
     format_prompt_vars_twice,
     is_unified_blacklist,
+    load_prompt,
 )
 from src.config import MAX_TOKEN
 
@@ -102,8 +105,8 @@ def build_fixed_section(
 
     parts = [
         fmt(operator),
-        fmt(_render_prompt_block("user_impersonation", _select_user_impersonation_section(pov_mode, world_config))),
-        fmt(_render_prompt_block("simulation_core", _load_prompt("simulation_core.md"))),
+        fmt(_render_prompt_block("user_impersonation", _select_user_impersonation_section(pov_mode, world_config, engine_modules))),
+        fmt(_render_prompt_block("simulation_core", load_prompt("simulation_core.md"))),
         fmt(
             _render_prompt_block(
                 "prose_profile",
@@ -181,9 +184,15 @@ def resolve_pov_mode(world_config: dict, perspective: int) -> str:
     return "1p_char" if perspective == 1 else "3p_char"
 
 
-def user_impersonation_allowed(pov_mode: str, world_config: dict | None = None) -> bool:
+def user_impersonation_allowed(
+    pov_mode: str,
+    world_config: dict | None = None,
+    engine_modules: dict[str, str] | None = None,
+) -> bool:
     """Return whether the Actor may narrate the player character this turn."""
     if pov_mode.endswith("_user"):
+        return True
+    if engine_modules and impersonation_engine_enabled(engine_modules):
         return True
     # world_config에 impersonation=True가 명시된 경우 pov anchor와 무관하게 허용
     return bool(world_config and world_config.get("impersonation", False))
@@ -203,7 +212,7 @@ def _select_blacklist_section(
     if is_unified_blacklist(world_config):
         return ""
 
-    blacklist_tpl = _load_prompt("blacklist/BLACKLIST.md")
+    blacklist_tpl = load_prompt("blacklist/BLACKLIST.md")
     return blacklist_tpl.format(
         for_add=additional_blacklist,
         char=char_name,
@@ -211,11 +220,15 @@ def _select_blacklist_section(
     )
 
 
-def _select_user_impersonation_section(pov_mode: str, world_config: dict | None = None) -> str:
-    """Select whether the model may narrate {user}, derived from pov_mode and world_config."""
-    if user_impersonation_allowed(pov_mode, world_config):
-        return _load_prompt("core/USER_IMPERSONATION_ALLOWED.md")
-    return _load_prompt("core/USER_IMPERSONATION_FORBIDDEN.md")
+def _select_user_impersonation_section(
+    pov_mode: str,
+    world_config: dict | None = None,
+    engine_modules: dict[str, str] | None = None,
+) -> str:
+    """Select whether the model may narrate {user}, derived from pov_mode, world_config, and engine selection."""
+    if user_impersonation_allowed(pov_mode, world_config, engine_modules):
+        return load_prompt("core/USER_IMPERSONATION_ALLOWED.md")
+    return load_prompt("core/USER_IMPERSONATION_FORBIDDEN.md")
 
 
 def _select_operator(rating: str) -> str:
@@ -225,13 +238,3 @@ def _select_operator(rating: str) -> str:
     if rating == "15":
         return _OPERATOR_15
     return _OPERATOR_R18
-
-
-# ----------------
-# File loading
-# ----------------
-
-def _load_prompt(relative_path: str) -> str:
-    """Load one Markdown prompt section from prompt_factory/prompts/."""
-    path = PROMPT_DIR / relative_path
-    return path.read_text(encoding="utf-8")

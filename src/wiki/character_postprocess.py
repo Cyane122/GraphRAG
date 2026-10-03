@@ -13,9 +13,9 @@
 from __future__ import annotations
 
 import hashlib
-from pathlib import Path
 import re
 
+from src.config import WIKI_PROMPTS_ROOT
 from src.core.llm import extract_json_from_llm, get_model, get_response_text
 from src.simulation.prose_headers import parse_prose_header_datetime
 from src.simulation.systems.world_dynamics.organic_models import (
@@ -29,8 +29,8 @@ from src.wiki.markdown import parse_markdown_sections
 from src.wiki.models import PendingWikiCommit, SectionPatch, WikiDocument
 from src.wiki.patches import build_actor_response_section_patch
 
-_PROMPT_PATH = Path(__file__).parent / "prompts" / "personality_drift.md"
-_CONTRACEPTION_PROMPT_PATH = Path(__file__).parent / "prompts" / "contraception_state.md"
+_PROMPT_PATH = WIKI_PROMPTS_ROOT / "personality_drift.md"
+_CONTRACEPTION_PROMPT_PATH = WIKI_PROMPTS_ROOT / "contraception_state.md"
 _PERSONALITY_SENTINEL = (
     "- No durable personality change has occurred since the story began."
 )
