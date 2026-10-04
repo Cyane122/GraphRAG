@@ -7,7 +7,7 @@
 #   - reproductive_state_fields(markdown: str) -> dict[str, str] : Reproductive State section의 canonical 단일 행 필드를 반환합니다.
 #   - authored_cycle_character_titles(documents: list[WikiDocument]) -> list[str] : Menstrual cycle이 enabled인 thread character의 H1 제목을 반환합니다.
 #   - plan_personality_drift(documents: list[WikiDocument], actor_response: str, pending: PendingWikiCommit, actor_profile_id: str, model_name: str) -> list[SectionPatch] : durable 변화 뒤 성격 변화 원장 patch를 계획합니다.
-#   - plan_organic_state(documents: list[WikiDocument], actor_response: str, pending: PendingWikiCommit, actor_profile_id: str, player_profile_id: str, model_name: str) -> tuple[list[SectionPatch], str | None] : 결정적 주기 tick과 명시적 위험 사건을 생식 상태에 반영합니다.
+#   - plan_organic_state(documents: list[WikiDocument], actor_response: str, pending: PendingWikiCommit, actor_profile_id: str, player_profile_id: str, model_name: str) -> tuple[list[SectionPatch], str | None] : cycle을 켠 모든 character의 날짜 tick과 Actor의 명시적 위험 사건을 생식 상태에 반영합니다.
 # ================================
 
 from __future__ import annotations
@@ -348,6 +348,102 @@ async def _detect_contraception_updates(
     return new_contraception, emergency, evidence
 
 
+def _scene_elapsed_days(documents: list[WikiDocument], actor_response: str) -> int:
+    """Accepted Actor 헤더 날짜가 현재 장면 날짜보다 앞선 일수를 반환합니다."""
+    header_time = parse_prose_header_datetime(actor_response)
+    scene = next(
+        (
+            document
+            for document in documents
+            if document.metadata is not None and document.metadata.type == "scene"
+        ),
+        None,
+    )
+    if scene is None or header_time is None:
+        return 0
+    current_time, _location = scene_datetime_and_location(scene.content)
+    return max(0, (header_time.date() - current_time.date()).days)
+
+
+def _render_reproductive_state(
+    contraception: str,
+    cycle_day: int,
+    pregnant: bool,
+    pregnancy_day: int,
+    count: int,
+    other_parent: str,
+) -> str:
+    """Reproductive State H3의 canonical Markdown을 반환합니다."""
+    return (
+        "### Reproductive State\n\n"
+        "- Menstrual cycle: enabled\n"
+        f"- Contraception: {contraception}\n"
+        f"- Cycle day: {cycle_day}\n"
+        f"- Pregnant: {'yes' if pregnant else 'no'}\n"
+        f"- Pregnancy day: {pregnancy_day}\n"
+        f"- Internal ejaculation count this cycle: {count}\n"
+        f"- Other parent: {other_parent}"
+    )
+
+
+def _plan_bystander_cycle_ticks(
+    documents: list[WikiDocument],
+    actor_response: str,
+    actor_profile_id: str,
+    elapsed_days: int,
+) -> list[SectionPatch]:
+    """Actor가 아닌 cycle-enabled character에 날짜 경과만 반영합니다.
+
+    임신 위험·피임 판정은 응답 속 행위의 당사자를 특정할 수 있는 Actor에게만 적용한다.
+    """
+    evidence = first_nonempty_line(actor_response)
+    if not elapsed_days or not evidence:
+        return []
+    section_path = ("현재 상태", "Reproductive State")
+    patches: list[SectionPatch] = []
+    for document in documents:
+        metadata = document.metadata
+        if (
+            metadata is None
+            or metadata.type != "character"
+            or metadata.profile_id == actor_profile_id
+        ):
+            continue
+        section = parse_markdown_sections(document.content).get(section_path)
+        if section is None:
+            continue
+        fields = reproductive_state_fields(section.markdown)
+        if fields.get("Menstrual cycle", "disabled").lower() != "enabled":
+            continue
+        cycle_day = max(1, min(28, int(fields.get("Cycle day", "1") or 1)))
+        pregnant = fields.get("Pregnant", "no").lower() == "yes"
+        pregnancy_day = max(0, int(fields.get("Pregnancy day", "0") or 0))
+        count = max(0, int(fields.get("Internal ejaculation count this cycle", "0") or 0))
+        if pregnant:
+            pregnancy_day += elapsed_days
+        else:
+            next_day = ((cycle_day - 1 + elapsed_days) % 28) + 1
+            if elapsed_days >= 28 or next_day < cycle_day:
+                count = 0
+            cycle_day = next_day
+        patch = build_actor_response_section_patch(
+            document,
+            section_path,
+            _render_reproductive_state(
+                normalize_contraception_value(fields.get("Contraception")),
+                cycle_day,
+                pregnant,
+                pregnancy_day,
+                count,
+                fields.get("Other parent", "unknown") or "unknown",
+            ),
+            evidence,
+        )
+        if patch is not None:
+            patches.append(patch)
+    return patches
+
+
 async def plan_organic_state(
     documents: list[WikiDocument],
     actor_response: str,
@@ -356,7 +452,36 @@ async def plan_organic_state(
     player_profile_id: str,
     model_name: str,
 ) -> tuple[list[SectionPatch], str | None]:
-    """Author가 cycle을 켠 Actor character에만 날짜 tick과 임신 판정을 적용합니다."""
+    """cycle을 켠 모든 character에 날짜 tick을, Actor character에만 임신 판정을 적용합니다."""
+    elapsed_days = _scene_elapsed_days(documents, actor_response)
+    bystander_patches = _plan_bystander_cycle_ticks(
+        documents,
+        actor_response,
+        actor_profile_id,
+        elapsed_days,
+    )
+    actor_patches, ooc_message = await _plan_actor_organic_state(
+        documents,
+        actor_response,
+        pending,
+        actor_profile_id,
+        player_profile_id,
+        model_name,
+        elapsed_days,
+    )
+    return actor_patches + bystander_patches, ooc_message
+
+
+async def _plan_actor_organic_state(
+    documents: list[WikiDocument],
+    actor_response: str,
+    pending: PendingWikiCommit,
+    actor_profile_id: str,
+    player_profile_id: str,
+    model_name: str,
+    elapsed_days: int,
+) -> tuple[list[SectionPatch], str | None]:
+    """Author가 cycle을 켠 Actor character에 날짜 tick과 임신 판정을 적용합니다."""
     character = _actor_character(documents, actor_profile_id)
     section_path = ("현재 상태", "Reproductive State")
     if character is None:
@@ -369,20 +494,6 @@ async def plan_organic_state(
         return [], None
 
     evidence = first_nonempty_line(actor_response)
-    header_time = parse_prose_header_datetime(actor_response)
-    scene = next(
-        (
-            document
-            for document in documents
-            if document.metadata is not None and document.metadata.type == "scene"
-        ),
-        None,
-    )
-    elapsed_days = 0
-    if scene is not None and header_time is not None:
-        current_time, _location = scene_datetime_and_location(scene.content)
-        elapsed_days = max(0, (header_time.date() - current_time.date()).days)
-
     cycle_day = max(1, min(28, int(fields.get("Cycle day", "1") or 1)))
     pregnant = fields.get("Pregnant", "no").lower() == "yes"
     pregnancy_day = max(0, int(fields.get("Pregnancy day", "0") or 0))
@@ -460,15 +571,13 @@ async def plan_organic_state(
             )
     if not changed or not evidence:
         return [], None
-    replacement = (
-        "### Reproductive State\n\n"
-        "- Menstrual cycle: enabled\n"
-        f"- Contraception: {contraception}\n"
-        f"- Cycle day: {cycle_day}\n"
-        f"- Pregnant: {'yes' if pregnant else 'no'}\n"
-        f"- Pregnancy day: {pregnancy_day}\n"
-        f"- Internal ejaculation count this cycle: {count}\n"
-        f"- Other parent: {other_parent}"
+    replacement = _render_reproductive_state(
+        contraception,
+        cycle_day,
+        pregnant,
+        pregnancy_day,
+        count,
+        other_parent,
     )
     patch = build_actor_response_section_patch(
         character,

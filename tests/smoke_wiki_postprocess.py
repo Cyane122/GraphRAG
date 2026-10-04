@@ -8,6 +8,9 @@
 #   - _check_unprotected_organic_state_cases(needs_documents: list[WikiDocument], trigger_pending: PendingWikiCommit) -> None : Validate direct organic-state updates without contraception inference.
 #   - _check_protected_and_emergency_organic_state(needs_documents: list[WikiDocument], trigger_pending: PendingWikiCommit, needs_character_content: str) -> None : Validate contraception inference and emergency reset handling.
 #   - _check_runtime_section_protection(needs_documents: list[WikiDocument]) -> None : Validate rejection of runtime-owned section patches.
+#   - _cycle_document(path: str, frontmatter: str, body: str) -> WikiDocument : Build a WikiDocument from frontmatter lines and a Markdown body.
+#   - _cycle_character(slug: str, enabled: str, cycle_day: int, pregnant: str = "no") -> WikiDocument : Build a thread character with an authored Reproductive State.
+#   - _check_bystander_cycle_tick() -> None : Validate elapsed-day cycle ticks for non-Actor characters.
 #   - run_postprocess_suite() -> None : Run the full Wiki postprocess smoke suite.
 #   - main() -> None : Run the standalone postprocess smoke suite.
 # ================================
@@ -524,8 +527,83 @@ async def _check_runtime_section_protection(
         actor_profile_id="character_profile:character_a",
     )
 
+def _cycle_document(path: str, frontmatter: str, body: str) -> WikiDocument:
+    """Build a WikiDocument from frontmatter lines and a Markdown body."""
+    content = f"---\n{frontmatter}created_at: 2026-07-21T00:00:00+00:00\n---\n{body}"
+    return WikiDocument(
+        path=path,
+        revision=document_revision(content),
+        content=content,
+        metadata=parse_frontmatter(content),
+    )
+
+def _cycle_character(slug: str, enabled: str, cycle_day: int, pregnant: str = "no") -> WikiDocument:
+    """Build a thread character whose Reproductive State is authored as given."""
+    return _cycle_document(
+        f"characters/{slug}.md",
+        f"id: character:thread_001:{slug}\ntype: character\nschema_version: 1\n"
+        f"world_id: world_001\nthread_id: thread_001\nprofile_id: character_profile:{slug}\n"
+        "visibility: [actor, updater, player]\n",
+        f"# {slug}\n\n## 현재 상태\n\n### Reproductive State\n\n"
+        f"- Menstrual cycle: {enabled}\n- Contraception: none\n- Cycle day: {cycle_day}\n"
+        f"- Pregnant: {pregnant}\n- Pregnancy day: {3 if pregnant == 'yes' else 0}\n"
+        "- Internal ejaculation count this cycle: 2\n- Other parent: unknown\n",
+    )
+
+async def _check_bystander_cycle_tick() -> None:
+    """Non-Actor cycle-enabled characters advance by elapsed scene days; risk stays Actor-only."""
+    scene = _cycle_document(
+        "scene/current.md",
+        "id: thread:thread_001:scene:current\ntype: scene\nschema_version: 1\n"
+        "world_id: world_001\nthread_id: thread_001\nvisibility: [actor, updater, player]\n",
+        "# 현재 장면\n\n## 현재 장면\n\n### Time and Place\n\n"
+        "- It is 23:00 on Thursday, January 2, 2025, in 거실.\n",
+    )
+    actor = _cycle_character("actor", "enabled", 11)
+    mother = _cycle_character("mother", "enabled", 27)
+    expecting = _cycle_character("expecting", "enabled", 5, pregnant="yes")
+    disabled = _cycle_character("disabled", "disabled", 9)
+    documents = [scene, actor, mother, expecting, disabled]
+    pending = PendingWikiCommit(user_input_hash="u", actor_response_hash="a", updater_model="test")
+    response = "**2025년 1월 4일 토요일 09시 00분, 거실**\n\n아침이 밝았다. 질내사정했다."
+    with (
+        patch(
+            "src.wiki.character_postprocess.calculate_pregnancy_probability",
+            return_value=0.0,
+        ),
+        patch("src.wiki.character_postprocess.get_model"),
+    ):
+        patches, _ooc = await plan_organic_state(
+            documents,
+            response,
+            pending,
+            "character_profile:actor",
+            "character_profile:player",
+            "test-updater",
+        )
+    by_document = {patch_.document: patch_.replacement_markdown for patch_ in patches}
+    assert set(by_document) == {"characters/actor.md", "characters/mother.md", "characters/expecting.md"}
+    assert "- Cycle day: 13" in by_document["characters/actor.md"]
+    # 27일째에서 2일 경과하면 1일째로 넘어가고 이번 주기 누적 횟수는 초기화된다.
+    assert "- Cycle day: 1\n" in by_document["characters/mother.md"]
+    assert "- Internal ejaculation count this cycle: 0" in by_document["characters/mother.md"]
+    assert "- Pregnancy day: 5" in by_document["characters/expecting.md"]
+    # 응답의 위험 문장은 Actor에게만 계수된다.
+    assert "- Internal ejaculation count this cycle: 3" in by_document["characters/actor.md"]
+
+    same_day, _ = await plan_organic_state(
+        documents,
+        "**2025년 1월 2일 목요일 23시 30분, 거실**\n\n조용했다.",
+        pending,
+        "character_profile:actor",
+        "character_profile:player",
+        "test-updater",
+    )
+    assert all(patch_.document == "characters/actor.md" for patch_ in same_day)
+
 async def run_postprocess_suite() -> None:
     """Run the full Wiki postprocess smoke suite."""
+    await _check_bystander_cycle_tick()
     needs_documents, trigger_pending, needs_character_content = (
         await _check_memory_drift_and_needs_decay()
     )
