@@ -7,7 +7,7 @@
 #   - WikiDiagnostic : 한 문서에서 발견한 진단 항목
 #
 # Functions
-#   - diagnose_wiki_scope(vault_root: Path, thread_id: str, world_id: str) -> list[WikiDiagnostic] : world 자산과 thread 문서에서 중복 ID·frontmatter·섹션 오류를 수집합니다.
+#   - diagnose_wiki_scope(roots: WikiRoots, thread_id: str, world_id: str) -> list[WikiDiagnostic] : world 자산과 thread 문서에서 중복 ID·frontmatter·섹션 오류를 수집합니다.
 #
 # Duplicate id 검사는 런타임 해석 범위를 그대로 따른다(`src/wiki/context.py`의
 # `_profile_documents`/`read_wiki_scene_prompt_assets`): world 최상위 트리
@@ -26,7 +26,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 from src.wiki.markdown import parse_markdown_sections
-from src.wiki.paths import wiki_thread_root_for_vault
+from src.wiki.paths import WikiRoots, wiki_thread_root
 from src.wiki.store import WikiStore
 
 
@@ -199,14 +199,13 @@ def _scan_root(
 
 
 def diagnose_wiki_scope(
-    vault_root: Path,
+    roots: WikiRoots,
     thread_id: str,
     world_id: str,
 ) -> list[WikiDiagnostic]:
     """한 대화가 참조하는 world 자산과 thread 문서의 무결성을 진단합니다."""
-    root = vault_root.resolve()
     diagnostics: list[WikiDiagnostic] = []
-    world_root = root / "worlds" / world_id
+    world_root = roots.worlds.resolve() / world_id
     combined_ids: dict[str, str] = {}
     if world_root.is_dir():
         store = WikiStore(world_root)
@@ -229,5 +228,5 @@ def diagnose_wiki_scope(
                 )
                 for document_id, (_kind, display) in scenario_seen.items():
                     combined_ids.setdefault(document_id, display)
-    _scan_root(wiki_thread_root_for_vault(root, thread_id), combined_ids, diagnostics)
+    _scan_root(wiki_thread_root(roots, thread_id), combined_ids, diagnostics)
     return diagnostics

@@ -11,6 +11,7 @@
 #   - _scene_document_with_active_b() -> WikiDocument : Build the sample scene document with character B also present in the current scene.
 #   - _relationship_b_document() -> WikiDocument : Build character B's relationship-to-player ledger (owner character_profile:character_b).
 #   - create_base_store(root: Path) -> tuple[WikiStore, WikiDocument, WikiDocument] : Write and reload the sample character and scene documents.
+#   - temporary_wiki_roots(base: Path) -> WikiRoots : Return production-shaped, non-sibling world and thread roots under one temporary base.
 #   - main() -> None : Print the standalone success marker for this module.
 # ================================
 
@@ -35,6 +36,7 @@ from src.wiki import (  # noqa: E402
     parse_frontmatter,
     plan_pending_commit,
 )
+from src.wiki.paths import WikiRoots  # noqa: E402
 
 # 이 스위트의 모든 model 호출은 Mock/AsyncMock으로 대체된다(실제 provider에 닿지 않는다).
 # 값 자체는 아무 의미도 갖지 않으므로 하나로 고정한다 - 예전에는 "test-updater"(20곳),
@@ -233,6 +235,13 @@ def create_base_store(root: Path) -> tuple[WikiStore, WikiDocument, WikiDocument
         store,
         store.read_document("characters/character_a.md"),
         store.read_document("scene/current.md"),
+    )
+
+def temporary_wiki_roots(base: Path) -> WikiRoots:
+    """Return production-shaped, non-sibling world and thread roots under one temporary base."""
+    return WikiRoots(
+        worlds=base / "assets" / "worlds" / "wiki",
+        threads=base / "data" / "wiki" / "threads",
     )
 
 async def _plan_update(

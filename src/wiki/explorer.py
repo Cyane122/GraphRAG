@@ -7,7 +7,7 @@
 #   - WikiDocumentSummary : 한 문서의 탐색용 메타데이터 요약
 #
 # Functions
-#   - list_wiki_documents(vault_root: Path, thread_id: str, world_id: str) -> list[WikiDocumentSummary] : world 자산과 thread 문서를 종류·경로 순으로 나열합니다.
+#   - list_wiki_documents(roots: WikiRoots, thread_id: str, world_id: str) -> list[WikiDocumentSummary] : world 자산과 thread 문서를 종류·경로 순으로 나열합니다.
 # ================================
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import re
 from pydantic import BaseModel
 
 from src.wiki.store import WikiStore
-from src.wiki.paths import wiki_thread_root_for_vault
+from src.wiki.paths import WikiRoots, wiki_thread_root
 
 _H1_RE = re.compile(r"(?m)^#\s+(.+?)\s*$")
 
@@ -69,15 +69,14 @@ def _summarize_root(root: Path, scope: str) -> list[WikiDocumentSummary]:
 
 
 def list_wiki_documents(
-    vault_root: Path,
+    roots: WikiRoots,
     thread_id: str,
     world_id: str,
 ) -> list[WikiDocumentSummary]:
     """한 대화가 참조하는 world 자산과 thread 문서를 요약 목록으로 반환합니다."""
-    root = vault_root.resolve()
-    summaries = _summarize_root(root / "worlds" / world_id, "world")
+    summaries = _summarize_root(roots.worlds.resolve() / world_id, "world")
     summaries.extend(
-        _summarize_root(wiki_thread_root_for_vault(root, thread_id), "thread")
+        _summarize_root(wiki_thread_root(roots, thread_id), "thread")
     )
     summaries.sort(key=lambda summary: (summary.scope, summary.type, summary.path))
     return summaries

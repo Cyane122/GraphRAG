@@ -219,7 +219,7 @@ ownership, prompt contracts, commit lifecycle, or conflict policy changes.
 - Do not store placeholders such as "TBD" or "decide during play" in
   Actor-visible Markdown.
 - Memory is subjective; intentional distortion is not an objective-log bug.
-- For work under `assets/wiki_v2/worlds/`, use the `author-wikirag-worlds` skill.
+- For work under `assets/worlds/wiki/`, use the `author-wikirag-worlds` skill.
 
 ## User Interface Ownership
 

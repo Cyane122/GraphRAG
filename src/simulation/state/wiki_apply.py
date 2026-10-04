@@ -29,16 +29,16 @@ async def apply_wiki_actor_response(
         materialize_scene_active_relationships,
         read_wiki_thread_documents,
     )
-    from src.wiki.paths import wiki_thread_root_for_vault
+    from src.wiki.paths import wiki_thread_root
     from src.wiki.recall import select_recall_documents
     from src.wiki.store import WikiStore
 
     documents = await asyncio.to_thread(
         read_wiki_thread_documents,
-        request.vault_root,
+        request.roots,
         request.thread_id,
     )
-    thread_root = wiki_thread_root_for_vault(request.vault_root, request.thread_id)
+    thread_root = wiki_thread_root(request.roots, request.thread_id)
     # 장면 활성 NPC 각각의 owner->player 관계 원장을 없을 때만 지연 생성한다(결정적 런타임
     # scaffolding이지 모델 creation이 아니다 - Updater 검증 경로 밖에서 처리한다). 새로 만든
     # 문서는 곧바로 documents에 합쳐 같은 턴의 Updater가 patch 대상으로 볼 수 있게 한다.

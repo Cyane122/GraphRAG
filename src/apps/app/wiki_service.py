@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 import logging
-from pathlib import Path
 import re
 from uuid import uuid4
 
@@ -34,7 +33,6 @@ from src.apps.app.wiki_controls import accept_pending_wiki_commit
 from src.config import (
     MAX_TOKEN,
     MODEL_OUTPUT_REPAIR,
-    WIKI_VAULT_ROOT,
     wiki_system_defaults,
     LOGS_ROOT,
 )
@@ -48,6 +46,7 @@ from src.wiki import (
     get_wiki_thread_runtime_status,
 )
 from src.wiki.models import WikiDocument
+from src.wiki.paths import WIKI_ROOTS
 from src.wiki.secret_guard import find_hidden_secret_leaks
 
 
@@ -107,7 +106,7 @@ def _wiki_debug_effects(
         None,
     )
     runtime_status = get_wiki_thread_runtime_status(
-        Path(WIKI_VAULT_ROOT),
+        WIKI_ROOTS,
         setup.thread_id,
     )
     return {
@@ -253,7 +252,7 @@ async def stream_wiki_turn(
         scene_types = None
         bundle = await asyncio.to_thread(
             build_wiki_prompt_bundle,
-            WIKI_VAULT_ROOT,
+            WIKI_ROOTS,
             setup,
             content,
             recent_story,
@@ -361,7 +360,7 @@ async def stream_wiki_turn(
                 settings = load_settings()
                 update_result = await update_accepted_turn(
                     WikiTurnUpdateRequest(
-                        vault_root=Path(WIKI_VAULT_ROOT),
+                        roots=WIKI_ROOTS,
                         thread_id=state.thread_id,
                         user_input=content,
                         actor_response=full_response,

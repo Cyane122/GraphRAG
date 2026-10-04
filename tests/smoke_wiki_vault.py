@@ -7,18 +7,18 @@
 #   - _check_recall() -> None : Validate recall budget trimming and ranking behavior.
 #   - _check_migrations() -> None : Validate the thread migration marker write path.
 #   - _write_diagnostics_fixture_document(path: Path, document_id: str, document_type: str, title: str) -> None : Write a minimal frontmatter document for diagnostics scope fixtures.
-#   - _check_diagnostics(vault_root: Path) -> None : Validate duplicate document and frontmatter diagnostics, including world/scenario override scoping.
-#   - _check_explorer(vault_root: Path) -> None : Validate explorer output summaries.
-#   - _check_world_scaffold_contracts(root: Path, vault_root: Path, world: object, world_store: WikiStore, world_document: WikiDocument) -> None : Validate world scaffold directories and frontmatter contracts.
-#   - _check_thread_scaffold_contracts(root: Path, vault_root: Path) -> WikiStore : Validate thread scaffold prerequisites and generated scene metadata.
-#   - _check_template_render_contracts(vault_root: Path, world: object, world_store: WikiStore, world_document: WikiDocument, thread_store: WikiStore) -> None : Validate template rendering and scaffold overwrite guards.
+#   - _check_diagnostics(roots: WikiRoots) -> None : Validate duplicate document and frontmatter diagnostics, including world/scenario override scoping.
+#   - _check_explorer(roots: WikiRoots) -> None : Validate explorer output summaries.
+#   - _check_world_scaffold_contracts(root: Path, roots: WikiRoots, world: object, world_store: WikiStore, world_document: WikiDocument) -> None : Validate world scaffold directories and frontmatter contracts.
+#   - _check_thread_scaffold_contracts(root: Path, roots: WikiRoots) -> WikiStore : Validate thread scaffold prerequisites and generated scene metadata.
+#   - _check_template_render_contracts(roots: WikiRoots, world: object, world_store: WikiStore, world_document: WikiDocument, thread_store: WikiStore) -> None : Validate template rendering and scaffold overwrite guards.
 #   - _check_scaffold_atomic_resume(root: Path) -> None : Validate scaffold recovery after partial creation failure.
 #   - _check_commit_transaction_undo_journal(root: Path) -> None : Validate mixed create/replace/delete/patch commit rollback via WikiStore.transaction().
 #   - _check_commit_transaction_rollback_failure(root: Path) -> None : Validate that a failed compensation surfaces in commit.md and describe_wiki_commit_failure(), leaving the vault honestly half-applied.
 #   - _check_scaffolds(root: Path) -> None : Run the full scaffold suite.
 #   - replace_frontmatter_line(content: str, key: str, value: str) -> str : Replace one scalar frontmatter line by key.
 #   - insert_frontmatter_lines(content: str, extra: str) -> str : Insert extra YAML lines before the frontmatter closing marker.
-#   - _build_case(root: Path, case_name: str, scenario_extra: str = "", include_scenario_character: bool = True) -> Path : Build a minimal world and scenario bundle for context checks.
+#   - _build_case(root: Path, case_name: str, scenario_extra: str = "", include_scenario_character: bool = True) -> WikiRoots : Build a minimal world and scenario bundle for context checks.
 #   - _check_wiki_context_scenario_overrides(root: Path) -> None : Validate optional NPC overrides and scenario character allowlists.
 #   - _check_scene_active_relationship_materialization(root: Path) -> None : Validate lazy owner->player relationship materialization for a scene-active non-Actor NPC, including idempotent re-materialization.
 #   - run_vault_suite(root: Path) -> None : Run the full vault smoke suite.
@@ -65,8 +65,13 @@ from src.wiki.context import (  # noqa: E402
     load_wiki_setup,
 )
 from src.wiki.manual_audit import ensure_audit_baseline  # noqa: E402
+from src.wiki.paths import WikiRoots  # noqa: E402
 
-from tests.wiki_smoke_fixtures import _SCENE_DOCUMENT, create_base_store  # noqa: E402
+from tests.wiki_smoke_fixtures import (  # noqa: E402
+    _SCENE_DOCUMENT,
+    create_base_store,
+    temporary_wiki_roots,
+)
 
 def _check_recall() -> None:
     """예산 초과 시 최근성·구조 관련성으로 누적 문서를 축소하는지 검증합니다."""
@@ -208,16 +213,16 @@ def _write_diagnostics_fixture_document(
     )
 
 
-def _check_diagnostics(vault_root: Path) -> None:
+def _check_diagnostics(roots: WikiRoots) -> None:
     """중복 문서 ID와 잘못된 frontmatter를 vault 진단이 잡는지 검증합니다."""
     healthy_codes = {
         diagnostic.code
-        for diagnostic in diagnose_wiki_scope(vault_root, "thread_001", "demo_world")
+        for diagnostic in diagnose_wiki_scope(roots, "thread_001", "demo_world")
     }
     assert "duplicate_id" not in healthy_codes
     assert "frontmatter" not in healthy_codes
 
-    events = vault_root / "threads" / "thread_001" / "events"
+    events = roots.threads / "thread_001" / "events"
     events.mkdir(parents=True, exist_ok=True)
     duplicate_body = (
         "---\nid: event:dup\ntype: event\nschema_version: 1\n"
@@ -229,7 +234,7 @@ def _check_diagnostics(vault_root: Path) -> None:
     (events / "broken.md").write_text("---\nnot: valid\n---\n# Broken\n", encoding="utf-8")
     codes = {
         diagnostic.code
-        for diagnostic in diagnose_wiki_scope(vault_root, "thread_001", "demo_world")
+        for diagnostic in diagnose_wiki_scope(roots, "thread_001", "demo_world")
     }
     assert "duplicate_id" in codes, codes
     assert "frontmatter" in codes, codes
@@ -240,7 +245,7 @@ def _check_diagnostics(vault_root: Path) -> None:
     # scenarios/) and each scenario directory are independent id spaces, a
     # scenario document may override a world document of the same id and
     # type, and different scenarios may reuse each other's ids.
-    world_root = vault_root / "worlds" / "demo_world"
+    world_root = roots.worlds / "demo_world"
     scenario_a = world_root / "scenarios" / "diag_scen_a"
     scenario_b = world_root / "scenarios" / "diag_scen_b"
     try:
@@ -313,7 +318,7 @@ def _check_diagnostics(vault_root: Path) -> None:
             "Scenario Mismatch",
         )
 
-        scope_diagnostics = diagnose_wiki_scope(vault_root, "thread_001", "demo_world")
+        scope_diagnostics = diagnose_wiki_scope(roots, "thread_001", "demo_world")
         duplicate_messages = " | ".join(
             diagnostic.message
             for diagnostic in scope_diagnostics
@@ -331,10 +336,10 @@ def _check_diagnostics(vault_root: Path) -> None:
         shutil.rmtree(scenario_a, ignore_errors=True)
         shutil.rmtree(scenario_b, ignore_errors=True)
 
-def _check_explorer(vault_root: Path) -> None:
+def _check_explorer(roots: WikiRoots) -> None:
     """Explorer 문서 목록이 world/thread 문서를 종류와 함께 나열하는지 검증합니다."""
     from src.wiki import list_wiki_documents
-    summaries = list_wiki_documents(vault_root, "thread_001", "demo_world")
+    summaries = list_wiki_documents(roots, "thread_001", "demo_world")
     types = {summary.type for summary in summaries}
     scopes = {summary.scope for summary in summaries}
     assert "world" in types
@@ -344,14 +349,14 @@ def _check_explorer(vault_root: Path) -> None:
 
 def _check_world_scaffold_contracts(
     root: Path,
-    vault_root: Path,
+    roots: WikiRoots,
     world: object,
     world_store: WikiStore,
     world_document: WikiDocument,
 ) -> None:
     """Validate world scaffold directories and frontmatter contracts."""
-    vault_root = root / "scaffold"
-    world = scaffold_world(vault_root, "demo_world", "데모 월드")
+    roots = temporary_wiki_roots(root / "scaffold")
+    world = scaffold_world(roots.worlds, "demo_world", "데모 월드")
     assert {document.path for document in world.documents} == {"world.md", "prose.md"}
     assert (world.root / "characters").is_dir()
     assert (world.root / "organizations").is_dir()
@@ -412,19 +417,19 @@ def _check_world_scaffold_contracts(
 
 def _check_thread_scaffold_contracts(
     root: Path,
-    vault_root: Path,
+    roots: WikiRoots,
 ) -> WikiStore:
     """Validate thread scaffold prerequisites and generated scene metadata."""
     orphan_root = root / "orphan"
     try:
-        scaffold_thread(orphan_root, "orphan_thread", "missing_world", "고아")
+        scaffold_thread(temporary_wiki_roots(orphan_root), "orphan_thread", "missing_world", "고아")
     except WikiScaffoldError:
         pass
     else:
         raise AssertionError("Thread scaffold must reject a missing world")
-    assert not (orphan_root / "worlds" / "missing_world").exists()
+    assert not (temporary_wiki_roots(orphan_root).worlds / "missing_world").exists()
 
-    thread = scaffold_thread(vault_root, "thread_001", "demo_world", "첫 번째 이야기")
+    thread = scaffold_thread(roots, "thread_001", "demo_world", "첫 번째 이야기")
     assert {document.path for document in thread.documents} == {
         "thread.md",
         "scene/current.md",
@@ -443,7 +448,7 @@ def _check_thread_scaffold_contracts(
     return thread_store
 
 def _check_template_render_contracts(
-    vault_root: Path,
+    roots: WikiRoots,
     world: object,
     world_store: WikiStore,
     world_document: WikiDocument,
@@ -576,7 +581,7 @@ def _check_template_render_contracts(
     else:
         raise AssertionError("Callers must not provide _YAML template keys")
 
-    repeated = scaffold_world(vault_root, "demo_world", "데모 월드")
+    repeated = scaffold_world(roots.worlds, "demo_world", "데모 월드")
     assert [document.revision for document in repeated.documents] == [
         document.revision for document in world.documents
     ]
@@ -586,7 +591,7 @@ def _check_template_render_contracts(
         expected_revision=world_document.revision,
     )
     try:
-        scaffold_world(vault_root, "demo_world", "데모 월드")
+        scaffold_world(roots.worlds, "demo_world", "데모 월드")
     except FileExistsError:
         pass
     else:
@@ -621,7 +626,7 @@ def _check_scaffold_atomic_resume(root: Path) -> None:
 
     with patch.object(WikiStore, "create_document", new=fail_second_create):
         try:
-            scaffold_world(atomic_root, "atomic_world", "원자성 월드")
+            scaffold_world(atomic_root / "worlds", "atomic_world", "원자성 월드")
         except WikiScaffoldError:
             pass
         else:
@@ -629,14 +634,14 @@ def _check_scaffold_atomic_resume(root: Path) -> None:
     atomic_world = atomic_root / "worlds" / "atomic_world"
     assert (atomic_world / "world.md").exists()
     assert not (atomic_world / "prose.md").exists()
-    resumed = scaffold_world(atomic_root, "atomic_world", "원자성 월드")
+    resumed = scaffold_world(atomic_root / "worlds", "atomic_world", "원자성 월드")
     assert len(resumed.documents) == 2
     assert (atomic_world / "prose.md").exists()
 
 def _check_commit_transaction_undo_journal(root: Path) -> None:
     """생성·교체·삭제·patch가 섞인 commit이 중간에 실패하면 vault 전체가 적용 전 상태로 되돌아가는지 검증합니다."""
-    vault_root = root / "transaction"
-    store, character, scene = create_base_store(vault_root)
+    store_root = root / "transaction"
+    store, character, scene = create_base_store(store_root)
     old_document = store.write_document(
         "notes/old.md",
         "---\n"
@@ -774,8 +779,8 @@ def _check_commit_transaction_rollback_failure(root: Path) -> None:
     """원본 실패에 더해 그 보상(undo journal의 되돌리기) 자체도 실패하면, commit.md의
     failure_reason과 describe_wiki_commit_failure(exc)가 둘 다 원인과 보상 실패를
     함께 담고, 되돌리지 못한 문서가 절반만 적용된 상태로 정확히 남는지 검증합니다."""
-    vault_root = root / "transaction_rollback_failure"
-    store, character, scene = create_base_store(vault_root)
+    store_root = root / "transaction_rollback_failure"
+    store, character, scene = create_base_store(store_root)
     ensure_audit_baseline(store)
 
     job_section = parse_markdown_sections(character.content)[("기본 신상", "직업과 소속")]
@@ -866,14 +871,14 @@ def _check_commit_transaction_rollback_failure(root: Path) -> None:
 
 def _check_scaffolds(root: Path) -> None:
     """Run the full scaffold suite."""
-    vault_root = root / "scaffold"
-    world = scaffold_world(vault_root, "demo_world", "데모 월드")
+    roots = temporary_wiki_roots(root / "scaffold")
+    world = scaffold_world(roots.worlds, "demo_world", "데모 월드")
     world_store = WikiStore(world.root)
     world_document = world_store.read_document("world.md")
-    _check_world_scaffold_contracts(root, vault_root, world, world_store, world_document)
-    thread_store = _check_thread_scaffold_contracts(root, vault_root)
+    _check_world_scaffold_contracts(root, roots, world, world_store, world_document)
+    thread_store = _check_thread_scaffold_contracts(root, roots)
     _check_template_render_contracts(
-        vault_root,
+        roots,
         world,
         world_store,
         world_document,
@@ -924,11 +929,11 @@ def _build_case(
         case_name: str,
         scenario_extra: str = "",
         include_scenario_character: bool = True,
-    ) -> Path:
+    ) -> WikiRoots:
         """Wiki context 테스트용 최소 world/scenario 번들을 만듭니다."""
-        vault_root = root / case_name
-        scaffold_world(vault_root, "demo_world", "데모 월드")
-        world_root = vault_root / "worlds" / "demo_world"
+        roots = temporary_wiki_roots(root / case_name)
+        scaffold_world(roots.worlds, "demo_world", "데모 월드")
+        world_root = roots.worlds / "demo_world"
         store = WikiStore(world_root)
         created_at = "2026-07-21T00:00:00+00:00"
 
@@ -1039,7 +1044,7 @@ def _build_case(
                     },
                 ),
             )
-        return vault_root
+        return roots
 
 def _check_wiki_context_scenario_overrides(root: Path) -> None:
     """Validate optional NPC overrides and scenario character allowlists."""
@@ -1079,7 +1084,7 @@ def _check_wiki_context_scenario_overrides(root: Path) -> None:
             "demo",
             "thread_allowlist",
         )
-    allowlist_thread = allowlist_root / "threads" / "thread_allowlist" / "characters"
+    allowlist_thread = allowlist_root.threads / "thread_allowlist" / "characters"
     assert allowlist_setup.npc_id == "character_profile:alt_npc"
     assert (allowlist_thread / "pc.md").is_file()
     assert (allowlist_thread / "alt_npc.md").is_file()
@@ -1164,11 +1169,11 @@ def _check_scene_active_relationship_materialization(root: Path) -> None:
     from datetime import datetime, timezone
 
     from src.wiki.context import materialize_scene_active_relationships, read_wiki_thread_documents
-    from src.wiki.paths import wiki_thread_root_for_vault
+    from src.wiki.paths import wiki_thread_root
 
-    vault_root = _build_case(root, "materialize_scene_active")
-    setup = initialize_wiki_thread(vault_root, "demo_world", "demo", "thread_materialize")
-    thread_root = wiki_thread_root_for_vault(vault_root, setup.thread_id)
+    roots = _build_case(root, "materialize_scene_active")
+    setup = initialize_wiki_thread(roots, "demo_world", "demo", "thread_materialize")
+    thread_root = wiki_thread_root(roots, setup.thread_id)
     store = WikiStore(thread_root)
 
     primary_relationship_path = store.resolve_path(
@@ -1186,7 +1191,7 @@ def _check_scene_active_relationship_materialization(root: Path) -> None:
     )
 
     created_at = datetime.now(timezone.utc).isoformat()
-    documents = read_wiki_thread_documents(vault_root, setup.thread_id)
+    documents = read_wiki_thread_documents(roots, setup.thread_id)
     created = materialize_scene_active_relationships(
         store, documents, setup.thread_id, setup.pc_id, created_at
     )
@@ -1222,14 +1227,14 @@ def _preset_document(preset_id: str, extra_lines: str = "") -> str:
 
 
 def _write_preset(
-    vault_root: Path,
+    roots: WikiRoots,
     preset_id: str,
     extra_lines: str = "",
     start_state: str | None = None,
     opening_scene: str | None = None,
 ) -> None:
     """한 demo 시나리오에 pc_preset 정의 파일과 선택적 부속 자산을 씁니다."""
-    scenario_root = vault_root / "worlds" / "demo_world" / "scenarios" / "demo"
+    scenario_root = roots.worlds / "demo_world" / "scenarios" / "demo"
     preset_dir = scenario_root / "pc_preset"
     preset_dir.mkdir(parents=True, exist_ok=True)
     (preset_dir / f"{preset_id}.md").write_text(
@@ -1351,14 +1356,14 @@ def _check_wiki_context_pc_presets(root: Path) -> None:
     assert "프리셋 전용 첫 장면이다." in asset_setup.opening_scene
     assert "라운지에 처음 모인" not in asset_setup.opening_scene
     scene_text = (
-        asset_case / "threads" / "thread_assets" / "scene" / "current.md"
+        asset_case.threads / "thread_assets" / "scene" / "current.md"
     ).read_text(encoding="utf-8")
     assert "프리셋 전용 옥상" in scene_text
     assert "학생회관 라운지" not in scene_text
 
     # 5. preset 분기가 같은 H2의 scenario 분기를 이긴다.
     variant_root = _build_case(root, "preset_variants")
-    (variant_root / "worlds" / "demo_world" / "characters" / "pc.md").write_text(
+    (variant_root.worlds / "demo_world" / "characters" / "pc.md").write_text(
         _branching_profile("character_profile:pc", "Player Character"),
         encoding="utf-8",
     )
@@ -1367,14 +1372,14 @@ def _check_wiki_context_pc_presets(root: Path) -> None:
         variant_root, "demo_world", "demo", "thread_variant_preset", "promoted"
     )
     preset_profile = (
-        variant_root / "threads" / "thread_variant_preset" / "characters" / "pc.md"
+        variant_root.threads / "thread_variant_preset" / "characters" / "pc.md"
     ).read_text(encoding="utf-8")
     assert "Preset branch line." in preset_profile
     assert "Scenario branch line." not in preset_profile
     assert "Shared identity line." in preset_profile
     initialize_wiki_thread(variant_root, "demo_world", "demo", "thread_variant_plain")
     plain_profile = (
-        variant_root / "threads" / "thread_variant_plain" / "characters" / "pc.md"
+        variant_root.threads / "thread_variant_plain" / "characters" / "pc.md"
     ).read_text(encoding="utf-8")
     assert "Scenario branch line." in plain_profile
     assert "Preset branch line." not in plain_profile
@@ -1440,8 +1445,8 @@ def run_vault_suite(root: Path) -> None:
     _check_scene_active_relationship_materialization(root)
     _check_recall()
     _check_migrations()
-    _check_diagnostics(root / "scaffold")
-    _check_explorer(root / "scaffold")
+    _check_diagnostics(temporary_wiki_roots(root / "scaffold"))
+    _check_explorer(temporary_wiki_roots(root / "scaffold"))
 
 def main() -> None:
     """Run the standalone vault smoke suite."""

@@ -12,12 +12,12 @@
 #   - _timestamp() -> str : UTC 생성 시각을 반환합니다.
 #   - _scaffold_timestamp(store: WikiStore, manifest_path: str) -> str : 부분 scaffold의 생성 시각을 재사용합니다.
 #   - _prepare_directories(root: Path, directories: tuple[str, ...]) -> None : 표준 하위 디렉터리를 생성합니다.
-#   - _resolve_scaffold_root(root: Path, category: str, identifier: str) -> Path : symlink/junction을 포함한 경로 탈출을 거부합니다.
+#   - _resolve_scaffold_root(category_root: Path, identifier: str) -> Path : symlink/junction을 포함한 경로 탈출을 거부합니다.
 #   - _create_scaffold_documents(store: WikiStore, documents: tuple[tuple[str, str], ...]) -> list[WikiDocument] : 동일한 부분 생성을 이어서 완료합니다.
-#   - _validate_world(root: Path, world_id: str) -> None : thread가 참조할 world manifest를 검증합니다.
+#   - _validate_world(worlds_root: Path, world_id: str) -> None : thread가 참조할 world manifest를 검증합니다.
 #   - render_wiki_template(template_name: str, values: Mapping[str, str]) -> str : 템플릿을 안전한 단일 행 값으로 렌더링합니다.
-#   - scaffold_world(root: Path, world_id: str, display_name: str) -> WikiScaffoldResult : world vault 기본 문서와 디렉터리를 생성합니다.
-#   - scaffold_thread(root: Path, thread_id: str, world_id: str, title: str) -> WikiScaffoldResult : thread vault 기본 문서와 디렉터리를 생성합니다.
+#   - scaffold_world(worlds_root: Path, world_id: str, display_name: str) -> WikiScaffoldResult : world vault 기본 문서와 디렉터리를 생성합니다.
+#   - scaffold_thread(roots: WikiRoots, thread_id: str, world_id: str, title: str) -> WikiScaffoldResult : thread vault 기본 문서와 디렉터리를 생성합니다.
 # ================================
 
 from __future__ import annotations
@@ -36,6 +36,7 @@ from src.wiki.markdown import (
     parse_markdown_sections,
 )
 from src.wiki.models import WikiDocument, WikiScaffoldResult
+from src.wiki.paths import WikiRoots
 from src.wiki.store import WikiStore
 
 
@@ -160,24 +161,18 @@ def _prepare_directories(root: Path, directories: tuple[str, ...]) -> None:
         (root / directory).mkdir(parents=True, exist_ok=True)
 
 
-def _resolve_scaffold_root(root: Path, category: str, identifier: str) -> Path:
-    """resolved world/thread 경로가 지정한 vault category 안에 있을 때만 반환합니다."""
-    vault_root = root.resolve()
-    category_path = vault_root / category
-    resolved_category = category_path.resolve()
-    if (
-        not resolved_category.is_relative_to(vault_root)
-        or resolved_category != category_path
-    ):
-        raise WikiScaffoldError(f"Wiki {category} directory escapes the vault")
-    target = category_path / identifier
-    resolved_target = target.resolve()
+def _resolve_scaffold_root(category_root: Path, identifier: str) -> Path:
+    """resolved world/thread 경로가 지정한 worlds 또는 threads root 안에 있을 때만 반환합니다."""
+    resolved_category = category_root.resolve()
+    resolved_target = (resolved_category / identifier).resolve()
     expected_target = resolved_category / identifier
     if (
         not resolved_target.is_relative_to(resolved_category)
         or resolved_target != expected_target
     ):
-        raise WikiScaffoldError(f"Wiki scaffold path escapes {category}: {identifier!r}")
+        raise WikiScaffoldError(
+            f"Wiki scaffold path escapes {resolved_category}: {identifier!r}"
+        )
     return resolved_target
 
 
@@ -208,9 +203,9 @@ def _create_scaffold_documents(
     return created
 
 
-def _validate_world(root: Path, world_id: str) -> None:
+def _validate_world(worlds_root: Path, world_id: str) -> None:
     """thread가 참조하는 world manifest의 존재와 정체성을 검증합니다."""
-    world_root = _resolve_scaffold_root(root, "worlds", world_id)
+    world_root = _resolve_scaffold_root(worlds_root, world_id)
     if not world_root.is_dir():
         raise WikiScaffoldError(f"Referenced world does not exist: {world_id!r}")
     world_store = WikiStore(world_root)
@@ -229,11 +224,11 @@ def _validate_world(root: Path, world_id: str) -> None:
         )
 
 
-def scaffold_world(root: Path, world_id: str, display_name: str) -> WikiScaffoldResult:
+def scaffold_world(worlds_root: Path, world_id: str, display_name: str) -> WikiScaffoldResult:
     """기존 문서를 덮지 않고 world.md와 prose.md가 있는 world vault를 만듭니다."""
     safe_world_id = _validate_identifier(world_id, "world_id")
     safe_display_name = _validate_display_value(display_name, "display_name")
-    world_root = _resolve_scaffold_root(root, "worlds", safe_world_id)
+    world_root = _resolve_scaffold_root(worlds_root, safe_world_id)
     store = WikiStore(world_root)
     created_at = _scaffold_timestamp(store, "world.md")
     pending_documents = (
@@ -267,7 +262,7 @@ def scaffold_world(root: Path, world_id: str, display_name: str) -> WikiScaffold
 
 
 def scaffold_thread(
-    root: Path,
+    roots: WikiRoots,
     thread_id: str,
     world_id: str,
     title: str,
@@ -276,8 +271,8 @@ def scaffold_thread(
     safe_thread_id = _validate_identifier(thread_id, "thread_id")
     safe_world_id = _validate_identifier(world_id, "world_id")
     safe_title = _validate_display_value(title, "title")
-    _validate_world(root, safe_world_id)
-    thread_root = _resolve_scaffold_root(root, "threads", safe_thread_id)
+    _validate_world(roots.worlds, safe_world_id)
+    thread_root = _resolve_scaffold_root(roots.threads, safe_thread_id)
     store = WikiStore(thread_root)
     created_at = _scaffold_timestamp(store, "thread.md")
     pending_documents = (

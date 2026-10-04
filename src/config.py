@@ -41,7 +41,9 @@ GRAPH_DB_ROOT = REPO_ROOT / "graph"
 # ── 앱 설정 ─────────────────────────────────────────────────
 WORLD_ID    = os.getenv("WORLD_ID",    "babe_univ")
 MAX_TOKEN   = int(os.getenv("MAX_TOKEN",   12288))
-WIKI_VAULT_ROOT = _repo_path(os.getenv("WIKI_VAULT_ROOT", "assets/wiki_v2"))
+# Wiki 작성 world 자산과 물질화된 thread 상태는 서로 독립된 root에 둔다.
+WIKI_WORLDS_ROOT = _repo_path(os.getenv("WIKI_WORLDS_ROOT", "assets/worlds/wiki"))
+WIKI_THREADS_ROOT = _repo_path(os.getenv("WIKI_THREADS_ROOT", "data/wiki/threads"))
 # Wiki recall: 누적 문서(event/memory/goal/item/secret)가 이 예산을 넘을 때만
 # 최근성·구조 관련성으로 축소한다. 예산 이하 thread는 전체 포함으로 동작 변화가 없다.
 # Actor prompt는 정밀도(작게), Updater 입력은 recall(크게)을 우선한다.

@@ -5,7 +5,7 @@
 #
 # Functions
 #   - _character_document(thread_id: str, include_current_state: bool = True) -> str : legacy character fixture를 렌더링합니다.
-#   - _write_character(vault_root: Path, thread_id: str, content: str) -> Path : thread fixture를 기록합니다.
+#   - _write_character(roots: WikiRoots, thread_id: str, content: str) -> Path : thread fixture를 기록합니다.
 #   - main() -> None : migration smoke assertions를 실행합니다.
 # ================================
 
@@ -23,6 +23,7 @@ from src.wiki import (
     apply_thread_contract_migration,
     plan_thread_contract_migration,
 )
+from src.wiki.paths import WikiRoots
 
 
 def _character_document(thread_id: str, include_current_state: bool = True) -> str:
@@ -58,9 +59,9 @@ profile_id: character_profile:legacy
 {current_state}"""
 
 
-def _write_character(vault_root: Path, thread_id: str, content: str) -> Path:
+def _write_character(roots: WikiRoots, thread_id: str, content: str) -> Path:
     """테스트 thread에 character Markdown 하나를 만들고 경로를 반환합니다."""
-    path = vault_root / "threads" / thread_id / "characters" / "legacy.md"
+    path = roots.threads / thread_id / "characters" / "legacy.md"
     path.parent.mkdir(parents=True)
     path.write_text(content, encoding="utf-8")
     return path
@@ -73,18 +74,21 @@ def main() -> None:
     assert "/api/conversations/{thread_id}/wiki/migration/apply" in route_paths
 
     with TemporaryDirectory() as temporary:
-        vault_root = Path(temporary) / "wiki_v2"
+        roots = WikiRoots(
+            worlds=Path(temporary) / "worlds",
+            threads=Path(temporary) / "threads",
+        )
         thread_id = "legacy_thread"
         original = _character_document(thread_id)
-        character_path = _write_character(vault_root, thread_id, original)
+        character_path = _write_character(roots, thread_id, original)
 
-        preview = plan_thread_contract_migration(vault_root, thread_id)
+        preview = plan_thread_contract_migration(roots, thread_id)
         assert preview.status == "ready"
         assert preview.changed_documents == ["characters/legacy.md"]
         assert len(preview.patches) == 1
         assert character_path.read_text(encoding="utf-8") == original
 
-        result = apply_thread_contract_migration(vault_root, thread_id)
+        result = apply_thread_contract_migration(roots, thread_id)
         assert result.status == "applied"
         assert result.migration_commit_id
         migrated = character_path.read_text(encoding="utf-8")
@@ -94,7 +98,7 @@ def main() -> None:
         assert "### Reproductive State" in migrated
         assert "- Contraception: none" in migrated
 
-        queue = WikiCommitQueue(WikiStore(vault_root / "threads" / thread_id))
+        queue = WikiCommitQueue(WikiStore(roots.threads / thread_id))
         archive = queue.load_archive(result.migration_commit_id)
         assert archive.operation == "manual"
         assert archive.status == "applied"
@@ -104,11 +108,11 @@ def main() -> None:
         inverse = queue.apply_inverse(result.migration_commit_id)
         assert inverse.status == "applied"
         assert character_path.read_text(encoding="utf-8").strip() == original.strip()
-        assert plan_thread_contract_migration(vault_root, thread_id).status == "ready"
+        assert plan_thread_contract_migration(roots, thread_id).status == "ready"
 
-        reapplied = apply_thread_contract_migration(vault_root, thread_id)
+        reapplied = apply_thread_contract_migration(roots, thread_id)
         assert reapplied.status == "applied"
-        assert plan_thread_contract_migration(vault_root, thread_id).status == "up_to_date"
+        assert plan_thread_contract_migration(roots, thread_id).status == "up_to_date"
 
         pending = PendingWikiCommit(
             user_input_hash=sha256(b"pending-user").hexdigest(),
@@ -116,15 +120,15 @@ def main() -> None:
             updater_model="test",
         )
         queue.queue(pending)
-        blocked = plan_thread_contract_migration(vault_root, thread_id)
+        blocked = plan_thread_contract_migration(roots, thread_id)
         assert blocked.status == "conflict"
         assert queue.load() == pending
         queue.skip_pending("migration smoke cleanup")
 
         malformed_id = "missing_state"
         malformed = _character_document(malformed_id, include_current_state=False)
-        malformed_path = _write_character(vault_root, malformed_id, malformed)
-        malformed_plan = plan_thread_contract_migration(vault_root, malformed_id)
+        malformed_path = _write_character(roots, malformed_id, malformed)
+        malformed_plan = plan_thread_contract_migration(roots, malformed_id)
         assert malformed_plan.status == "conflict"
         assert malformed_path.read_text(encoding="utf-8") == malformed
 

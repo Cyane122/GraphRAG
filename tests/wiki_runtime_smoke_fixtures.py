@@ -12,8 +12,8 @@
 #   - _fake_pending_commit(documents: list[WikiDocument], user_input: str, actor_response: str, model_name: str, max_attempts: int = 3, player_profile_id: str = "", actor_profile_id: str = "", user_message_id: str | None = None, assistant_message_id: str | None = None, thinking_level: str | None = None, debug_root: Path | None = None) -> PendingWikiCommit : Build a deterministic scene patch commit.
 #   - _failing_pending_commit(documents: list[WikiDocument], user_input: str, actor_response: str, model_name: str, max_attempts: int = 3, player_profile_id: str = "", actor_profile_id: str = "", user_message_id: str | None = None, assistant_message_id: str | None = None, thinking_level: str | None = None, debug_root: Path | None = None) -> PendingWikiCommit : Simulate updater retry exhaustion without an LLM call.
 #   - _identity_repair(full_response: str, visible_text: str, state: ConversationState, documents: list[WikiDocument]) -> str : Bypass external repair calls during the smoke tests.
-#   - copy_runtime_world(temporary_root: Path) -> Path : Copy the babe_university Wiki world fixture into a temporary vault root.
-#   - configure_runtime_environment(temporary_root: Path, vault_root: Path) -> None : Point runtime modules at the temporary vault and logs and install fake hooks.
+#   - copy_runtime_world(temporary_root: Path) -> WikiRoots : Copy the babe_university Wiki world fixture into temporary world and thread roots.
+#   - configure_runtime_environment(temporary_root: Path, roots: WikiRoots) -> None : Point runtime modules at the temporary Wiki roots and logs and install fake hooks.
 #   - main() -> None : Print the standalone success marker for this shared module.
 # ================================
 
@@ -31,7 +31,6 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.config import WIKI_VAULT_ROOT  # noqa: E402
 from src.apps.app.models import ConversationState  # noqa: E402
 from src.apps.app.storage import ConversationStore  # noqa: E402
 import src.apps.app.conversation_lifecycle as conversation_lifecycle  # noqa: E402
@@ -42,6 +41,7 @@ import src.apps.app.wiki_controls as wiki_controls  # noqa: E402
 import src.apps.app.wiki_message_ops as wiki_message_ops  # noqa: E402
 import src.apps.app.wiki_service as wiki_service  # noqa: E402
 import src.wiki as wiki_package  # noqa: E402
+from src.wiki.paths import WIKI_ROOTS, WikiRoots  # noqa: E402
 import src.core.logging.conversation_logger as conversation_logger  # noqa: E402
 from src.wiki.markdown import document_revision, parse_markdown_sections  # noqa: E402
 from src.wiki.models import PendingWikiCommit, SectionPatch, WikiDocument  # noqa: E402
@@ -295,24 +295,27 @@ async def _identity_repair(
     del visible_text, state, documents
     return full_response
 
-def copy_runtime_world(temporary_root: Path) -> Path:
-    """Copy the babe_university Wiki world fixture into a temporary vault root."""
-    vault_root = temporary_root / "wiki_v2"
-    shutil.copytree(
-        WIKI_VAULT_ROOT / "worlds" / "babe_university",
-        vault_root / "worlds" / "babe_university",
+def copy_runtime_world(temporary_root: Path) -> WikiRoots:
+    """Copy the babe_university Wiki world fixture into temporary world and thread roots."""
+    roots = WikiRoots(
+        worlds=temporary_root / "assets" / "worlds" / "wiki",
+        threads=temporary_root / "data" / "wiki" / "threads",
     )
-    return vault_root
+    shutil.copytree(
+        WIKI_ROOTS.worlds / "babe_university",
+        roots.worlds / "babe_university",
+    )
+    return roots
 
-def configure_runtime_environment(temporary_root: Path, vault_root: Path) -> None:
-    """Point runtime modules at the temporary vault and logs and install fake hooks."""
-    app_runtime.WIKI_VAULT_ROOT = vault_root
-    app_service.WIKI_VAULT_ROOT = vault_root
-    conversation_lifecycle.WIKI_VAULT_ROOT = vault_root
-    wiki_branching.WIKI_VAULT_ROOT = vault_root
-    wiki_controls.WIKI_VAULT_ROOT = vault_root
-    wiki_message_ops.WIKI_VAULT_ROOT = vault_root
-    wiki_service.WIKI_VAULT_ROOT = vault_root
+def configure_runtime_environment(temporary_root: Path, roots: WikiRoots) -> None:
+    """Point runtime modules at the temporary Wiki roots and logs and install fake hooks."""
+    app_runtime.WIKI_ROOTS = roots
+    app_service.WIKI_ROOTS = roots
+    conversation_lifecycle.WIKI_ROOTS = roots
+    wiki_branching.WIKI_ROOTS = roots
+    wiki_controls.WIKI_ROOTS = roots
+    wiki_message_ops.WIKI_ROOTS = roots
+    wiki_service.WIKI_ROOTS = roots
     conversation_logger.LOGS_DIR = temporary_root / "logs"
     wiki_service.stream_actor_events = _fake_actor_events
     wiki_service._repair_wiki_response = _identity_repair

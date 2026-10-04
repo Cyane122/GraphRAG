@@ -41,7 +41,7 @@ from src.simulation.systems.world_dynamics.organic import (
     set_pregnant_manual,
     simulate_internal_ejaculation,
 )
-from src.config import MAX_TOKEN, MODEL_OUTPUT_REPAIR, WIKI_VAULT_ROOT
+from src.config import MAX_TOKEN, MODEL_OUTPUT_REPAIR
 from src.core.llm.client import get_client
 from src.agents.prompt_factory.profiles import ProseProfile
 from src.apps.app.input_routing import TurnInputType, route_user_input
@@ -71,6 +71,7 @@ from src.apps.app.runtime import (
 from src.apps.app.storage import ConversationStore
 from src.apps.app.wiki_service import stream_wiki_turn
 from src.wiki import WikiContextError, initialize_wiki_conversation
+from src.wiki.paths import WIKI_ROOTS
 
 logger = logging.getLogger(__name__)
 
@@ -168,7 +169,7 @@ def create_conversation(
     if world_mode == "wiki":
         try:
             setup = initialize_wiki_conversation(
-                WIKI_VAULT_ROOT,
+                WIKI_ROOTS,
                 world_id,
                 resolved_scenario_id,
                 thread_id,

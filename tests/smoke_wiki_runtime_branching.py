@@ -7,7 +7,7 @@
 # an interrupted updater call.
 #
 # Functions
-#   - run_runtime_branching_suite(vault_root: Path, handles: RuntimeConversationHandles) -> None : Run the branching, lifecycle, and recovery smoke suite.
+#   - run_runtime_branching_suite(roots: WikiRoots, handles: RuntimeConversationHandles) -> None : Run the branching, lifecycle, and recovery smoke suite.
 #   - main() -> None : Run the standalone runtime branching smoke suite.
 # ================================
 
@@ -34,6 +34,7 @@ import src.apps.app.wiki_service as wiki_service  # noqa: E402
 import src.wiki as wiki_package  # noqa: E402
 from src.wiki import parse_frontmatter  # noqa: E402
 from src.wiki.markdown import parse_markdown_sections  # noqa: E402
+from src.wiki.paths import WikiRoots  # noqa: E402
 from tests.smoke_wiki_runtime_flow import run_runtime_flow_suite  # noqa: E402
 from tests.wiki_runtime_smoke_fixtures import (  # noqa: E402
     RuntimeConversationHandles,
@@ -46,7 +47,7 @@ from tests.wiki_runtime_smoke_fixtures import (  # noqa: E402
 )
 
 async def run_runtime_branching_suite(
-    vault_root: Path,
+    roots: WikiRoots,
     handles: RuntimeConversationHandles,
 ) -> None:
     """Run the branching, lifecycle, and recovery smoke suite."""
@@ -86,7 +87,7 @@ async def run_runtime_branching_suite(
         store,
     )
     branch = branch_result.conversation
-    branch_root = vault_root / "threads" / branch.thread_id
+    branch_root = roots.threads / branch.thread_id
     assert branch.thread_id != state.thread_id
     assert branch_result.draft == latest_user.content
     assert len(branch.messages) == 1
@@ -125,7 +126,7 @@ async def run_runtime_branching_suite(
     )
     broken_assistant.wiki_commit_id = "missing_commit_archive"
     thread_directories_before = {
-        path.name for path in (vault_root / "threads").iterdir()
+        path.name for path in (roots.threads).iterdir()
     }
     try:
         wiki_branching.branch_wiki_conversation_before_message(
@@ -138,7 +139,7 @@ async def run_runtime_branching_suite(
     else:
         raise AssertionError("Missing applied archives must abort safe branching")
     assert {
-        path.name for path in (vault_root / "threads").iterdir()
+        path.name for path in (roots.threads).iterdir()
     } == thread_directories_before
 
     # Wiki 대화 lifecycle은 이름·보관·ZIP 내보내기와 thread 삭제를 동기화한다.
@@ -248,7 +249,7 @@ async def run_runtime_branching_suite(
     assert not (thread_root / "commit.md").exists()
 
     no_commit_thread_id = "delete_without_applied_commit"
-    (vault_root / "threads" / no_commit_thread_id / "commits").mkdir(parents=True)
+    (roots.threads / no_commit_thread_id / "commits").mkdir(parents=True)
     no_commit_state = ConversationState(
         thread_id=no_commit_thread_id,
         world_mode="wiki",
@@ -277,7 +278,7 @@ async def run_runtime_branching_suite(
     # 남은 채 저장된(fix 이전 데이터를 흉내낸) user/assistant 쌍도 삭제할 수 있어야
     # 한다("이미 Wiki 정본에 반영된 응답" ValueError로 막히면 안 된다).
     idle_thread_id = "delete_with_idle_status"
-    (vault_root / "threads" / idle_thread_id / "commits").mkdir(parents=True)
+    (roots.threads / idle_thread_id / "commits").mkdir(parents=True)
     idle_state = ConversationState(
         thread_id=idle_thread_id,
         world_mode="wiki",
@@ -304,10 +305,10 @@ def main() -> None:
     """Run the standalone runtime branching smoke suite."""
     with TemporaryDirectory() as temporary_directory:
         temporary_root = Path(temporary_directory)
-        vault_root = copy_runtime_world(temporary_root)
-        configure_runtime_environment(temporary_root, vault_root)
-        handles = asyncio.run(run_runtime_flow_suite(temporary_root, vault_root))
-        asyncio.run(run_runtime_branching_suite(vault_root, handles))
+        roots = copy_runtime_world(temporary_root)
+        configure_runtime_environment(temporary_root, roots)
+        handles = asyncio.run(run_runtime_flow_suite(temporary_root, roots))
+        asyncio.run(run_runtime_branching_suite(roots, handles))
 
     print("smoke_wiki_runtime_branching: ok")
 

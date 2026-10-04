@@ -23,14 +23,13 @@ from src.apps.app.models import (
 )
 from src.apps.app.storage import ConversationStore
 from src.apps.app.wiki_message_ops import rebuild_wiki_derived_state
-from src.config import WIKI_VAULT_ROOT
 from src.wiki import (
     WikiCommitError,
     WikiCommitQueue,
     WikiStore,
     ensure_audit_baseline,
 )
-from src.wiki.paths import wiki_thread_root_for_vault
+from src.wiki.paths import WIKI_ROOTS, wiki_thread_root
 
 
 _FRONTMATTER_BLOCK_RE = re.compile(
@@ -173,10 +172,9 @@ def branch_wiki_conversation_before_message(
         raise ValueError("Wiki 대화만 과거 상태로 분기할 수 있습니다.")
     target_user_index, target_user = _target_user_message(state, message_id)
     branch_thread_id = _new_branch_thread_id(state, store)
-    vault_root = Path(WIKI_VAULT_ROOT).resolve()
-    threads_root = vault_root / "threads"
-    source_root = wiki_thread_root_for_vault(vault_root, state.thread_id)
-    branch_root = wiki_thread_root_for_vault(vault_root, branch_thread_id)
+    threads_root = WIKI_ROOTS.threads.resolve()
+    source_root = wiki_thread_root(WIKI_ROOTS, state.thread_id)
+    branch_root = wiki_thread_root(WIKI_ROOTS, branch_thread_id)
     if (
         source_root.parent != threads_root
         or branch_root.parent != threads_root

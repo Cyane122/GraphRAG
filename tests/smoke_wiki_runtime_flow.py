@@ -4,7 +4,7 @@
 # Wiki runtime flow smoke checks cover conversation creation, queued commit lifecycle, reroll and edit operations, and immediate apply behavior.
 #
 # Functions
-#   - run_runtime_flow_suite(temporary_root: Path, vault_root: Path) -> RuntimeConversationHandles : Run the conversation flow smoke suite and return the handles needed by later stages.
+#   - run_runtime_flow_suite(temporary_root: Path, roots: WikiRoots) -> RuntimeConversationHandles : Run the conversation flow smoke suite and return the handles needed by later stages.
 #   - main() -> None : Run the standalone runtime flow smoke suite.
 # ================================
 
@@ -21,6 +21,7 @@ if str(ROOT) not in sys.path:
 
 from src.wiki import PendingCommitExists, initialize_wiki_conversation  # noqa: E402
 from src.apps.app.storage import ConversationStore  # noqa: E402
+from src.wiki.paths import WikiRoots  # noqa: E402
 import src.apps.app.service as app_service  # noqa: E402
 import src.apps.app.wiki_controls as wiki_controls  # noqa: E402
 import src.apps.app.wiki_message_ops as wiki_message_ops  # noqa: E402
@@ -32,7 +33,7 @@ from tests.wiki_runtime_smoke_fixtures import (  # noqa: E402
 
 async def run_runtime_flow_suite(
     temporary_root: Path,
-    vault_root: Path,
+    roots: WikiRoots,
 ) -> RuntimeConversationHandles:
     """Run the conversation flow smoke suite and return the handles needed later."""
     store = ConversationStore(temporary_root / "data" / "threads")
@@ -46,13 +47,13 @@ async def run_runtime_flow_suite(
     assert len(state.messages) == 1
     assert "충전 좀 해줘" in state.messages[0].content
     assert "충전 좀 해줘" in state.recent_responses[0]
-    thread_root = vault_root / "threads" / state.thread_id
+    thread_root = roots.threads / state.thread_id
     scene_path = thread_root / "scene" / "current.md"
     before = scene_path.read_text(encoding="utf-8")
     manifest_path = thread_root / "thread.md"
     manifest_before = manifest_path.read_text(encoding="utf-8")
     initialize_wiki_conversation(
-        vault_root,
+        roots,
         state.world_id,
         state.scenario_id or "default",
         state.thread_id,
@@ -185,9 +186,9 @@ def main() -> None:
     """Run the standalone runtime flow smoke suite."""
     with TemporaryDirectory() as temporary_directory:
         temporary_root = Path(temporary_directory)
-        vault_root = copy_runtime_world(temporary_root)
-        configure_runtime_environment(temporary_root, vault_root)
-        asyncio.run(run_runtime_flow_suite(temporary_root, vault_root))
+        roots = copy_runtime_world(temporary_root)
+        configure_runtime_environment(temporary_root, roots)
+        asyncio.run(run_runtime_flow_suite(temporary_root, roots))
 
     print("smoke_wiki_runtime_flow: ok")
 

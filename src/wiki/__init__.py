@@ -57,22 +57,22 @@
 #   - parse_frontmatter(content: str) -> WikiMetadata | None : YAML frontmatter를 검증해 반환합니다.
 #   - parse_markdown_sections(content: str) -> dict[tuple[str, ...], MarkdownSection] : Markdown 섹션 경로를 파싱합니다.
 #   - render_wiki_template(template_name: str, values: Mapping[str, str]) -> str : Markdown 문서 템플릿을 렌더링합니다.
-#   - scaffold_thread(root: Path, thread_id: str, world_id: str, title: str) -> WikiScaffoldResult : thread vault를 생성합니다.
-#   - scaffold_world(root: Path, world_id: str, display_name: str) -> WikiScaffoldResult : world vault를 생성합니다.
-#   - initialize_wiki_conversation(vault_root: Path, world_id: str, scenario_id: str, thread_id: str, preset_id: str | None = None) -> WikiConversationSetup : Wiki thread를 초기화합니다.
-#   - get_wiki_thread_runtime_status(vault_root: Path, thread_id: str) -> WikiThreadRuntimeStatus : thread 런타임 세대를 진단합니다.
-#   - resolve_wiki_opening_scene(vault_root: Path, world_id: str, scenario_id: str, preset_id: str | None = None) -> str : 첫 장면 원문을 반환합니다.
-#   - read_wiki_scene_descriptions(vault_root: Path, world_id: str, scenario_id: str) -> dict[str, str] : 공용 분류 설명에 Wiki 전용 scene key를 합칩니다.
-#   - build_wiki_prompt_bundle(vault_root: Path, setup: WikiConversationSetup, user_input: str, recent_story: str = "", turn_ooc_directives: str = "", scene_types: list[str] | None = None, prose_profile: ProseProfile | None = None) -> WikiPromptBundle : PromptBuilder로 Wiki prompt를 조립합니다.
+#   - scaffold_thread(roots: WikiRoots, thread_id: str, world_id: str, title: str) -> WikiScaffoldResult : thread vault를 생성합니다.
+#   - scaffold_world(worlds_root: Path, world_id: str, display_name: str) -> WikiScaffoldResult : world vault를 생성합니다.
+#   - initialize_wiki_conversation(roots: WikiRoots, world_id: str, scenario_id: str, thread_id: str, preset_id: str | None = None) -> WikiConversationSetup : Wiki thread를 초기화합니다.
+#   - get_wiki_thread_runtime_status(roots: WikiRoots, thread_id: str) -> WikiThreadRuntimeStatus : thread 런타임 세대를 진단합니다.
+#   - resolve_wiki_opening_scene(roots: WikiRoots, world_id: str, scenario_id: str, preset_id: str | None = None) -> str : 첫 장면 원문을 반환합니다.
+#   - read_wiki_scene_descriptions(roots: WikiRoots, world_id: str, scenario_id: str) -> dict[str, str] : 공용 분류 설명에 Wiki 전용 scene key를 합칩니다.
+#   - build_wiki_prompt_bundle(roots: WikiRoots, setup: WikiConversationSetup, user_input: str, recent_story: str = "", turn_ooc_directives: str = "", scene_types: list[str] | None = None, prose_profile: ProseProfile | None = None) -> WikiPromptBundle : PromptBuilder로 Wiki prompt를 조립합니다.
 #   - validate_wiki_prompt_bundle(bundle: WikiPromptBundle) -> None : 컴파일된 Actor prompt의 메타데이터·세그먼트 계약을 검증합니다.
-#   - apply_pending_wiki_commit(vault_root: Path, thread_id: str) -> PendingWikiCommit | None : 다음 입력 직전 Wiki commit을 적용합니다.
+#   - apply_pending_wiki_commit(roots: WikiRoots, thread_id: str) -> PendingWikiCommit | None : 다음 입력 직전 Wiki commit을 적용합니다.
 #   - describe_wiki_commit_failure(exc: BaseException) -> str : 실패 예외를 compensation_errors까지 포함한 사람이 읽을 문자열로 만듭니다.
-#   - diagnose_wiki_scope(vault_root: Path, thread_id: str, world_id: str) -> list[WikiDiagnostic] : 중복 ID·frontmatter·섹션 무결성을 진단합니다.
-#   - list_wiki_documents(vault_root: Path, thread_id: str, world_id: str) -> list[WikiDocumentSummary] : Explorer용 문서 요약 목록을 반환합니다.
+#   - diagnose_wiki_scope(roots: WikiRoots, thread_id: str, world_id: str) -> list[WikiDiagnostic] : 중복 ID·frontmatter·섹션 무결성을 진단합니다.
+#   - list_wiki_documents(roots: WikiRoots, thread_id: str, world_id: str) -> list[WikiDocumentSummary] : Explorer용 문서 요약 목록을 반환합니다.
 #   - migrate_document_content(content: str) -> str : 문서를 CURRENT_SCHEMA_VERSION까지 순차 업그레이드합니다.
 #   - register_migration(document_type: str, from_version: int, migrate: Callable[[str], str]) -> None : 단계 마이그레이션을 등록합니다.
-#   - plan_thread_contract_migration(vault_root: Path, thread_id: str) -> WikiThreadMigrationPlan : 기존 thread 상태 계약을 쓰기 없이 검사합니다.
-#   - apply_thread_contract_migration(vault_root: Path, thread_id: str) -> WikiThreadMigrationPlan : 상태 계약을 audited manual commit으로 적용합니다.
+#   - plan_thread_contract_migration(roots: WikiRoots, thread_id: str) -> WikiThreadMigrationPlan : 기존 thread 상태 계약을 쓰기 없이 검사합니다.
+#   - apply_thread_contract_migration(roots: WikiRoots, thread_id: str) -> WikiThreadMigrationPlan : 상태 계약을 audited manual commit으로 적용합니다.
 #   - plan_manual_edit_audit(store: WikiStore) -> WikiManualAuditPlan : 외부 Markdown 변경을 쓰기 없이 계획합니다.
 #   - ensure_audit_baseline(store: WikiStore) -> None : 없는 thread baseline만 초기화합니다.
 #   - refresh_audit_baseline(store: WikiStore) -> None : 내부 canonical 변경 뒤 baseline을 갱신합니다.

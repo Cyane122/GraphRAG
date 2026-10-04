@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
-from pathlib import Path
 
 from src.agents.prompt_factory.profiles import ProseProfile
 from src.apps.app.models import (
@@ -34,11 +33,11 @@ from src.apps.app.wiki_service import (
     _strip_hidden_blocks,
     stream_wiki_turn,
 )
-from src.config import WIKI_VAULT_ROOT, wiki_system_defaults
+from src.config import wiki_system_defaults
 from src.simulation.state.models import WikiTurnUpdateRequest
 from src.simulation.state.updater import update_accepted_turn
 from src.wiki import WikiCommitError, WikiCommitQueue, WikiStore
-from src.wiki.paths import wiki_thread_root_for_vault
+from src.wiki.paths import WIKI_ROOTS, wiki_thread_root
 
 
 _MAX_HISTORY_TURNS = 10
@@ -127,7 +126,7 @@ def _wiki_commit_queue(state: ConversationState) -> WikiCommitQueue:
     """현재 Wiki thread의 commit queue를 반환합니다."""
     return WikiCommitQueue(
         WikiStore(
-            wiki_thread_root_for_vault(Path(WIKI_VAULT_ROOT), state.thread_id)
+            wiki_thread_root(WIKI_ROOTS, state.thread_id)
         )
     )
 
@@ -199,7 +198,7 @@ async def _replace_wiki_update(
         settings = load_settings()
         update_result = await update_accepted_turn(
             WikiTurnUpdateRequest(
-                vault_root=Path(WIKI_VAULT_ROOT),
+                roots=WIKI_ROOTS,
                 thread_id=state.thread_id,
                 user_input=user_message.content,
                 actor_response=assistant_message.content,

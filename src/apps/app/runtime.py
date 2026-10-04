@@ -26,11 +26,12 @@ from pathlib import Path
 from types import TracebackType
 
 from src.agents.manager import load_world_instance
-from src.config import DATA_ROOT, GRAPH_WORLDS_PACKAGE, GRAPH_WORLDS_ROOT, WIKI_VAULT_ROOT
+from src.config import DATA_ROOT, GRAPH_WORLDS_PACKAGE, GRAPH_WORLDS_ROOT
 from src.core.database import KuzuAsyncDriver
 from src.core.database.driver import reset_active_driver, set_active_driver
 from src.apps.app.models import ConversationState, WorldMode
 from src.wiki import WikiContextError, parse_frontmatter, resolve_wiki_opening_scene
+from src.wiki.paths import WIKI_ROOTS
 
 _ACTIVE_DRIVERS: dict[str, KuzuAsyncDriver] = {}
 
@@ -117,7 +118,7 @@ def _wiki_scenario_presets(scenario_root: Path) -> list[dict]:
 
 def _discover_wiki_world_profiles() -> list[dict]:
     """Discover Wiki V2 worlds without importing graph world modules."""
-    worlds_dir = WIKI_VAULT_ROOT / "worlds"
+    worlds_dir = WIKI_ROOTS.worlds
     worlds: list[dict] = []
     for world_file in sorted(worlds_dir.glob("*/world.md")):
         world_id = world_file.parent.name
@@ -200,7 +201,7 @@ def resolve_opening_scene(
     if world_mode == "wiki":
         try:
             return resolve_wiki_opening_scene(
-                WIKI_VAULT_ROOT,
+                WIKI_ROOTS,
                 world_id,
                 scenario_id or "default",
                 preset_id,

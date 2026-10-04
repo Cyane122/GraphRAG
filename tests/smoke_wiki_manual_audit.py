@@ -17,7 +17,7 @@ from pathlib import Path
 import shutil
 from tempfile import TemporaryDirectory
 
-from src.config import WIKI_VAULT_ROOT
+from src.wiki.paths import WIKI_ROOTS, WikiRoots
 from src.apps.app.app import create_app
 from src.apps.app.models import ChatMessage, ConversationState
 from src.apps.app.storage import ConversationStore
@@ -124,17 +124,20 @@ def main() -> None:
         assert (thread_root / ".wikirag-audit-baseline.json").is_file()
 
         branch_workspace = Path(temporary) / "branch_case"
-        vault_root = branch_workspace / "wiki_v2"
+        roots = WikiRoots(
+            worlds=branch_workspace / "assets" / "worlds" / "wiki",
+            threads=branch_workspace / "data" / "wiki" / "threads",
+        )
         shutil.copytree(
-            WIKI_VAULT_ROOT / "worlds" / "babe_university",
-            vault_root / "worlds" / "babe_university",
+            WIKI_ROOTS.worlds / "babe_university",
+            roots.worlds / "babe_university",
         )
         branch_store = ConversationStore(branch_workspace / "data" / "threads")
-        previous_vault_root = wiki_branching.WIKI_VAULT_ROOT
-        wiki_branching.WIKI_VAULT_ROOT = vault_root
+        previous_roots = wiki_branching.WIKI_ROOTS
+        wiki_branching.WIKI_ROOTS = roots
         try:
             setup = initialize_wiki_conversation(
-                vault_root,
+                roots,
                 "babe_university",
                 "lover",
                 "branch_audit_source",
@@ -160,7 +163,7 @@ def main() -> None:
                 source_state.messages[-1].id,
                 branch_store,
             )
-            branch_root = vault_root / "threads" / branch_result.conversation.thread_id
+            branch_root = roots.threads / branch_result.conversation.thread_id
             assert (branch_root / ".wikirag-audit-baseline.json").is_file()
             branch_manifest_path = branch_root / "thread.md"
             branch_manifest_path.write_text(
@@ -175,7 +178,7 @@ def main() -> None:
             assert branch_plan.result.status == "ready"
             assert branch_plan.result.changed_documents == ["thread.md"]
         finally:
-            wiki_branching.WIKI_VAULT_ROOT = previous_vault_root
+            wiki_branching.WIKI_ROOTS = previous_roots
 
         section_edit = original.replace("- 감정 상태: 평온", "- 감정 상태: 긴장")
         character_path.write_text(section_edit, encoding="utf-8")

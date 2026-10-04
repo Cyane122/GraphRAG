@@ -11,12 +11,12 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel
 
 from src.wiki.models import PendingWikiCommit
+from src.wiki.paths import WikiRoots
 
 
 UpdaterMode = Literal["graph", "wiki"]
@@ -44,7 +44,7 @@ class WikiTurnUpdateRequest(BaseModel):
     """Wiki accepted turn에서 검증된 pending commit을 만들기 위한 입력입니다."""
 
     mode: Literal["wiki"] = "wiki"
-    vault_root: Path
+    roots: WikiRoots
     thread_id: str
     user_input: str
     actor_response: str

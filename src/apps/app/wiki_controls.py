@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import asyncio
 from hashlib import sha256
-from pathlib import Path
 
 from src.apps.app.models import (
     ChatMessage,
@@ -41,7 +40,7 @@ from src.apps.app.models import (
 )
 from src.apps.app.settings import load_settings, wiki_updater_model_name
 from src.apps.app.storage import ConversationStore
-from src.config import WIKI_VAULT_ROOT, wiki_system_defaults
+from src.config import wiki_system_defaults
 from src.core.logging import AcceptedTurn, ConversationLogError, append_accepted_turn
 from src.simulation.state.models import WikiTurnUpdateRequest
 from src.simulation.state.updater import update_accepted_turn
@@ -66,20 +65,20 @@ from src.wiki import (
 )
 from src.wiki.character_postprocess import authored_cycle_character_titles
 from src.wiki.context import read_wiki_thread_documents
-from src.wiki.paths import wiki_thread_root_for_vault
+from src.wiki.paths import WIKI_ROOTS, wiki_thread_root
 
 
 def _commit_queue(thread_id: str) -> WikiCommitQueue:
     """Return the commit queue for one Wiki thread."""
     return WikiCommitQueue(
-        WikiStore(wiki_thread_root_for_vault(Path(WIKI_VAULT_ROOT), thread_id))
+        WikiStore(wiki_thread_root(WIKI_ROOTS, thread_id))
     )
 
 
 def _wiki_system_response(state: ConversationState) -> WikiSystemsResponse:
     """현재 대화의 Wiki system 응답 모델을 조립합니다."""
     defaults = wiki_system_defaults()
-    documents = read_wiki_thread_documents(Path(WIKI_VAULT_ROOT), state.thread_id)
+    documents = read_wiki_thread_documents(WIKI_ROOTS, state.thread_id)
     return WikiSystemsResponse(
         systems=resolve_wiki_systems(state.wiki_system_overrides, defaults),
         defaults=defaults,
@@ -130,7 +129,7 @@ def get_wiki_commit_status(state: ConversationState) -> WikiCommitStatusResponse
     """Return current updater state with commit.md as the authoritative payload."""
     pending = _commit_queue(state.thread_id).load()
     runtime_status = get_wiki_thread_runtime_status(
-        Path(WIKI_VAULT_ROOT),
+        WIKI_ROOTS,
         state.thread_id,
     )
     runtime_fields = {
@@ -341,7 +340,7 @@ async def _run_wiki_update(
         settings = load_settings()
         update_result = await update_accepted_turn(
             WikiTurnUpdateRequest(
-                vault_root=Path(WIKI_VAULT_ROOT),
+                roots=WIKI_ROOTS,
                 thread_id=state.thread_id,
                 user_input=user_message.content,
                 actor_response=assistant_message.content,
@@ -418,17 +417,17 @@ def skip_wiki_commit(
 
 def get_wiki_diagnostics(state: ConversationState) -> list[WikiDiagnostic]:
     """현재 대화의 world 자산과 thread 문서 무결성 진단을 반환합니다."""
-    return diagnose_wiki_scope(Path(WIKI_VAULT_ROOT), state.thread_id, state.world_id)
+    return diagnose_wiki_scope(WIKI_ROOTS, state.thread_id, state.world_id)
 
 
 def get_wiki_document_list(state: ConversationState) -> list[WikiDocumentSummary]:
     """현재 대화의 world 자산과 thread 문서를 Explorer용 요약 목록으로 반환합니다."""
-    return list_wiki_documents(Path(WIKI_VAULT_ROOT), state.thread_id, state.world_id)
+    return list_wiki_documents(WIKI_ROOTS, state.thread_id, state.world_id)
 
 
 def get_wiki_thread_migration(state: ConversationState) -> WikiThreadMigrationPlan:
     """기존 thread의 런타임 상태 섹션 migration을 변경 없이 미리 봅니다."""
-    return plan_thread_contract_migration(Path(WIKI_VAULT_ROOT), state.thread_id)
+    return plan_thread_contract_migration(WIKI_ROOTS, state.thread_id)
 
 
 def apply_wiki_thread_migration(
@@ -441,7 +440,7 @@ def apply_wiki_thread_migration(
     """
     if recover_unlogged_wiki_acceptance(state) is not None:
         store.save(state)
-    result = apply_thread_contract_migration(Path(WIKI_VAULT_ROOT), state.thread_id)
+    result = apply_thread_contract_migration(WIKI_ROOTS, state.thread_id)
     if result.status == "applied":
         state.wiki_update_status = "applied"
         state.wiki_update_error = ""

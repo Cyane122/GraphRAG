@@ -28,7 +28,7 @@ start a separate implementation or review chain that bypasses that routing.
 
 | Skill | Use it for | It must NOT | Trigger boundary |
 | --- | --- | --- | --- |
-| **author-wikirag-worlds** | Creating, repairing, or reviewing Wiki V2 world/scenario prompt modules and authoring variants | modify live thread state, expose runtime metadata, or invent missing canon without authority | work under `assets/wiki_v2/worlds/` |
+| **author-wikirag-worlds** | Creating, repairing, or reviewing Wiki V2 world/scenario prompt modules and authoring variants | modify live thread state, expose runtime metadata, or invent missing canon without authority | work under `assets/worlds/wiki/` |
 
 This authoring workflow is intentionally excluded from `docs/changelog.md`; see
 `.agent/changelog-policy.md`.
@@ -42,7 +42,7 @@ This authoring workflow is intentionally excluded from `docs/changelog.md`; see
 | changelog vs architecture | both "update docs" | changelog = frequent/mechanical/history; architecture = rare/judgment/design |
 | portfolio vs changelog | both narrate work | changelog = repo-side raw record; portfolio = curated external view, reads (never writes) the changelog |
 
-Disambiguating keywords: work under `assets/wiki_v2/worlds/` → author-wikirag-worlds;
+Disambiguating keywords: work under `assets/worlds/wiki/` → author-wikirag-worlds;
 "기록/changelog" → changelog-maintainer; "구조/architecture" →
 architecture-doc-maintainer.
 

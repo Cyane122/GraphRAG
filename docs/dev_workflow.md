@@ -42,8 +42,10 @@ The root launcher scripts first run `cd /d "%~dp0"`, then use
 ## Wiki authoring validator after asset relocation
 
 The installed `author-wikirag-worlds` validator still joins `--repo` with
-`wiki_v2/worlds/`. Use its existing option with the asset root, and retain the
-repository root on `PYTHONPATH` for engine imports:
+`wiki_v2/worlds/`, so it cannot reach the split world root
+`assets/worlds/wiki/` until the skill is updated. Before the world move, the old
+invocation below still targets `assets/wiki_v2/worlds/`; retain the repository
+root on `PYTHONPATH` for engine imports:
 
 ```powershell
 $env:PYTHONPATH = 'F:\python\NLP\GraphRAG'

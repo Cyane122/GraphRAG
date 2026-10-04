@@ -52,7 +52,7 @@ if str(ROOT) not in sys.path:
 
 from scripts.wiki_validation_common import (
     canonical_documents,
-    patch_vault_root,
+    patch_wiki_roots,
     render_document_diff,
     write_json,
 )
@@ -534,14 +534,18 @@ def _render_report(
 def _simulate_applied_documents(thread_root: Path, thread_id: str) -> dict[str, str]:
     """Apply the current pending commit on a copied thread and return its snapshot."""
     from src.wiki import apply_pending_wiki_commit
+    from src.wiki.paths import WikiRoots
 
     with tempfile.TemporaryDirectory(prefix="wiki_long_play_apply_") as temporary:
         temporary_root = Path(temporary)
-        vault_root = temporary_root / "wiki_v2"
-        copied_thread_root = vault_root / "threads" / thread_id
+        roots = WikiRoots(
+            worlds=temporary_root / "worlds",
+            threads=temporary_root / "wiki_threads",
+        )
+        copied_thread_root = roots.threads / thread_id
         copied_thread_root.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(thread_root, copied_thread_root)
-        apply_pending_wiki_commit(vault_root, thread_id)
+        apply_pending_wiki_commit(roots, thread_id)
         return canonical_documents(copied_thread_root)
 
 
@@ -576,7 +580,8 @@ async def _run_one_scenario(
 ) -> dict[str, object]:
     """Run one scenario in an isolated vault and persist its evidence artifacts."""
     app_service, wiki_controls, conversation_store_cls = _runtime_modules()
-    from src.config import LOGS_ROOT, WIKI_VAULT_ROOT
+    from src.config import LOGS_ROOT
+    from src.wiki.paths import WIKI_ROOTS, WikiRoots
 
     scenario_root.mkdir(parents=True, exist_ok=False)
     log_path = LOGS_ROOT / "llm_latency.jsonl"
@@ -596,10 +601,13 @@ async def _run_one_scenario(
 
     with tempfile.TemporaryDirectory(prefix=f"wiki_long_play_{scenario_id}_") as temporary:
         temporary_root = Path(temporary)
-        vault_root = temporary_root / "wiki_v2"
-        source_world = WIKI_VAULT_ROOT / "worlds" / "babe_university"
-        shutil.copytree(source_world, vault_root / "worlds" / "babe_university")
-        patch_vault_root(vault_root)
+        roots = WikiRoots(
+            worlds=temporary_root / "worlds",
+            threads=temporary_root / "wiki_threads",
+        )
+        source_world = WIKI_ROOTS.worlds / "babe_university"
+        shutil.copytree(source_world, roots.worlds / "babe_university")
+        patch_wiki_roots(roots)
         store = conversation_store_cls(temporary_root / "data" / "threads")
         state = app_service.create_conversation(
             "babe_university",
@@ -608,7 +616,7 @@ async def _run_one_scenario(
             actor_model=actor_model,
             world_mode="wiki",
         )
-        thread_root = vault_root / "threads" / state.thread_id
+        thread_root = roots.threads / state.thread_id
         opening_documents = canonical_documents(thread_root)
 
         previous_turn_record: dict[str, object] | None = None

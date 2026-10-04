@@ -26,6 +26,7 @@ from src.simulation.state.models import (
 from src.simulation.state.updater import update_accepted_turn
 from src.wiki.commit import WikiCommitQueue
 from src.wiki.models import PendingWikiCommit
+from src.wiki.paths import WikiRoots
 from src.wiki.store import WikiStore
 
 
@@ -33,8 +34,11 @@ async def _run() -> None:
     """공개 Updater 하나가 Graph 반영기와 Wiki commit planner를 선택하는지 검증합니다."""
     assert "src.simulation.state.graph_apply" not in sys.modules
     with TemporaryDirectory(prefix="mode_aware_updater_") as temporary_directory:
-        vault_root = Path(temporary_directory)
-        thread_root = vault_root / "threads" / "wiki-thread"
+        roots = WikiRoots(
+            worlds=Path(temporary_directory) / "worlds",
+            threads=Path(temporary_directory) / "threads",
+        )
+        thread_root = roots.threads / "wiki-thread"
         thread_root.mkdir(parents=True)
         planned = PendingWikiCommit(
             user_input_hash="user",
@@ -59,7 +63,7 @@ async def _run() -> None:
         ):
             wiki_result = await update_accepted_turn(
                 WikiTurnUpdateRequest(
-                    vault_root=vault_root,
+                    roots=roots,
                     thread_id="wiki-thread",
                     user_input="wiki input",
                     actor_response="accepted wiki prose",

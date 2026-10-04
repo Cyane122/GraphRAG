@@ -23,13 +23,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.config import WIKI_VAULT_ROOT
+from src.wiki.paths import WIKI_ROOTS, WikiRoots
 import src.apps.app.service as app_service
 import src.apps.app.wiki_controls as wiki_controls
 from src.apps.app.storage import ConversationStore
 from scripts.wiki_validation_common import (
     canonical_documents,
-    patch_vault_root,
+    patch_wiki_roots,
     render_document_diff,
     write_json,
 )
@@ -48,13 +48,16 @@ async def _run_validation(
 
     with tempfile.TemporaryDirectory(prefix="wiki_llm_validation_") as temporary:
         temporary_root = Path(temporary)
-        vault_root = temporary_root / "wiki_v2"
-        source_world = WIKI_VAULT_ROOT / "worlds" / "babe_university"
+        roots = WikiRoots(
+            worlds=temporary_root / "worlds",
+            threads=temporary_root / "wiki_threads",
+        )
+        source_world = WIKI_ROOTS.worlds / "babe_university"
         shutil.copytree(
             source_world,
-            vault_root / "worlds" / "babe_university",
+            roots.worlds / "babe_university",
         )
-        patch_vault_root(vault_root)
+        patch_wiki_roots(roots)
         store = ConversationStore(temporary_root / "data" / "threads")
         state = app_service.create_conversation(
             "babe_university",
@@ -63,7 +66,7 @@ async def _run_validation(
             actor_model=actor_model,
             world_mode="wiki",
         )
-        thread_root = vault_root / "threads" / state.thread_id
+        thread_root = roots.threads / state.thread_id
         before_generation = canonical_documents(thread_root)
 
         started_at = datetime.now(timezone.utc)

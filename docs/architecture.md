@@ -42,9 +42,12 @@ The main backend entry point is `python -m src.apps.app`.
 
 ### Wiki mode
 
-- Authored source documents live under `assets/wiki_v2/worlds/`.
+- Authored source documents live under `WIKI_WORLDS_ROOT` (default
+  `assets/worlds/wiki/<world_id>/`).
 - Each conversation receives an isolated materialized vault under
-  `assets/wiki_v2/threads/<thread_id>/`.
+  `WIKI_THREADS_ROOT` (default `data/wiki/threads/<thread_id>/`). The two roots
+  are configured separately in `src/config.py`, passed as one
+  `src.wiki.paths.WikiRoots` pair, and must not overlap.
 - Canonical Markdown is reread on every normal turn so external edits are visible
   without restarting the server.
 - Revisions are content-derived. Pending patches must validate the expected

@@ -4,10 +4,10 @@
 # Wiki Markdown을 기존 PromptBuilder와 지연 커밋 흐름에 연결합니다.
 #
 # Functions
-#   - initialize_wiki_conversation(vault_root: Path, world_id: str, scenario_id: str, thread_id: str, preset_id: str | None = None) -> WikiConversationSetup : Wiki thread를 초기화합니다.
-#   - resolve_wiki_opening_scene(vault_root: Path, world_id: str, scenario_id: str, preset_id: str | None = None) -> str : 선택 시나리오와 pc_preset의 첫 장면 원문을 반환합니다.
-#   - build_wiki_prompt_bundle(vault_root: Path, setup: WikiConversationSetup, user_input: str, recent_story: str = "", turn_ooc_directives: str = "", scene_types: list[str] | None = None, prose_profile: ProseProfile | None = None, engine_modules: dict[str, str] | None = None, usernotes_block: str = "") -> WikiPromptBundle : 기존 PromptBuilder로 Actor prompt를 조립합니다.
-#   - apply_pending_wiki_commit(vault_root: Path, thread_id: str) -> PendingWikiCommit | None : 다음 입력 직전 commit.md를 적용합니다.
+#   - initialize_wiki_conversation(roots: WikiRoots, world_id: str, scenario_id: str, thread_id: str, preset_id: str | None = None) -> WikiConversationSetup : Wiki thread를 초기화합니다.
+#   - resolve_wiki_opening_scene(roots: WikiRoots, world_id: str, scenario_id: str, preset_id: str | None = None) -> str : 선택 시나리오와 pc_preset의 첫 장면 원문을 반환합니다.
+#   - build_wiki_prompt_bundle(roots: WikiRoots, setup: WikiConversationSetup, user_input: str, recent_story: str = "", turn_ooc_directives: str = "", scene_types: list[str] | None = None, prose_profile: ProseProfile | None = None, engine_modules: dict[str, str] | None = None, usernotes_block: str = "") -> WikiPromptBundle : 기존 PromptBuilder로 Actor prompt를 조립합니다.
+#   - apply_pending_wiki_commit(roots: WikiRoots, thread_id: str) -> PendingWikiCommit | None : 다음 입력 직전 commit.md를 적용합니다.
 # ================================
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ from src.wiki.models import (
     WikiMetadata,
     WikiPromptBundle,
 )
-from src.wiki.paths import wiki_thread_root_for_vault
+from src.wiki.paths import WikiRoots, wiki_thread_root
 from src.wiki.recall import select_recall_documents
 from src.wiki.prompt_contract import (
     validate_actor_document_body,
@@ -66,18 +66,18 @@ _SCENE_TIME_PROMPT_PATH = _PROMPT_DIR / "scene_time.md"
 
 
 def initialize_wiki_conversation(
-    vault_root: Path,
+    roots: WikiRoots,
     world_id: str,
     scenario_id: str,
     thread_id: str,
     preset_id: str | None = None,
 ) -> WikiConversationSetup:
     """Wiki thread와 초기 Markdown 상태를 만들고 앱용 설정을 반환합니다."""
-    return initialize_wiki_thread(vault_root, world_id, scenario_id, thread_id, preset_id)
+    return initialize_wiki_thread(roots, world_id, scenario_id, thread_id, preset_id)
 
 
 def resolve_wiki_opening_scene(
-    vault_root: Path,
+    roots: WikiRoots,
     world_id: str,
     scenario_id: str,
     preset_id: str | None = None,
@@ -85,7 +85,7 @@ def resolve_wiki_opening_scene(
     """thread 생성 없이 선택한 시나리오와 pc_preset의 첫 장면 원문을 반환합니다."""
     preview_thread_id = "opening_preview"
     return load_wiki_setup(
-        vault_root,
+        roots,
         world_id,
         scenario_id,
         preview_thread_id,
@@ -462,7 +462,7 @@ def _wiki_turn_ooc_directives(turn_ooc_directives: str) -> str:
 
 
 def build_wiki_prompt_bundle(
-    vault_root: Path,
+    roots: WikiRoots,
     setup: WikiConversationSetup,
     user_input: str,
     recent_story: str = "",
@@ -474,12 +474,12 @@ def build_wiki_prompt_bundle(
 ) -> WikiPromptBundle:
     """최신 Markdown을 읽어 기존 PromptBuilder의 Fixed/Dynamic을 조립합니다."""
     assets = read_wiki_actor_assets(
-        vault_root,
+        roots,
         setup.world_id,
         setup.scenario_id,
         setup.preset_id,
     )
-    thread_documents = read_wiki_thread_documents(vault_root, setup.thread_id)
+    thread_documents = read_wiki_thread_documents(roots, setup.thread_id)
     scene_document = next(
         document
         for document in thread_documents
@@ -537,9 +537,9 @@ def build_wiki_prompt_bundle(
 
 
 def apply_pending_wiki_commit(
-    vault_root: Path,
+    roots: WikiRoots,
     thread_id: str,
 ) -> PendingWikiCommit | None:
     """다음 사용자 입력 직전에 thread의 commit.md를 적용합니다."""
-    store = WikiStore(wiki_thread_root_for_vault(vault_root, thread_id))
+    store = WikiStore(wiki_thread_root(roots, thread_id))
     return WikiCommitQueue(store).apply_pending()

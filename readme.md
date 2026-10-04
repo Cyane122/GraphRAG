@@ -8,9 +8,9 @@
 | --- | --- |
 | `src/` | 엔진과 공용 코드; Graph 정의의 공용 클래스는 `src/worlds/` |
 | `assets/worlds/graph/` | Graph 정의와 해당 프롬프트 |
-| `assets/wiki_v2/` | Wiki 원본과 실제 thread 상태; `worlds/`와 `threads/` 유지 |
+| `assets/worlds/wiki/` | Wiki 월드 원본(`WIKI_WORLDS_ROOT`) |
 | `assets/prompts/`, `assets/templates/` | 공유 프롬프트와 Wiki 템플릿 |
-| `data/`, `graph/`, `logs/` | 대화·pending 상태, Graph DB, 실행 기록 |
+| `data/`, `graph/`, `logs/` | 대화·pending 상태와 Wiki thread 상태(`data/wiki/threads/`, `WIKI_THREADS_ROOT`), Graph DB, 실행 기록 |
 | `.agent/` | 운영 정책, 현재 작업, 구현 계획과 공용 hook |
 | `docs/architecture/` | 개발 문서 vault와 단일 Wiki parity 보드 |
 

@@ -36,6 +36,8 @@ tmp_*.log
 !.mcp.json
 !.codex/hooks.json
 
+assets/worlds/wiki/
+# Pre-split Wiki vault; remove after the controller migration empties it.
 assets/wiki_v2/
 
 # Service-account credentials (including the active Vertex key).

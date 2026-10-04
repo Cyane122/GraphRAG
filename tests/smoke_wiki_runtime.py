@@ -31,11 +31,11 @@ async def _run() -> None:
     """Run the full split Wiki runtime smoke suite."""
     with TemporaryDirectory() as temporary_directory:
         temporary_root = Path(temporary_directory)
-        vault_root = copy_runtime_world(temporary_root)
-        configure_runtime_environment(temporary_root, vault_root)
-        await run_runtime_prompt_suite(temporary_root, vault_root)
-        handles = await run_runtime_flow_suite(temporary_root, vault_root)
-        await run_runtime_branching_suite(vault_root, handles)
+        roots = copy_runtime_world(temporary_root)
+        configure_runtime_environment(temporary_root, roots)
+        await run_runtime_prompt_suite(temporary_root, roots)
+        handles = await run_runtime_flow_suite(temporary_root, roots)
+        await run_runtime_branching_suite(roots, handles)
 
 def main() -> None:
     """Run the standalone runtime smoke suite."""

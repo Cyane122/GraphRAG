@@ -4,14 +4,13 @@
 # 기존 Wiki thread의 런타임 소유 캐릭터 상태 섹션을 명시적으로 보강합니다.
 #
 # Functions
-#   - plan_thread_contract_migration(vault_root: Path, thread_id: str) -> WikiThreadMigrationPlan : 쓰기 없는 상태 계약 migration 계획을 만듭니다.
-#   - apply_thread_contract_migration(vault_root: Path, thread_id: str) -> WikiThreadMigrationPlan : 계획을 audited manual commit으로 즉시 적용합니다.
+#   - plan_thread_contract_migration(roots: WikiRoots, thread_id: str) -> WikiThreadMigrationPlan : 쓰기 없는 상태 계약 migration 계획을 만듭니다.
+#   - apply_thread_contract_migration(roots: WikiRoots, thread_id: str) -> WikiThreadMigrationPlan : 계획을 audited manual commit으로 즉시 적용합니다.
 # ================================
 
 from __future__ import annotations
 
 from hashlib import sha256
-from pathlib import Path
 
 from src.wiki.commit import WikiCommitQueue
 from src.wiki.context import read_wiki_thread_documents
@@ -22,7 +21,7 @@ from src.wiki.models import (
     WikiDocument,
     WikiThreadMigrationPlan,
 )
-from src.wiki.paths import wiki_thread_root_for_vault
+from src.wiki.paths import WikiRoots, wiki_thread_root
 from src.wiki.store import WikiStore
 
 
@@ -81,12 +80,12 @@ def _migration_patch(document: WikiDocument) -> SectionPatch | None:
 
 
 def plan_thread_contract_migration(
-    vault_root: Path,
+    roots: WikiRoots,
     thread_id: str,
 ) -> WikiThreadMigrationPlan:
     """기존 캐릭터 문서를 읽고 원문을 쓰지 않는 migration 미리보기를 반환합니다."""
-    documents = read_wiki_thread_documents(vault_root, thread_id)
-    thread_root = wiki_thread_root_for_vault(vault_root, thread_id)
+    documents = read_wiki_thread_documents(roots, thread_id)
+    thread_root = wiki_thread_root(roots, thread_id)
     queue = WikiCommitQueue(WikiStore(thread_root))
     if queue.load() is not None:
         return WikiThreadMigrationPlan(
@@ -131,11 +130,11 @@ def plan_thread_contract_migration(
 
 
 def apply_thread_contract_migration(
-    vault_root: Path,
+    roots: WikiRoots,
     thread_id: str,
 ) -> WikiThreadMigrationPlan:
     """최신 migration 계획을 audited manual commit으로 즉시 적용합니다."""
-    plan = plan_thread_contract_migration(vault_root, thread_id)
+    plan = plan_thread_contract_migration(roots, thread_id)
     if plan.status != "ready":
         return plan
 
@@ -148,7 +147,7 @@ def apply_thread_contract_migration(
         summary="Added missing runtime-owned character state sections.",
         patches=plan.patches,
     )
-    thread_root = wiki_thread_root_for_vault(vault_root, thread_id)
+    thread_root = wiki_thread_root(roots, thread_id)
     applied = WikiCommitQueue(WikiStore(thread_root)).apply_immediate(pending)
     return plan.model_copy(
         update={

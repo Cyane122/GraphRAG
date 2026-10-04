@@ -7,12 +7,12 @@
 #   - _authored_world_roots() -> list[Path] : 저작된 Wiki 월드 루트를 자동 발견합니다.
 #   - _scenario_roots(world_root: Path) -> list[Path] : 월드 아래 시나리오 루트를 자동 발견합니다.
 #   - _load_default_scene_type() -> str : 분류기 호출을 피할 유효한 scene type key를 읽습니다.
-#   - _copy_world_to_temp_vault(world_root: Path, temporary_directory: str) -> Path : 월드 하나를 격리된 임시 vault로 복사합니다.
+#   - _copy_world_to_temp_vault(world_root: Path, temporary_directory: str) -> WikiRoots : 월드 하나를 격리된 임시 world/thread root로 복사합니다.
 #   - _assert_contract(condition: bool, world_id: str, scenario_id: str, contract: str, detail: str) -> None : 실패 메시지에 월드·시나리오·계약명을 포함합니다.
 #   - _count_opening_tag(prompt: str, tag: str) -> int : prompt 안의 opening tag 개수를 셉니다.
 #   - _assert_no_heading_selector_leaks(combined_prompt: str, setup: WikiConversationSetup, scenario_ids: set[str]) -> None : 제목 줄에 남은 시나리오 분기 선택기를 검증합니다.
 #   - _assert_prompt_leaks(combined_prompt: str, setup: WikiConversationSetup, scenario_ids: set[str]) -> None : 저장소 내부 식별자와 authoring placeholder 누출을 검증합니다.
-#   - _assert_prompt_block_counts(vault_root: Path, setup: WikiConversationSetup, bundle: WikiPromptBundle) -> None : vault에서 유도한 자산 수와 prompt block 개수를 비교합니다.
+#   - _assert_prompt_block_counts(roots: WikiRoots, setup: WikiConversationSetup, bundle: WikiPromptBundle) -> None : vault에서 유도한 자산 수와 prompt block 개수를 비교합니다.
 #   - _validate_world_scenarios(world_root: Path, default_scene_type: str) -> int : 월드 하나의 모든 시나리오를 임시 vault에서 검증합니다.
 #   - main() -> None : 저작된 모든 Wiki 월드의 prompt 계약 회귀 게이트를 실행합니다.
 # ================================
@@ -30,15 +30,16 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.config import WIKI_PROMPTS_ROOT, WIKI_VAULT_ROOT
+from src.config import WIKI_PROMPTS_ROOT
 from src.wiki.context import initialize_wiki_thread
 from src.wiki.models import WikiConversationSetup, WikiPromptBundle
+from src.wiki.paths import WIKI_ROOTS, WikiRoots
 from src.wiki.prompt_contract import validate_wiki_prompt_bundle
 from src.wiki.runtime import build_wiki_prompt_bundle
 
 
 _SCENE_TYPES_PATH = WIKI_PROMPTS_ROOT / "scene_types.json"
-_WORLDS_ROOT = WIKI_VAULT_ROOT / "worlds"
+_WORLDS_ROOT = WIKI_ROOTS.worlds
 _PLACEHOLDER_TEXTS = (
     "아직 정해지지",
     "플레이 중 확정",
@@ -67,13 +68,17 @@ def _load_default_scene_type() -> str:
     return sorted(str(key) for key in raw_catalog)[0]
 
 
-def _copy_world_to_temp_vault(world_root: Path, temporary_directory: str) -> Path:
-    """월드 하나를 `worlds/<world_id>` 형태의 격리된 임시 vault로 복사합니다."""
-    vault_root = Path(temporary_directory) / "wiki_v2"
-    destination = vault_root / "worlds" / world_root.name
+def _copy_world_to_temp_vault(world_root: Path, temporary_directory: str) -> WikiRoots:
+    """월드 하나를 격리된 임시 world root로 복사하고 별도 thread root와 함께 반환합니다."""
+    base = Path(temporary_directory)
+    roots = WikiRoots(
+        worlds=base / "assets" / "worlds" / "wiki",
+        threads=base / "data" / "wiki" / "threads",
+    )
+    destination = roots.worlds / world_root.name
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(world_root, destination)
-    return vault_root
+    return roots
 
 
 def _assert_contract(
@@ -185,13 +190,13 @@ def _assert_prompt_leaks(
 
 
 def _assert_prompt_block_counts(
-    vault_root: Path,
+    roots: WikiRoots,
     setup: WikiConversationSetup,
     bundle: WikiPromptBundle,
 ) -> None:
     """vault 자산 수와 prompt block 수가 어긋나지 않는지 검증합니다."""
-    world_root = vault_root / "worlds" / setup.world_id
-    thread_root = vault_root / "threads" / setup.thread_id
+    world_root = roots.worlds / setup.world_id
+    thread_root = roots.threads / setup.thread_id
 
     expected_location_count = len(list((world_root / "locations").glob("*.md")))
     expected_organization_count = len(list((world_root / "organizations").glob("*.md")))
@@ -247,17 +252,17 @@ def _validate_world_scenarios(world_root: Path, default_scene_type: str) -> int:
     scenario_ids = {scenario_root.name for scenario_root in scenario_roots}
 
     with TemporaryDirectory(prefix=f"smoke_wiki_world_contract_{world_id}_") as temporary_directory:
-        vault_root = _copy_world_to_temp_vault(world_root, temporary_directory)
+        roots = _copy_world_to_temp_vault(world_root, temporary_directory)
         for scenario_root in scenario_roots:
             scenario_id = scenario_root.name
             setup = initialize_wiki_thread(
-                vault_root,
+                roots,
                 world_id,
                 scenario_id,
                 f"contract_{world_id}_{scenario_id}",
             )
             bundle = build_wiki_prompt_bundle(
-                vault_root,
+                roots,
                 setup,
                 user_input="프롬프트 계약 검증용 입력입니다.",
                 recent_story="",
@@ -268,7 +273,7 @@ def _validate_world_scenarios(world_root: Path, default_scene_type: str) -> int:
                 (bundle.fixed_prompt, bundle.dynamic_prompt)
             )
             _assert_prompt_leaks(combined_prompt, setup, scenario_ids)
-            _assert_prompt_block_counts(vault_root, setup, bundle)
+            _assert_prompt_block_counts(roots, setup, bundle)
     return len(scenario_roots)
 
 
