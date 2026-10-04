@@ -6,9 +6,14 @@ Wiki V2는 Kuzu나 파생 인덱스가 아니라 UTF-8 Markdown 문서를 상태
 
 ## Vault 구조
 
+world 원본과 thread 상태는 서로 겹치지 않는 두 root에 둔다.
+`WIKI_WORLDS_ROOT`의 기본값은 `assets/worlds/wiki/`,
+`WIKI_THREADS_ROOT`의 기본값은 `data/wiki/threads/`다. 아래 트리의 `worlds/`와
+`threads/`는 각각 이 두 root를 가리킨다.
+
 ```text
-assets/wiki_v2/
-├─ worlds/<world_id>/
+<WIKI_WORLDS_ROOT = assets/worlds/wiki>
+├─ <world_id>/
 │  ├─ world.md
 │  ├─ prose.md
 │  ├─ cot_append.md
@@ -30,7 +35,9 @@ assets/wiki_v2/
 │  ├─ characters/
 │  ├─ locations/
 │  └─ organizations/
-└─ threads/<thread_id>/
+
+<WIKI_THREADS_ROOT = data/wiki/threads>
+└─ <thread_id>/
    ├─ .wikirag-runtime.json
    ├─ thread.md
    ├─ scene/current.md
@@ -438,6 +445,9 @@ commit으로 기록한다. 문서 전체 replacement도 exact after revision일 
 `scene/current.md`의 현재 장면 H2에는 `### Time and Place`, legacy
 `### 시작 시각과 장소` 또는 `### 현재 시각과 장소` 중 정확히 하나가 있어야 한다.
 런타임은 accepted Actor 응답의 첫 굵은 헤더를 파싱해 이 하위 섹션을 동기화한다.
+시나리오 원고의 `### Initial Time and Place`는 첫 동기화에서 `### Time and Place`로
+교체되고, 그 뒤에 남은 시각 하위 섹션은 지워진다. 지난 시작 시각이 현재 시각 옆에
+남아 Actor가 베끼는 일을 막기 위해서다.
 같은 날짜의 시간 전진은 허용하고 시간 역행은 무시한다. 날짜 변경은 사용자 입력에
 명시적인 다음 날·미래 점프가 있을 때만 허용하며, 장소 변경은 새 장소가 사용자
 입력에 구체적으로 등장할 때만 허용한다. 이 규칙은 모델이 scene patch를 생략해도

@@ -7,13 +7,13 @@
 #   - _opening_tag_sequence(prompt: str) -> tuple[str, ...] : Normalize opening tag order into a prompt-structure fingerprint.
 #   - _prompt_structure_snapshot(fixed_prompt: str, dynamic_prompt: str) -> dict[str, tuple[str, ...]] : Build the Fixed/Dynamic structure fingerprint.
 #   - _report_prompt_content_snapshot(scenario_id: str, prompt_snapshot: dict[str, str]) -> None : Print content hashes used for authored-drift diagnostics.
-#   - _assert_world_prompt_additions(vault_root: Path) -> None : Validate cot_append and blacklist inheritance behavior.
-#   - _check_runtime_bootstrap(vault_root: Path) -> None : Validate classifier wiring, routes, runtime status, and opening-scene basics.
-#   - _check_prompt_bundle_common(temporary_root: Path, vault_root: Path, scenario_id: str) -> tuple[object, object] : Validate common prompt bundle structure and isolation rules for one scenario.
-#   - _check_prompt_bundle_scenario_specific(vault_root: Path, scenario_id: str, setup: object, prompt_bundle: object) -> None : Validate scenario-specific prompt rules for one scenario.
-#   - _check_prompt_bundle_debug_and_materialization(temporary_root: Path, vault_root: Path, scenario_id: str, setup: object, prompt_bundle: object) -> None : Validate debug snapshots and materialized thread documents for one scenario.
-#   - _check_memory_visibility(vault_root: Path, setup: object) -> None : Validate actor-only versus player-only memory visibility in prompt bundles.
-#   - run_runtime_prompt_suite(temporary_root: Path, vault_root: Path) -> None : Run the full runtime prompt smoke suite.
+#   - _assert_world_prompt_additions(roots: WikiRoots) -> None : Validate cot_append and blacklist inheritance behavior.
+#   - _check_runtime_bootstrap(roots: WikiRoots) -> None : Validate classifier wiring, routes, runtime status, and opening-scene basics.
+#   - _check_prompt_bundle_common(temporary_root: Path, roots: WikiRoots, scenario_id: str) -> tuple[object, object] : Validate common prompt bundle structure and isolation rules for one scenario.
+#   - _check_prompt_bundle_scenario_specific(roots: WikiRoots, scenario_id: str, setup: object, prompt_bundle: object) -> None : Validate scenario-specific prompt rules for one scenario.
+#   - _check_prompt_bundle_debug_and_materialization(temporary_root: Path, roots: WikiRoots, scenario_id: str, setup: object, prompt_bundle: object) -> None : Validate debug snapshots and materialized thread documents for one scenario.
+#   - _check_memory_visibility(roots: WikiRoots, setup: object) -> None : Validate actor-only versus player-only memory visibility in prompt bundles.
+#   - run_runtime_prompt_suite(temporary_root: Path, roots: WikiRoots) -> None : Run the full runtime prompt smoke suite.
 #   - main() -> None : Run the standalone runtime prompt smoke suite.
 # ================================
 
@@ -48,6 +48,7 @@ from src.wiki import (  # noqa: E402
 from src.wiki.context import scene_datetime_and_location  # noqa: E402
 from src.wiki.document_creation import prepare_created_document  # noqa: E402
 from src.wiki.models import CreateMemoryDocument  # noqa: E402
+from src.wiki.paths import WikiRoots  # noqa: E402
 from src.wiki.store import WikiStore  # noqa: E402
 from tests.wiki_runtime_smoke_fixtures import (  # noqa: E402
     _EXPECTED_PROMPT_SNAPSHOTS,
@@ -90,9 +91,9 @@ def _report_prompt_content_snapshot(
         print(f"[authoring-drift] baseline={expected}")
         print(f"[authoring-drift] current={prompt_snapshot}")
 
-def _assert_world_prompt_additions(vault_root: Path) -> None:
+def _assert_world_prompt_additions(roots: WikiRoots) -> None:
     """Wiki prompt 추가문의 시나리오 override와 월드 fallback을 검증합니다."""
-    world_root = vault_root / "worlds" / "babe_university"
+    world_root = roots.worlds / "babe_university"
     world_cot = "- WIKI_WORLD_COT_SENTINEL"
     scenario_cot = "- WIKI_SCENARIO_COT_SENTINEL"
     world_blacklist = "- WIKI_WORLD_BLACKLIST_SENTINEL"
@@ -101,14 +102,14 @@ def _assert_world_prompt_additions(vault_root: Path) -> None:
     scenario_cot_path = world_root / "scenarios" / "lover" / "cot_append.md"
     scenario_cot_path.write_text(scenario_cot, encoding="utf-8")
     setup = initialize_wiki_conversation(
-        vault_root,
+        roots,
         "babe_university",
         "lover",
         "prompt_additions_smoke",
     )
 
     overridden = build_wiki_prompt_bundle(
-        vault_root,
+        roots,
         setup,
         "테스트 입력",
         scene_types=["daily"],
@@ -119,7 +120,7 @@ def _assert_world_prompt_additions(vault_root: Path) -> None:
 
     scenario_cot_path.unlink()
     inherited = build_wiki_prompt_bundle(
-        vault_root,
+        roots,
         setup,
         "테스트 입력",
         scene_types=["daily"],
@@ -128,7 +129,7 @@ def _assert_world_prompt_additions(vault_root: Path) -> None:
     assert scenario_cot not in inherited.dynamic_prompt
     (world_root / "cot_append.md").unlink()
     (world_root / "blacklist.md").unlink()
-    shutil.rmtree(vault_root / "threads" / "prompt_additions_smoke")
+    shutil.rmtree(roots.threads / "prompt_additions_smoke")
 
 SCENARIO_IDS = (
     "lover",
@@ -165,7 +166,7 @@ SCENARIO_ONLY_RULES = {
     ),
 }
 
-async def _check_runtime_bootstrap(vault_root: Path) -> None:
+async def _check_runtime_bootstrap(roots: WikiRoots) -> None:
     """Validate classifier wiring, routes, runtime status, and opening-scene basics."""
     assert await classify_scene_types("팬티를 벗긴다.", "") == ["intimate"]
     route_paths = {route.path for route in create_app().routes}
@@ -182,11 +183,20 @@ async def _check_runtime_bootstrap(vault_root: Path) -> None:
         "/api/conversations/{thread_id}/wiki/export",
         "/api/conversations/{thread_id}/wiki",
     }.issubset(route_paths)
-    _assert_world_prompt_additions(vault_root)
+    _assert_world_prompt_additions(roots)
     parsed_scene_time, _location = scene_datetime_and_location(
         "- 2026년 5월 22일 금요일, 07시 20분. 전세버스 내부이다."
     )
     assert parsed_scene_time == datetime(2026, 5, 22, 7, 20)
+    # The English current line must win over a later Korean initial line.
+    parsed_scene_time, parsed_location = scene_datetime_and_location(
+        "### Time and Place\n\n"
+        "- It is 10:28 on Thursday, January 2, 2025, at 신촌역 승강장.\n\n"
+        "### Initial Time and Place\n\n"
+        "- Time: 2025년 1월 1일 수요일 0시 18분, 아파트 단지 앞\n"
+    )
+    assert parsed_scene_time == datetime(2025, 1, 2, 10, 28)
+    assert parsed_location == "신촌역 승강장"
     profiles = app_runtime.discover_world_profiles("wiki")
     assert profiles[0]["id"] == "babe_university"
     assert profiles[0]["runtime_ready"] is True
@@ -195,21 +205,21 @@ async def _check_runtime_bootstrap(vault_root: Path) -> None:
         "lover",
         "wiki",
     )
-    legacy_thread_root = vault_root / "threads" / "legacy_runtime"
+    legacy_thread_root = roots.threads / "legacy_runtime"
     legacy_thread_root.mkdir(parents=True)
-    legacy_status = get_wiki_thread_runtime_status(vault_root, "legacy_runtime")
+    legacy_status = get_wiki_thread_runtime_status(roots, "legacy_runtime")
     assert legacy_status.generation == "legacy"
-    missing_status = get_wiki_thread_runtime_status(vault_root, "missing_runtime")
+    missing_status = get_wiki_thread_runtime_status(roots, "missing_runtime")
     assert missing_status.generation == "missing"
 
 def _check_prompt_bundle_common(
     temporary_root: Path,
-    vault_root: Path,
+    roots: WikiRoots,
     scenario_id: str,
 ) -> tuple[object, object]:
     """Validate common prompt bundle structure and isolation rules for one scenario."""
     scene_descriptions = read_wiki_scene_descriptions(
-        vault_root,
+        roots,
         "babe_university",
         scenario_id,
     )
@@ -217,20 +227,20 @@ def _check_prompt_bundle_common(
     assert "intimate" in scene_descriptions
     assert ("altered" in scene_descriptions) == (scenario_id == "altered")
     setup = initialize_wiki_conversation(
-        vault_root,
+        roots,
         "babe_university",
         scenario_id,
         f"prompt_check_{scenario_id}",
     )
     runtime_status = get_wiki_thread_runtime_status(
-        vault_root,
+        roots,
         setup.thread_id,
     )
     assert runtime_status.generation == "current"
     assert runtime_status.format_version == 1
     if scenario_id == "lover":
         legacy_scene_path = (
-            vault_root / "threads" / setup.thread_id / "scene" / "current.md"
+            roots.threads / setup.thread_id / "scene" / "current.md"
         )
         legacy_scene_path.write_text(
             legacy_scene_path.read_text(encoding="utf-8").replace(
@@ -241,7 +251,7 @@ def _check_prompt_bundle_common(
             encoding="utf-8",
         )
         legacy_character_path = (
-            vault_root / "threads" / setup.thread_id / "characters" / "sian.md"
+            roots.threads / setup.thread_id / "characters" / "sian.md"
         )
         legacy_character_path.write_text(
             legacy_character_path.read_text(encoding="utf-8")
@@ -249,7 +259,7 @@ def _check_prompt_bundle_common(
             encoding="utf-8",
         )
     prompt_bundle = build_wiki_prompt_bundle(
-        vault_root,
+        roots,
         setup,
         "프롬프트 격리 확인",
         "",
@@ -304,7 +314,7 @@ def _check_prompt_bundle_common(
         }
         for raw_scene, prompt_scene in expected_prompt_scenes.items():
             scene_bundle = build_wiki_prompt_bundle(
-                vault_root,
+                roots,
                 setup,
                 "장면 프롬프트 연결 확인",
                 "",
@@ -341,7 +351,7 @@ def _check_prompt_bundle_common(
     return setup, prompt_bundle
 
 def _check_prompt_bundle_scenario_specific(
-    vault_root: Path,
+    roots: WikiRoots,
     scenario_id: str,
     setup: object,
     prompt_bundle: object,
@@ -373,7 +383,7 @@ def _check_prompt_bundle_scenario_specific(
         assert "studies Mechanical Engineering at 바베대학교" not in prompt_bundle.fixed_prompt
         assert "has known 진은서 since childhood" not in prompt_bundle.fixed_prompt
         altered_scene_bundle = build_wiki_prompt_bundle(
-            vault_root,
+            roots,
             setup,
             "시안의 요구가 일상의 판단을 바꾼다",
             "",
@@ -389,7 +399,7 @@ def _check_prompt_bundle_scenario_specific(
         assert "Born February 17, 1990" not in prompt_bundle.fixed_prompt
     if scenario_id == "lover":
         alternate_bundle = build_wiki_prompt_bundle(
-            vault_root,
+            roots,
             setup,
             "다른 일상 입력",
             "평온한 직전 대화",
@@ -410,7 +420,7 @@ def _check_prompt_bundle_scenario_specific(
         else:
             raise AssertionError("Fixed Wiki prompt wikilinks must be rejected")
         world_document_path = (
-            vault_root / "worlds" / setup.world_id / "world.md"
+            roots.worlds / setup.world_id / "world.md"
         )
         world_document = world_document_path.read_text(encoding="utf-8")
         world_document_path.write_text(
@@ -419,7 +429,7 @@ def _check_prompt_bundle_scenario_specific(
         )
         try:
             build_wiki_prompt_bundle(
-                vault_root,
+                roots,
                 setup,
                 "문서 계약 확인",
                 "",
@@ -436,7 +446,7 @@ def _check_prompt_bundle_scenario_specific(
                 encoding="utf-8",
             )
         intimate_bundle = build_wiki_prompt_bundle(
-            vault_root,
+            roots,
             setup,
             "서로 동의한 성관계를 이어간다",
             "",
@@ -448,7 +458,7 @@ def _check_prompt_bundle_scenario_specific(
 
 def _check_prompt_bundle_debug_and_materialization(
     temporary_root: Path,
-    vault_root: Path,
+    roots: WikiRoots,
     scenario_id: str,
     setup: object,
     prompt_bundle: object,
@@ -487,8 +497,7 @@ def _check_prompt_bundle_debug_and_materialization(
         assert '"start_state_in_dynamic_prompt": true' in summary
         assert "## Wiki Updater Documents" in summary
     materialized_eunseo = (
-        vault_root
-        / "threads"
+        roots.threads
         / setup.thread_id
         / "characters"
         / "eun_seo.md"
@@ -501,7 +510,7 @@ def _check_prompt_bundle_debug_and_materialization(
         assert "arms were amputated high on the upper arm near the shoulders" in materialized_body
         assert "She is 147 cm tall, weighs 42 kg, has an F-cup bust" not in materialized_body
         amputee_intimate_bundle = build_wiki_prompt_bundle(
-            vault_root,
+            roots,
             setup,
             "서로 확인하며 자세를 조정한다",
             "",
@@ -524,8 +533,7 @@ def _check_prompt_bundle_debug_and_materialization(
         f"{setup.pc_id.rsplit(':', 1)[-1]}.md"
     )
     relationship_path = (
-        vault_root
-        / "threads"
+        roots.threads
         / setup.thread_id
         / "relationships"
         / relationship_slug
@@ -540,10 +548,10 @@ def _check_prompt_bundle_debug_and_materialization(
         in prompt_bundle.dynamic_prompt
     )
 
-def _check_memory_visibility(vault_root: Path, setup: object) -> None:
+def _check_memory_visibility(roots: WikiRoots, setup: object) -> None:
     """Validate actor-only versus player-only memory visibility in prompt bundles."""
     memory_store = WikiStore(
-        vault_root / "threads" / setup.thread_id
+        roots.threads / setup.thread_id
     )
     memory_created_at = datetime.now(timezone.utc)
     actor_memory = prepare_created_document(
@@ -597,7 +605,7 @@ def _check_memory_visibility(vault_root: Path, setup: object) -> None:
     memory_store.create_document(actor_memory.document, actor_memory.content)
     memory_store.create_document(player_memory.document, player_memory.content)
     memory_bundle = build_wiki_prompt_bundle(
-        vault_root,
+        roots,
         setup,
         "기억 격리 확인",
         "",
@@ -610,37 +618,37 @@ def _check_memory_visibility(vault_root: Path, setup: object) -> None:
     assert actor_memory.document in updater_paths
     assert player_memory.document in updater_paths
 
-async def run_runtime_prompt_suite(temporary_root: Path, vault_root: Path) -> None:
+async def run_runtime_prompt_suite(temporary_root: Path, roots: WikiRoots) -> None:
     """Run the full runtime prompt smoke suite."""
-    await _check_runtime_bootstrap(vault_root)
+    await _check_runtime_bootstrap(roots)
     for scenario_id in SCENARIO_IDS:
         setup, prompt_bundle = _check_prompt_bundle_common(
             temporary_root,
-            vault_root,
+            roots,
             scenario_id,
         )
         _check_prompt_bundle_scenario_specific(
-            vault_root,
+            roots,
             scenario_id,
             setup,
             prompt_bundle,
         )
         _check_prompt_bundle_debug_and_materialization(
             temporary_root,
-            vault_root,
+            roots,
             scenario_id,
             setup,
             prompt_bundle,
         )
-    _check_memory_visibility(vault_root, setup)
+    _check_memory_visibility(roots, setup)
 
 def main() -> None:
     """Run the standalone runtime prompt smoke suite."""
     with TemporaryDirectory() as temporary_directory:
         temporary_root = Path(temporary_directory)
-        vault_root = copy_runtime_world(temporary_root)
-        configure_runtime_environment(temporary_root, vault_root)
-        asyncio.run(run_runtime_prompt_suite(temporary_root, vault_root))
+        roots = copy_runtime_world(temporary_root)
+        configure_runtime_environment(temporary_root, roots)
+        asyncio.run(run_runtime_prompt_suite(temporary_root, roots))
 
     print("smoke_wiki_runtime_prompt: ok")
 

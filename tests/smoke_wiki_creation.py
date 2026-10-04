@@ -6,6 +6,7 @@
 # Functions
 #   - _check_accepted_header_sync(scene: WikiDocument) -> None : Validate accepted-header time and location synchronization guards.
 #   - _check_accepted_header_sync_with_existing_patch(scene: WikiDocument) -> None : Validate that header sync preserves an Updater patch's already-moved location.
+#   - _check_single_time_place_subsection() -> None : Validate that header sync leaves exactly one Time and Place subsection.
 #   - _generate_goal_creation(character: WikiDocument) -> PendingWikiCommit : Plan a validated actor-owned goal creation.
 #   - _check_goal_authority_and_progress(character: WikiDocument) -> tuple[PendingWikiCommit, WikiDocument] : Validate goal authority and mutable progress sections.
 #   - _check_item_and_secret_visibility(character: WikiDocument) -> WikiDocument : Validate item creation, secret visibility, and leak detection.
@@ -146,6 +147,33 @@ def _check_accepted_header_sync_with_existing_patch(scene: WikiDocument) -> None
     grounded_markdown = grounded_over_patch.patches[0].replacement_markdown
     assert "정문" in grounded_markdown
     assert "학생회관 앞마당" not in grounded_markdown
+
+def _check_single_time_place_subsection() -> None:
+    """Authored `Initial Time and Place` is replaced, and a stale duplicate is dropped."""
+    line = _scene_time_place_line(datetime(2025, 1, 2, 10, 41), "전동차 안")
+    authored = (
+        "## 시작 기준\n\n### Initial Time and Place\n\n"
+        "- Time: 2025년 1월 1일 수요일 0시 07분, 편의점\n- Place: 편의점\n\n"
+        "### Immediate Trigger\n\n- 계산대 앞이다."
+    )
+    replaced = _replace_scene_time_place(authored, line)
+    assert replaced.count("Time and Place") == 1
+    assert "### Time and Place\n\n" + line in replaced
+    assert "0시 07분" not in replaced and "- Place: 편의점" not in replaced
+    assert "### Immediate Trigger\n\n- 계산대 앞이다." in replaced
+
+    # Threads synced before this fix carry both blocks; one sync collapses them.
+    duplicated = (
+        "## 시작 기준\n\n### Time and Place\n\n"
+        "- It is 10:28 on Thursday, January 2, 2025, at 승강장.\n\n"
+        "### Initial Time and Place\n\n"
+        "- Time: 2025년 1월 1일 수요일 0시 18분, 아파트 단지 앞\n\n"
+        "### Immediate Trigger\n\n- 답장을 기다린다."
+    )
+    collapsed = _replace_scene_time_place(duplicated, line)
+    assert collapsed.count("Time and Place") == 1
+    assert line in collapsed and "0시 18분" not in collapsed
+    assert "### Immediate Trigger" in collapsed
 
 async def _generate_goal_creation(character: WikiDocument) -> PendingWikiCommit:
     """owner=Actor인 durable goal 신규 문서 생성 commit을 계획합니다."""
@@ -585,6 +613,7 @@ async def run_creation_suite(
     """Run the full creation smoke suite and return the event and goal pending commits."""
     _check_accepted_header_sync(scene)
     _check_accepted_header_sync_with_existing_patch(scene)
+    _check_single_time_place_subsection()
     event_pending = await _generate_event_creation(character, scene)
     goal_pending = await _check_goal_item_secret(character)
     return event_pending, goal_pending

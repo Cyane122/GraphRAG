@@ -6,7 +6,7 @@
 # Functions
 #   - _header_location_is_grounded(header_location: str, current_location: str, user_input: str) -> bool : Return whether a header location is current or named in player input.
 #   - _scene_time_place_line(scene_time: datetime, location: str) -> str : Return the canonical English Time and Place bullet.
-#   - _replace_scene_time_place(scene_markdown: str, replacement_line: str) -> str : Replace or add the Time and Place subsection in a complete scene H2.
+#   - _replace_scene_time_place(scene_markdown: str, replacement_line: str) -> str : Replace or add the single Time and Place subsection in a complete scene H2.
 #   - _time_place_section_location(section_markdown: str) -> str | None : Read the location out of a scene section's own Time and Place line, if parseable.
 #   - synchronize_accepted_header(result: WikiUpdaterResult, documents: list[WikiDocument], user_input: str, actor_response: str) -> None : Merge accepted Actor header time and location into the canonical scene patch.
 # ================================
@@ -28,7 +28,9 @@ from src.wiki.markdown import apply_section_patches, parse_markdown_sections
 from src.wiki.models import WikiDocument, WikiUpdaterResult
 from src.wiki.patches import build_actor_response_section_patch
 
-_TIME_PLACE_HEADING_PATTERN = r"(?:Time and Place|시작 시각과 장소|현재 시각과 장소)"
+_TIME_PLACE_HEADING_PATTERN = (
+    r"(?:Initial Time and Place|Time and Place|시작 시각과 장소|현재 시각과 장소)"
+)
 _EXPLICIT_DATE_JUMP_RE = re.compile(
     r"다음\s*날|내일|모레|며칠\s*후|주일\s*후|주\s*후|달\s*후|"
     r"next\s+day|tomorrow|days?\s+later|weeks?\s+later",
@@ -75,16 +77,27 @@ def _scene_time_place_line(scene_time: datetime, location: str) -> str:
 
 
 def _replace_scene_time_place(scene_markdown: str, replacement_line: str) -> str:
-    """Replace or add the Time and Place subsection in a complete scene H2."""
+    """Replace or add the single Time and Place subsection in a complete scene H2.
+
+    The first time subsection is replaced and any later one is dropped, so a stale
+    authored `Initial Time and Place` cannot linger beside the current time where
+    the Actor would copy it. `Initial Time and Place` is renamed because its
+    content is no longer the initial state once synchronized.
+    """
     subsection = re.compile(
-        rf"(?ms)(^### {_TIME_PLACE_HEADING_PATTERN}\s*$\n+).*?(?=^###\s+|\Z)"
+        rf"(?ms)^### ({_TIME_PLACE_HEADING_PATTERN})\s*$\n+.*?(?=^###\s+|\Z)"
     )
-    if subsection.search(scene_markdown):
-        return subsection.sub(
-            lambda match: f"{match.group(1)}{replacement_line}\n\n",
-            scene_markdown,
-            count=1,
-        ).rstrip()
+    matches = list(subsection.finditer(scene_markdown))
+    if matches:
+        first = matches[0]
+        heading = "Time and Place" if first.group(1) == "Initial Time and Place" else first.group(1)
+        parts = [scene_markdown[:first.start()], f"### {heading}\n\n{replacement_line}\n\n"]
+        cursor = first.end()
+        for later in matches[1:]:
+            parts.append(scene_markdown[cursor:later.start()])
+            cursor = later.end()
+        parts.append(scene_markdown[cursor:])
+        return "".join(parts).rstrip()
     heading = re.compile(r"\A(##\s+.+?\s*$)", re.MULTILINE)
     if heading.search(scene_markdown) is None:
         raise WikiCommitPlanningError("Current scene replacement has no complete H2 heading")
