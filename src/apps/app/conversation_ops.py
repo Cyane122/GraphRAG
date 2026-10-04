@@ -1,13 +1,13 @@
 # ================================
 # src/apps/app/conversation_ops.py
 #
-# ConversationOps 프로토콜과 world_mode(Graph/Wiki)별 reroll/edit/activate/delete
+# ConversationOps 프로토콜과 world_mode(Graph/Wiki)별 reroll/edit/stream_edit/activate/delete
 # 구현의 두 항목짜리 레지스트리. routers/messages.py는 이 모듈의
 # get_conversation_ops() 하나로 world_mode 분기를 대체한다 — 전송 계층에는
 # 도메인 배선을 두지 않는다(AGENTS.md "app 진입 모듈은 얇게").
 #
 # Classes
-#   - ConversationOps : 한 world_mode의 reroll/edit/activate/delete 구현이 만족해야 하는 구조적 프로토콜.
+#   - ConversationOps : 한 world_mode의 reroll/edit/stream_edit/activate/delete 구현이 만족해야 하는 구조적 프로토콜.
 #
 # Functions
 #   - get_conversation_ops(world_mode: WorldMode) -> ConversationOps : state.world_mode에서 구현체를 한 번 해석합니다.
@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator
 from typing import Protocol
 
 from src.agents.prompt_factory.profiles import ProseProfile
@@ -31,6 +33,7 @@ from src.apps.app.wiki_message_ops import (
     delete_wiki_message,
     edit_wiki_message,
     reroll_wiki_assistant,
+    stream_edit_wiki_message,
 )
 
 
@@ -76,6 +79,20 @@ class ConversationOps(Protocol):
         engine_modules: dict[str, str] | None = None,
     ) -> dict:
         """message_id가 가리키는 메시지를 새 content로 수정합니다."""
+        ...
+
+    def stream_edit(
+        self,
+        state: ConversationState,
+        message_id: str,
+        content: str,
+        store: ConversationStore,
+        *,
+        actor_model: str | None = None,
+        prose_profile: ProseProfile | None = None,
+        engine_modules: dict[str, str] | None = None,
+    ) -> AsyncIterator[dict]:
+        """edit를 NDJSON 이벤트(status/token/complete)로 흘려보냅니다."""
         ...
 
     async def activate(
@@ -143,6 +160,36 @@ class _GraphConversationOps:
             engine_modules=engine_modules,
         )
 
+    async def stream_edit(
+        self,
+        state: ConversationState,
+        message_id: str,
+        content: str,
+        store: ConversationStore,
+        *,
+        actor_model: str | None = None,
+        prose_profile: ProseProfile | None = None,
+        engine_modules: dict[str, str] | None = None,
+    ) -> AsyncIterator[dict]:
+        """Graph 수정은 토큰 스트리밍 없이 끝까지 실행해 complete 이벤트 하나만 냅니다.
+
+        shield로 감싸 클라이언트가 스트림을 끊어도 edit_message가 중간에 취소되지 않게 한다
+        (edit_message는 생성 전 잘라낸 메시지를 저장하고 Exception에서만 원복한다).
+        """
+        # ponytail: Graph는 토큰 스트리밍 없음. 필요해지면 message_ops에 스트리밍 경로를 추가한다.
+        result = await asyncio.shield(
+            edit_message(
+                state,
+                message_id,
+                content,
+                store,
+                actor_model=actor_model,
+                prose_profile=prose_profile,
+                engine_modules=engine_modules,
+            )
+        )
+        yield {"type": "complete", **result}
+
     async def activate(
         self,
         state: ConversationState,
@@ -199,6 +246,28 @@ class _WikiConversationOps:
     ) -> dict:
         """Wiki 대화의 최신 메시지를 수정합니다."""
         return await edit_wiki_message(
+            state,
+            message_id,
+            content,
+            store,
+            actor_model=actor_model,
+            prose_profile=prose_profile,
+            engine_modules=engine_modules,
+        )
+
+    def stream_edit(
+        self,
+        state: ConversationState,
+        message_id: str,
+        content: str,
+        store: ConversationStore,
+        *,
+        actor_model: str | None = None,
+        prose_profile: ProseProfile | None = None,
+        engine_modules: dict[str, str] | None = None,
+    ) -> AsyncIterator[dict]:
+        """Wiki 메시지 수정과 재생성 토큰을 스트리밍합니다."""
+        return stream_edit_wiki_message(
             state,
             message_id,
             content,

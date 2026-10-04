@@ -7,6 +7,7 @@
 #   - rebuild_wiki_derived_state(state: ConversationState) -> None : 현재 메시지에서 Actor history, recent story와 preview를 다시 만듭니다.
 #   - reroll_wiki_assistant(state: ConversationState, assistant_id: str, store: ConversationStore, actor_model: str | None = None, prose_profile: ProseProfile | None = None, engine_modules: dict[str, str] | None = None) -> dict : 최신 Wiki 응답을 다시 생성합니다. 응답 없는 고아 user 메시지 상태면 ValueError로 명확히 거부합니다.
 #   - edit_wiki_message(state: ConversationState, message_id: str, content: str, store: ConversationStore, actor_model: str | None = None, prose_profile: ProseProfile | None = None, engine_modules: dict[str, str] | None = None) -> dict : 최신 Wiki 메시지를 수정하고 변경안을 다시 생성합니다. 응답 없는 고아 user 메시지 상태면 ValueError로 명확히 거부합니다.
+#   - stream_edit_wiki_message(state: ConversationState, message_id: str, content: str, store: ConversationStore, actor_model: str | None = None, prose_profile: ProseProfile | None = None, engine_modules: dict[str, str] | None = None) -> AsyncIterator[dict] : edit_wiki_message의 스트리밍판. 사용자 입력 수정 시 재생성 토큰·상태를 흘리고 마지막에 complete 이벤트를 냅니다.
 #   - activate_wiki_variant(state: ConversationState, message_id: str, version_index: int, store: ConversationStore) -> dict : 최신 Wiki 응답의 저장 버전을 활성화합니다. 응답 없는 고아 user 메시지 상태면 ValueError로 명확히 거부합니다.
 #   - delete_wiki_message(state: ConversationState, message_id: str, store: ConversationStore) -> dict : 최신 Wiki 메시지와 연결된 변경 상태를 삭제합니다. 삭제 대상이 응답 없는 고아 user 메시지면 commit 조작 없이 그 메시지만 제거합니다.
 # ================================
@@ -14,6 +15,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import aclosing
 from copy import deepcopy
 
 from src.agents.prompt_factory.profiles import ProseProfile
@@ -231,6 +234,17 @@ async def _replace_wiki_update(
     store.save(state)
 
 
+async def _final_payload(events: AsyncIterator[dict]) -> dict:
+    """스트림을 끝까지 소비하고 마지막 complete 이벤트를 type 없이 반환합니다."""
+    final: dict | None = None
+    async for event in events:
+        if event["type"] == "complete":
+            final = event
+    if final is None:
+        raise RuntimeError("Wiki message operation completed without a final response.")
+    return {key: value for key, value in final.items() if key != "type"}
+
+
 async def _regenerate_latest_pair(
     state: ConversationState,
     user_message: ChatMessage,
@@ -244,6 +258,38 @@ async def _regenerate_latest_pair(
     retain_variant: bool,
 ) -> dict:
     """기존 commit을 건드리지 않고 Actor 재생성을 끝낸 뒤 변경안을 교체합니다."""
+    return await _final_payload(
+        _stream_regenerate_latest_pair(
+            state,
+            user_message,
+            assistant_message,
+            store,
+            actor_model=actor_model,
+            prose_profile=prose_profile,
+            engine_modules=engine_modules,
+            edited_user_content=edited_user_content,
+            retain_variant=retain_variant,
+        )
+    )
+
+
+async def _stream_regenerate_latest_pair(
+    state: ConversationState,
+    user_message: ChatMessage,
+    assistant_message: ChatMessage,
+    store: ConversationStore,
+    *,
+    actor_model: str | None,
+    prose_profile: ProseProfile | None = None,
+    engine_modules: dict[str, str] | None = None,
+    edited_user_content: str | None = None,
+    retain_variant: bool,
+) -> AsyncIterator[dict]:
+    """Actor 재생성 토큰·상태를 흘려보내고 변경안 교체 뒤 complete 이벤트를 냅니다.
+
+    스트림 중단(GeneratorExit/CancelledError 포함)을 포함한 모든 실패에서 대화 상태를
+    재생성 전 스냅샷으로 되돌려 저장한 뒤 예외를 재전파한다.
+    """
     snapshot = state.model_copy(deep=True)
     selected_model, selected_prose_profile, selected_engine_modules = resolve_generation_selection(
         state,
@@ -266,18 +312,24 @@ async def _regenerate_latest_pair(
     rebuild_wiki_derived_state(state)
     final_event: dict | None = None
     try:
-        async for event in stream_wiki_turn(
-            state,
-            user_message.content,
-            client_message_id=user_message.id,
-            actor_model=selected_model,
-            prose_profile=selected_prose_profile,
-            engine_modules=selected_engine_modules,
-            apply_pending=False,
-            queue_update=False,
-        ):
-            if event["type"] == "complete":
-                final_event = event
+        # aclosing: 이 제너레이터가 중단되면 하위 스트림도 즉시 닫아 롤백 순서를 보장한다.
+        async with aclosing(
+            stream_wiki_turn(
+                state,
+                user_message.content,
+                client_message_id=user_message.id,
+                actor_model=selected_model,
+                prose_profile=selected_prose_profile,
+                engine_modules=selected_engine_modules,
+                apply_pending=False,
+                queue_update=False,
+            )
+        ) as turn_events:
+            async for event in turn_events:
+                if event["type"] == "complete":
+                    final_event = event
+                elif event["type"] != "user":
+                    yield event
         if final_event is None or len(state.messages) < 2:
             raise RuntimeError("Wiki reroll completed without a final response.")
 
@@ -300,6 +352,7 @@ async def _regenerate_latest_pair(
         else:
             generated_assistant.variants = []
         rebuild_wiki_derived_state(state)
+        yield {"type": "status", "content": "응답에서 Wiki 변경 사항을 추출하는 중입니다."}
         await _replace_wiki_update(
             state,
             user_message,
@@ -308,14 +361,15 @@ async def _regenerate_latest_pair(
             "Superseded by Wiki message regeneration",
         )
         store.save(state)
-        return {
+        yield {
+            "type": "complete",
             "message": _message_payload(generated_assistant),
             "pending_commit_id": state.wiki_pending_commit_id,
             "preview": state.preview,
             "wiki_update_status": state.wiki_update_status,
             "wiki_update_error": state.wiki_update_error,
         }
-    except Exception:
+    except BaseException:
         _restore_state(state, snapshot)
         store.save(state)
         raise
@@ -366,6 +420,29 @@ async def edit_wiki_message(
     engine_modules: dict[str, str] | None = None,
 ) -> dict:
     """최신 Wiki 사용자 입력은 재생성하고, 최신 응답은 변경안만 다시 생성합니다."""
+    return await _final_payload(
+        stream_edit_wiki_message(
+            state,
+            message_id,
+            content,
+            store,
+            actor_model=actor_model,
+            prose_profile=prose_profile,
+            engine_modules=engine_modules,
+        )
+    )
+
+
+async def stream_edit_wiki_message(
+    state: ConversationState,
+    message_id: str,
+    content: str,
+    store: ConversationStore,
+    actor_model: str | None = None,
+    prose_profile: ProseProfile | None = None,
+    engine_modules: dict[str, str] | None = None,
+) -> AsyncIterator[dict]:
+    """edit_wiki_message의 스트리밍판: 사용자 입력 수정 시 재생성 토큰을 흘려보냅니다."""
     normalized = content.strip()
     if not normalized:
         raise ValueError("메시지 내용은 비워 둘 수 없습니다.")
@@ -384,20 +461,26 @@ async def edit_wiki_message(
             assistant_message,
         )
         try:
-            return await _regenerate_latest_pair(
-                state,
-                user_message,
-                assistant_message,
-                store,
-                actor_model=actor_model,
-                prose_profile=prose_profile,
-                engine_modules=engine_modules,
-                edited_user_content=normalized,
-                retain_variant=False,
-            )
-        except Exception:
+            # aclosing: 스트림 중단 시 하위 재생성 스트림의 상태 복구가 inverse 복구보다 먼저 끝나게 한다.
+            async with aclosing(
+                _stream_regenerate_latest_pair(
+                    state,
+                    user_message,
+                    assistant_message,
+                    store,
+                    actor_model=actor_model,
+                    prose_profile=prose_profile,
+                    engine_modules=engine_modules,
+                    edited_user_content=normalized,
+                    retain_variant=False,
+                )
+            ) as regenerated_events:
+                async for event in regenerated_events:
+                    yield event
+        except BaseException:
             _restore_failed_regeneration(state, inverse_commit_id)
             raise
+        return
 
     user_message, assistant_message = _latest_pair(
         state,
@@ -414,7 +497,8 @@ async def edit_wiki_message(
         store,
         "Superseded by Wiki assistant edit",
     )
-    return {
+    yield {
+        "type": "complete",
         "message": _message_payload(assistant_message),
         "pending_commit_id": state.wiki_pending_commit_id,
         "preview": state.preview,

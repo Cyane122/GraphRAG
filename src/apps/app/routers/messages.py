@@ -1,7 +1,7 @@
 # ================================
 # src/apps/app/routers/messages.py
 #
-# Message streaming, reroll, mutation, and variant web routes.
+# Message streaming, reroll, mutation (including streamed edit), and variant web routes.
 #
 # Functions
 #   - _user_facing_error_message(exc: BaseException) -> str : provider 429/403 한도 소진 예외를 사람이 읽을 수 있는 한국어 문구로 치환합니다(그 외는 원문 유지).
@@ -139,6 +139,36 @@ def create_router(context: RouterContext) -> APIRouter:
             print("[WebEdit] generation failed")
             traceback.print_exc()
             raise HTTPException(500, detail=_user_facing_error_message(exc)) from exc
+
+    @router.post("/api/conversations/{thread_id}/messages/{message_id}/edit/stream")
+    async def api_stream_edit_message(
+        thread_id: str,
+        message_id: str,
+        body: MessageEditRequest,
+    ) -> StreamingResponse:
+        """Edit a message and stream any regenerated Actor output as NDJSON."""
+        state = _load_or_404(store, thread_id)
+        ops = get_conversation_ops(state.world_mode)
+
+        async def _events() -> AsyncIterator[bytes]:
+            """Yield edit stream events."""
+            try:
+                async for event in ops.stream_edit(
+                    state,
+                    message_id,
+                    body.content,
+                    store,
+                    actor_model=body.actor_model,
+                    prose_profile=body.prose_profile,
+                    engine_modules=body.engine_modules,
+                ):
+                    yield _json_line(event)
+            except Exception as exc:
+                print("[WebEditStream] edit failed")
+                traceback.print_exc()
+                yield _json_line({"type": "error", "content": _user_facing_error_message(exc)})
+
+        return StreamingResponse(_events(), media_type="application/x-ndjson")
 
     @router.delete("/api/conversations/{thread_id}/messages/{message_id}")
     def api_delete_message(thread_id: str, message_id: str) -> dict:

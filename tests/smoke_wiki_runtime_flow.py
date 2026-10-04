@@ -116,6 +116,39 @@ async def run_runtime_flow_suite(
     assert state.messages[-2].content == "좋은 아침. 물부터 마실래?"
     assert state.messages[-1].parent_user_id == latest_user.id
 
+    streamed_edit = [
+        event
+        async for event in wiki_message_ops.stream_edit_wiki_message(
+            state,
+            latest_user.id,
+            "좋은 아침. 커피 마실래?",
+            store,
+            actor_model=state.actor_model,
+        )
+    ]
+    assert any(event["type"] == "token" for event in streamed_edit)
+    assert not any(event["type"] == "user" for event in streamed_edit)
+    assert [event["type"] for event in streamed_edit].count("complete") == 1
+    assert streamed_edit[-1]["type"] == "complete"
+    assert streamed_edit[-1]["message"]["id"] == latest_assistant.id
+    assert state.messages[-2].content == "좋은 아침. 커피 마실래?"
+
+    # 스트림을 중간에 끊으면(클라이언트 중단) 수정 전 상태로 되돌아가야 한다.
+    before_abort = [message.model_dump() for message in state.messages]
+    aborted_stream = wiki_message_ops.stream_edit_wiki_message(
+        state,
+        latest_user.id,
+        "중단될 수정",
+        store,
+        actor_model=state.actor_model,
+    )
+    async for event in aborted_stream:
+        if event["type"] == "token":
+            break
+    await aborted_stream.aclose()
+    assert [message.model_dump() for message in state.messages] == before_abort
+    assert store.load(state.thread_id).messages[-2].content == "좋은 아침. 커피 마실래?"
+
     status = wiki_controls.get_wiki_commit_status(state)
     assert status.update_status == "queued"
     assert status.commit is not None
