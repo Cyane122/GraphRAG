@@ -46,6 +46,7 @@ def _check_models() -> None:
     assert normalize_actor_model("DeepSeek-V4-Pro") == "gemini-3.1-pro-preview"
     assert normalize_actor_model(None) == "gemini-3.1-pro-preview"
     assert normalize_actor_model("claude-opus-4-8") == "claude-opus-4-8"
+    assert normalize_actor_model("gemini-4-argon") == "gemini-4-argon"
 
     # Chainlit 기능 이식으로 추가된 영속 필드의 기본값.
     state = ConversationState(world_id="w")

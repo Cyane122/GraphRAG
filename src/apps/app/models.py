@@ -55,6 +55,7 @@ WorldMode = Literal["graph", "wiki"]
 WikiUpdateStatus = Literal["idle", "queued", "failed", "applied", "skipped"]
 
 SUPPORTED_ACTOR_MODELS = {
+    "gemini-4-argon": "Gemini 4 Argon",
     "gemini-3.1-pro-preview": "Gemini 3.1 Pro Preview",
     "gemini-3.8-flash": "Gemini 3.8 Flash",
     "gemini-3.7-flash": "Gemini 3.7 Flash",
