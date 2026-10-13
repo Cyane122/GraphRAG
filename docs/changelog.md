@@ -734,4 +734,4 @@ Chainlit 제거 + Codex 리뷰 지적 반영 + 백로그 정리.
 
 ## 2026-10-14
 
-- [UI] 백엔드와 Sites 모델 선택 목록에 `Gemini 4 Argon` (`gemini-4-argon`)을 추가했다.
+- [UI] 백엔드와 Sites 모델 선택 목록에 `Gemini 4 Argon` (`gemini-4-argon`)을 추가하고 Gemini 3.5·3.6·3.7 Flash를 제거했다. Sites 릴리스 버전은 `0.1.1`이다.

@@ -58,8 +58,6 @@ SUPPORTED_ACTOR_MODELS = {
     "gemini-4-argon": "Gemini 4 Argon",
     "gemini-3.1-pro-preview": "Gemini 3.1 Pro Preview",
     "gemini-3.8-flash": "Gemini 3.8 Flash",
-    "gemini-3.7-flash": "Gemini 3.7 Flash",
-    "gemini-3.6-flash": "Gemini 3.6 Flash",
     "claude-opus-5": "Claude Opus 5",
     "claude-sonnet-5": "Claude Sonnet 5",
     "claude-sonnet-4-6": "Claude Sonnet 4.6",
@@ -67,7 +65,6 @@ SUPPORTED_ACTOR_MODELS = {
     "claude-opus-4-7": "Claude Opus 4.7",
     "claude-opus-4-8": "Claude Opus 4.8",
     "deepseek-v4-pro": "DeepSeek V4 Pro",
-    "gemini-3.5-flash": "Gemini 3.5 Flash",
     "gemini-3-flash-preview": "Gemini 3 Flash Preview",
 }
 DEFAULT_ACTOR_MODEL = "gemini-3.1-pro-preview"
